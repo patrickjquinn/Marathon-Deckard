@@ -117,11 +117,37 @@ keyboard is present" rule can't be trusted. DeckardIme therefore always reports
 from `/proc/bus/input/devices`). On the HackberryPi the keyboard is not forced
 up. The nav bar's keyboard button still opens it, and then the inset follows.
 
-## Status and evidence
+## Verified on the device (2026-10-18, shell 2edb21fd, deckard aport)
 
-See "Verified on the device" below. Unit tests: Marathon-Shell
-`Shell_RemoteTextInput` (16 cases), Marathon-Deckard `host/deckardd` `ime`
-(5 cases) and `ContentTypeTest` (17 input types, runs in
+| Check | Result | Evidence |
+|---|---|---|
+| Defaults after `deckard-overlay-sync` and a session restart | `pm path` = `/system/app/DeckardIme/DeckardIme.apk`, LatinIME disabled, `default_input_method` = DeckardIme | coordinator's check, 23:45 |
+| deckardd registers with the shell | The packaged `/usr/bin/deckardd` in `deckardd.service` is admitted. The earlier test instance (`deckardd-test.service`, `~/.local/...`) was refused with "Needs the text-input permission", as designed | journal |
+| Editor reaches the shell | Tapping Jelly's address bar gave `SetEditor(waydroid.org.lineageos.jelly, 5 url, 0)`, `SetSurroundingText("https://www.google.com/", 23, 0)`, `ShowPanel` | `busctl monitor` |
+| IME inset follows Marathon's keyboard | Keyboard opened from the nav bar: `PanelChanged(355, 628)`. Android's IME source became `[0,273][720,628]`, exactly the 355 px the keyboard covers, and `mInputShown=true`. Android's own window was never resized (no hot-plug) | dumpsys |
+| No double resize | Keyboard over Clock, Jelly and Notify Test: their windows keep their size and sit under the keyboard | screenshots `osk1`, `osk4`, `p3`, `p4` |
+| No `InputMethod` window | No InputMethod layer among the HWC layers while the IME is shown | `dumpsys SurfaceFlinger` |
+| Hardware keyboard, Jelly address bar | Typing, Backspace, Delete, Left/Right and Ctrl+A all work | `hw1`, `hw3`, `hw4` |
+| Hardware keyboard, Clock timer label | Typing "Tea brew" with Shift and Backspace works | `c9` |
+| Keyboard not forced up with a hardware keyboard | Focusing Jelly's address bar or the label field left Marathon's keyboard down | `j9`, `c9` |
+| On-screen keyboard typing into an Android field | **Not working on 2edb21fd.** The keyboard opened and Android had the editor, but no `CommitString` was sent, and the keyboard offered word predictions in a URL field. The shell's keyboard writes to Qt's focus object, which was not the Waydroid surface item, although the seat's keyboard focus (hardware keys) was. Fixed in Marathon-Shell b25a8096 (the target falls back to the window with the seat's keyboard focus); not yet deployed. | `p5`, `busctl monitor` |
+| Contacts, Files search, Jelly web form | Not reached. See blockers. | |
+
+Blockers found while testing (not keyboard code):
+
+- The shell froze the Waydroid container while an Android app was in front:
+  `cgroup.events` showed `frozen 1` twice in 10 minutes, with Jelly in front
+  and with Clock in front. Android then ignored every tap and key, and
+  dumpsys hung. `lxc-unfreeze` recovered it each time.
+- `LaunchApp waydroid.com.android.contacts` (returned true) brought
+  `com.android.deskclock` to the front in Android, and the shell showed
+  Clock. Earlier, `LaunchApp waydroid.org.lineageos.jelly` showed Notify
+  Test.
+- Windows disappeared from the front while other agents launched apps and
+  restarted the session.
+
+Unit tests: Marathon-Shell `Shell_RemoteTextInput` (16 cases), Marathon-Deckard
+`host/deckardd` `ime` (5 cases) and `ContentTypeTest` (17 input types, runs in
 `image/apps/DeckardIme/build.sh`).
 
 ## Where the spec's approach is still needed
