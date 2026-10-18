@@ -1,0 +1,5 @@
+# DeckardBridge mirrors notifications and media sessions to Marathon; Android
+# draws no heads-up banners of its own.
+on property:sys.boot_completed=1
+    exec_background - root root -- /system/bin/cmd notification allow_listener org.marathonos.deckard.bridge/org.marathonos.deckard.bridge.BridgeService
+    exec_background - root root -- /system/bin/settings put global heads_up_notifications_enabled 0
