@@ -18,6 +18,7 @@
 #include <QLoggingCategory>
 #include <QSaveFile>
 #include <QDir>
+#include <QTimer>
 
 Q_LOGGING_CATEGORY(lcNotify, "deckard.notifications")
 
@@ -195,10 +196,16 @@ void Notifications::close(uint id) {
 }
 
 void Notifications::onActionInvoked(uint id, const QString &action) {
-    const QString key = m_keys.value(id);
-    if (key.isEmpty() || action == QLatin1String("inline-reply"))
+    if (action == QLatin1String("inline-reply"))
         return;
-    m_entries[key].invokedAt = QDateTime::currentMSecsSinceEpoch();
+    QString key = m_keys.value(id);
+    if (!key.isEmpty())
+        m_entries[key].invokedAt = QDateTime::currentMSecsSinceEpoch();
+    else if (const auto it = m_closing.find(id); it != m_closing.end())
+        key = it->key, it->entry.invokedAt = QDateTime::currentMSecsSinceEpoch();
+    if (key.isEmpty())
+        return;
+    qCInfo(lcNotify) << "invoke" << action << "on" << key;
     m_bridge->send({{QStringLiteral("t"), QStringLiteral("invoke")},
                     {QStringLiteral("key"), key},
                     {QStringLiteral("action"), action.left(16)}});
@@ -220,12 +227,21 @@ void Notifications::onNotificationClosed(uint id, uint reason) {
         return;
     const Entry entry = m_entries.take(key);
     save();
-    // 2: the user dismissed it. A tap closes the row too; Android keeps a
-    // notification that doesn't auto-cancel, so leave it there.
-    if (reason != 2 ||
-        (!entry.autoCancel && QDateTime::currentMSecsSinceEpoch() - entry.invokedAt < 3000))
+    // 2: the user dismissed it. The Hub also closes a row it opens, and may
+    // say so before it reports the tap: wait for the tap before deciding.
+    if (reason != 2)
         return;
-    m_bridge->send({{QStringLiteral("t"), QStringLiteral("dismiss")}, {QStringLiteral("key"), key}});
+    m_closing.insert(id, {key, entry});
+    QTimer::singleShot(500, this, [this, id] {
+        const Closing closing = m_closing.take(id);
+        // Android keeps a tapped notification that doesn't auto-cancel.
+        if (!closing.entry.autoCancel &&
+            QDateTime::currentMSecsSinceEpoch() - closing.entry.invokedAt < 3000)
+            return;
+        qCInfo(lcNotify) << "dismiss" << closing.key;
+        m_bridge->send(
+            {{QStringLiteral("t"), QStringLiteral("dismiss")}, {QStringLiteral("key"), closing.key}});
+    });
 }
 
 void Notifications::load() {

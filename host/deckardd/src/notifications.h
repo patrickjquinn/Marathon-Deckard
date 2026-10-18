@@ -35,6 +35,10 @@ class Notifications : public QObject {
         bool       autoCancel = false;
         qint64     invokedAt  = 0;
     };
+    struct Closing {
+        QString key;
+        Entry   entry;
+    };
 
     void post(const QJsonObject &message);
     void remove(const QString &key);
@@ -49,4 +53,5 @@ class Notifications : public QObject {
     QString               m_stateFile;
     QHash<QString, Entry> m_entries;
     QHash<uint, QString>  m_keys;
+    QHash<uint, Closing>  m_closing;
 };
