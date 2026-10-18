@@ -220,7 +220,7 @@ Native services from `init` and the vendor rc files, PSS at idle:
 |---|---|---|
 | zygote_secondary | 84 MB | S2 |
 | deckard-wm (app_process64) | ≈30 MB | S9: its code runs in DeckardSystem (`WindowFit`, a zygote child) and the `deckard-wm` service leaves `deckard-chrome.rc` (agreed with the coordinator, who told the chrome agent) |
-| DeckardHome's process | ≈10 MB | S9: DeckardHome is platform-signed with `sharedUserId android.uid.system` and `android:process="org.marathonos.deckard.system"`, so its invisible home activity lives in DeckardSystem's process. It stays its own package, so `waydroid.blacklist_apps` still names only it. |
+| DeckardHome's process | ≈10 MB | S9: DeckardHome is platform-signed with `sharedUserId android.uid.system` and `android:process="org.marathonos.deckard.system"`, so its invisible home activity lives in DeckardSystem's process. It stays its own package, so `waydroid.blacklist_apps` still names only it. The manifest waits in `image/slim/apps/DeckardHome`: it can only replace the live one together with `build-chrome.sh` signing DeckardHome with the platform key, or a Deckard-key build would fail to install and leave Android without a home. |
 | adbd, adb_root | 3 MB | `auto_adb = False`, but userdebug starts adbd; would need a `persist.sys.usb.config` change, to test |
 | traced, traced_probes, incidentd, storaged, mdnsd, wificond | 1–2 MB each | most are `class main/late_start` with no property switch; stopping them is an rc `stop`, to try after the big stages |
 
