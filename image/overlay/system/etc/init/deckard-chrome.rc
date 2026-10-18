@@ -1,0 +1,33 @@
+# No Android chrome in Marathon: Android's home, launcher and pickers stay out
+# of sight, every app task fills its Marathon window, and Android is dark.
+
+on init
+    # Waydroid's hwcomposer maps no window for these packages.
+    setprop waydroid.blacklist_apps com.android.launcher3:org.marathonos.deckard.home
+
+service deckard-wm /system/bin/app_process64 /system/bin org.marathonos.deckard.wm.Main
+    class main
+    user system
+    group system
+    setenv CLASSPATH /system/framework/deckard-wm.jar
+    disabled
+
+on property:sys.boot_completed=1
+    start deckard-wm
+    exec_background - root root -- /system/bin/cmd uimode night yes
+    exec_background - root root -- /system/bin/settings put global policy_control immersive.full=*
+    exec_background - root root -- /system/bin/settings put secure screensaver_enabled 0
+    # Monet's overlays from before DeckardSystemUIRes turned it off.
+    exec_background - root root -- /system/bin/cmd overlay disable com.android.systemui:accent
+    exec_background - root root -- /system/bin/cmd overlay disable com.android.systemui:neutral
+    exec_background - root root -- /system/bin/cmd package set-home-activity org.marathonos.deckard.home/.HomeActivity
+    exec_background - root root -- /system/bin/pm disable com.android.launcher3
+    exec_background - root root -- /system/bin/pm disable com.android.wallpaper
+    exec_background - root root -- /system/bin/pm disable com.android.wallpaper.livepicker
+    exec_background - root root -- /system/bin/pm disable org.lineageos.backgrounds
+    exec_background - root root -- /system/bin/pm disable com.android.dreams.basic
+    exec_background - root root -- /system/bin/pm disable com.android.dreams.phototable
+    exec_background - root root -- /system/bin/pm disable com.android.egg
+    exec_background - root root -- /system/bin/pm disable com.android.printspooler
+    exec_background - root root -- /system/bin/pm disable com.android.bips
+    exec_background - root root -- /system/bin/pm disable com.android.printservice.recommendation
