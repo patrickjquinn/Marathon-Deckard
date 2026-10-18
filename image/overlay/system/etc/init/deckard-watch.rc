@@ -9,8 +9,6 @@ service deckard-watch /system/bin/inotifyd /system/bin/deckard-watch /data/decka
 
 on post-fs-data
     mkdir /data/deckard 0755 system system
-    # Android's cached-app freezer, now that the container's cgroups are writable.
-    setprop persist.device_config.activity_manager_native_boot.use_freezer true
 
 on property:sys.boot_completed=1
     exec_background - system system -- /system/bin/deckard-watch m /data/deckard palette
