@@ -8,6 +8,7 @@ import android.app.RemoteInput;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.AudioManager;
 import android.graphics.drawable.Icon;
 import android.os.Bundle;
 import android.os.Handler;
@@ -276,6 +277,10 @@ public class BridgeService extends NotificationListenerService implements Link.L
             mMedia.command(m);
             return;
         }
+        if (type.equals("audio")) {
+            applyAudio(m.optBoolean("quiet", true), m.optDouble("alarm", 0.9));
+            return;
+        }
         String key = m.optString("key");
         StatusBarNotification sbn = mForwarded.get(key);
         if (sbn == null) {
@@ -295,6 +300,33 @@ public class BridgeService extends NotificationListenerService implements Link.L
                 break;
             default:
                 Log.w(Link.TAG, "unknown message " + type);
+        }
+    }
+
+    /**
+     * Marathon plays notification sounds itself, following its profile and Do
+     * Not Disturb; Android's own notification, ring and system sounds stay
+     * off. Media plays at full volume under Marathon's output volume.
+     */
+    private void applyAudio(boolean quiet, double alarm) {
+        requestInterruptionFilter(quiet ? INTERRUPTION_FILTER_ALARMS : INTERRUPTION_FILTER_ALL);
+        AudioManager am = getSystemService(AudioManager.class);
+        for (int stream : new int[] {AudioManager.STREAM_NOTIFICATION, AudioManager.STREAM_RING,
+                AudioManager.STREAM_SYSTEM}) {
+            setVolume(am, stream, 0);
+        }
+        setVolume(am, AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+        int alarmMax = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
+        setVolume(am, AudioManager.STREAM_ALARM,
+                (int) Math.round(Math.max(0, Math.min(1, alarm)) * alarmMax));
+        Log.i(Link.TAG, "audio: " + (quiet ? "quiet" : "audible") + ", alarm " + alarm);
+    }
+
+    private static void setVolume(AudioManager am, int stream, int index) {
+        try {
+            am.setStreamVolume(stream, Math.max(am.getStreamMinVolume(stream), index), 0);
+        } catch (SecurityException e) {
+            Log.w(Link.TAG, "volume of stream " + stream + ": " + e.getMessage());
         }
     }
 

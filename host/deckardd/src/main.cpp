@@ -1,4 +1,6 @@
+#include "audio.h"
 #include "bridge.h"
+#include "ime.h"
 #include "mpris.h"
 #include "notifications.h"
 
@@ -41,6 +43,7 @@ int main(int argc, char *argv[]) {
     Notifications notifications(&bridge, cache + QStringLiteral("/icons"),
                                 state + QStringLiteral("/notifications.json"));
     Mpris         mpris(&bridge, cache + QStringLiteral("/art"));
+    AudioSync     audio(&bridge);
 
     QObject::connect(&bridge, &Bridge::received, &app,
                      [&](const QString &type, const QJsonObject &message) {
@@ -50,12 +53,25 @@ int main(int argc, char *argv[]) {
                              notifications.handle(type, message);
                      });
     QObject::connect(&bridge, &Bridge::connectedChanged, &app, [&](bool connected) {
-        if (!connected)
+        if (!connected) {
             mpris.clear();
-        else
-            bridge.send({{QStringLiteral("t"), QStringLiteral("hello")}, {QStringLiteral("v"), 1}});
+            return;
+        }
+        bridge.send({{QStringLiteral("t"), QStringLiteral("hello")}, {QStringLiteral("v"), 1}});
+        audio.resend();
     });
     if (!bridge.listen())
+        return 1;
+
+    // The keyboard has a socket of its own so keys never wait behind images.
+    Bridge         imeBridge(data + QStringLiteral("/deckard/ime.sock"),
+                             data + QStringLiteral("/system/packages.list"),
+                             QByteArrayLiteral("org.marathonos.deckard.ime"));
+    Ime            ime([&imeBridge](const QJsonObject &message) { imeBridge.send(message); });
+    ShellTextInput shellTextInput(&ime, bus);
+    QObject::connect(&imeBridge, &Bridge::received, &ime, &Ime::handle);
+    QObject::connect(&imeBridge, &Bridge::connectedChanged, &ime, &Ime::setConnected);
+    if (!imeBridge.listen())
         return 1;
     return app.exec();
 }

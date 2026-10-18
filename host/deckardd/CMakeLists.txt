@@ -9,8 +9,10 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Core DBus Gui Network)
 include(GNUInstallDirs)
 
 add_library(deckardcore STATIC
+    src/audio.cpp
     src/bridge.cpp
     src/images.cpp
+    src/ime.cpp
     src/mpris.cpp
     src/notifications.cpp
     src/validate.cpp
@@ -23,6 +25,7 @@ add_executable(deckardd src/main.cpp)
 target_link_libraries(deckardd PRIVATE deckardcore)
 install(TARGETS deckardd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES deckardd.service DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user)
+install(FILES deckardd.service.json DESTINATION ${CMAKE_INSTALL_DATADIR}/marathon-shell/services)
 
 option(BUILD_TESTING "Build the tests" ON)
 if(BUILD_TESTING)
@@ -34,4 +37,7 @@ if(BUILD_TESTING)
     add_executable(test_bridge tests/test_bridge.cpp)
     target_link_libraries(test_bridge PRIVATE deckardcore Qt6::Test)
     add_test(NAME bridge COMMAND test_bridge)
+    add_executable(test_ime tests/test_ime.cpp)
+    target_link_libraries(test_ime PRIVATE deckardcore Qt6::Test)
+    add_test(NAME ime COMMAND test_ime)
 endif()
