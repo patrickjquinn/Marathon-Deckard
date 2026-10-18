@@ -7,11 +7,14 @@ import android.hardware.display.DisplayManager;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Keeps every app task on Android's display as a freeform task that fills the
@@ -27,6 +30,7 @@ final class WindowFit {
     private static final int ACTIVITY_TYPE_UNDEFINED = 0;
     private static final int ACTIVITY_TYPE_STANDARD = 1;
     private static final long SETTLE_MS = 30;
+    private static final long RETRY_MS = 2000;
 
     private static Object atm;
     private static Method getAllRootTaskInfos;
@@ -39,6 +43,8 @@ final class WindowFit {
     private static Object displayManager;
     private static Method getDisplayInfo;
     private static Handler handler;
+    private static final Map<Integer, Long> fitted = new HashMap<>();
+    private static Rect lastDisplay;
 
     private static final Runnable FIT = WindowFit::fitAll;
 
@@ -123,6 +129,10 @@ final class WindowFit {
         try {
             Rect full = displayBounds();
             if (full == null) return;
+            if (!full.equals(lastDisplay)) {
+                fitted.clear();
+                lastDisplay = full;
+            }
             List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
             boolean top = true;
             for (Object root : roots) {
@@ -137,6 +147,10 @@ final class WindowFit {
     private static boolean fit(Object root, Rect full, boolean top) throws Exception {
         if (intField(root, "displayId") != DISPLAY) return false;
         if (!isVisible(root)) return false;
+        // Only tasks that hold activities: not the shell's empty split roots.
+        if (intField(root, "numActivities") == 0) return false;
+        int[] children = (int[]) root.getClass().getField("childTaskIds").get(root);
+        if (children != null && children.length > 1) return false;
         Object windowConfig = windowConfiguration(root);
         int type = (int) windowConfig.getClass().getMethod("getActivityType").invoke(windowConfig);
         if (type != ACTIVITY_TYPE_STANDARD && type != ACTIVITY_TYPE_UNDEFINED) return false;
@@ -145,6 +159,13 @@ final class WindowFit {
 
         Rect bounds = (Rect) root.getClass().getField("bounds").get(root);
         if (mode == WINDOWING_MODE_FREEFORM && full.equals(bounds)) return true;
+        // A task that keeps other bounds must not loop us through task-stack
+        // callbacks: at most one attempt per task every RETRY_MS.
+        int taskId = intField(root, "taskId");
+        long now = SystemClock.uptimeMillis();
+        Long last = fitted.get(taskId);
+        if (last != null && now - last < RETRY_MS) return true;
+        fitted.put(taskId, now);
 
         // A fullscreen task hides every task below it, and Waydroid then
         // destroys their windows, so fullscreen tasks become freeform too.
@@ -158,6 +179,8 @@ final class WindowFit {
         }
         wctSetBounds.invoke(wct, token, full);
         applyTransaction.invoke(windowOrganizer, wct);
+        Log.i(TAG, "task " + taskId + " " + bounds.toShortString() + " -> " + full.toShortString()
+                + (mode != WINDOWING_MODE_FREEFORM ? " (was fullscreen)" : ""));
         return true;
     }
 
