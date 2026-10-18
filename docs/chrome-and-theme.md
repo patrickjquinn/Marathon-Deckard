@@ -189,6 +189,105 @@ Recorder, Settings) are `NoDisplay=true` in their desktop files, so only
 installed apps reach the grid; Jelly's four-point star resembles the banned
 AI-sparkle glyph, another reason to keep the stock browser out of the grid.
 
+## Glass (19 Oct)
+
+**The alpha path works.** Waydroid creates every multi-window toplevel
+with a transparent background (`multi-window.cpp`, `color_transparent`), and
+app windows are `fmt=TRANSLUCENT`: hardware-accelerated windows always get
+an alpha format (`WindowStateAnimator`), and freeform windows also count as
+translucent for their shadows. With the window background set to 50 % red,
+the shell's wallpaper glow showed through the red, so alpha reaches
+Marathon's compositor (`chrome-and-theme/glass-alpha-proof.png`). With it
+clear (`glass-devicedefault.png`), the window looks like a Marathon app's
+page.
+
+**Platform-themed apps get glass.** `DeckardFrameworkRes` makes
+`background_device_default_dark` clear. That colour is
+`Theme.DeviceDefault`'s `colorBackground` and `windowBackground`, and also
+the DeviceDefault dialogs' `colorBackground`. So dialogs now draw
+`dialog_background_material` (overlaid) from `colorBackgroundFloating`.
+That is `primary_device_default_dark`, set to bb10Card `#1a1b1c`, which also
+covers popups and the legacy action bar. Measured: dialog fill `#1a1b1c`,
+the page under it glass.
+
+**AppCompat/Material Components apps set their own backgrounds** (DeskClock,
+Jelly, DocumentsUI, Contacts: `m3_sys_color_dynamic_dark_background` →
+`m3_ref_palette_dynamic_neutral10` → `system_neutral1_900`), and so does
+SettingsLib (Settings). An experiment made `system_neutral1_900` clear
+(`glass-mdc-experiment.png`):
+- Clock and Settings got glass.
+- Jelly's popup menu turned see-through, its items over the page text:
+  Material Components' `colorSurface` is the same colour. Unusable.
+
+So `system_neutral1_900` stays `#040404`. Glass reaches DeviceDefault apps
+only, and MDC/AppCompat/SettingsLib apps keep the opaque floor. Giving them
+glass without breaking menus needs per-app overlays of their own
+`colorBackground`/`windowBackground` (platform-signed or preinstalled, one
+per app), or an MDC-level change. Not done.
+
+**The shell change needed.** Behind a native window `NativeAppWindow.qml`
+draws `KeelAmbienceBackground` only when `keelApp` is true. `keelApp` means
+a `MarathonAppRegistry` entry (Marathon manifests only) or a Keel host pid.
+Otherwise it draws an opaque `MColors.background`, except while the card is
+drawn from textures (`drawnByTexture`), when nothing of the app's is behind
+the surface and the raw home wallpaper shows (what the glass screenshots
+caught). For Android windows to sit on the same dimmed ambience as Marathon
+apps:
+
+```qml
+readonly property bool ambienceBackdrop: keelApp || nativeAppId.startsWith("waydroid.")
+readonly property Item backdropItem: ambienceBackdrop ? ambienceItem : null
+// contentContainer:
+color: nativeAppWindow.ambienceBackdrop || nativeAppWindow.drawnByTexture ? "transparent" : MColors.background
+// KeelAmbienceBackground:
+visible: nativeAppWindow.ambienceBackdrop
+```
+
+## Dialogs (19 Oct)
+
+- **Framework dialogs** (`AlertDialog` under DeviceDefault, used by
+  platform-themed apps and system dialogs drawn in an app's window):
+  - 4 dp corners (`config_dialogCornerRadius`,
+    `config_bottomDialogCornerRadius`; Marathon's `MRadius.md`).
+  - bb10Card `#1a1b1c` fill with a 6 % white hairline (the shell's
+    `borderGlass`).
+  - Text actions in the highlight colour, Source Sans 3.
+  - Screenshot: `chrome-and-theme/dialog-alert.png`.
+  - Material Components apps' `MaterialAlertDialog`s use their own shape and
+    surface, so they keep their look.
+- **Permission prompt** (`GrantPermissionsActivity`):
+  - `DeckardPermissionControllerRes` targets PermissionController's
+    `PermissionControllerStyles` overlayable (policies product, system,
+    vendor; the overlay needs `android:targetName`). A data-installed,
+    platform-signed overlay doesn't apply: PermissionController isn't
+    platform-signed.
+  - It pins the Material 3 layout (`config_useMaterial3PermissionGrantDialog`).
+  - It overlays `PermissionGrantDialogMaterial3` (surface),
+    `PermissionGrantTitleMessage` (left-aligned 20 sp title in the primary
+    colour), `PermissionGrantTitleIconMaterial3` (highlight tint) and
+    `PermissionGrantButtonTop/Middle/Bottom`. The buttons follow Silica's
+    dialog actions: text on the surface, accept in the highlight colour,
+    decline in the primary colour, a highlight ripple, no fill.
+  - Before: Material You rounded card, filled teal pills, centred title
+    (`apps.png`, Contacts). After: `chrome-and-theme/dialog-permission.png`,
+    measured fill `#1a1b1c`.
+  - Marathon's own prompt (`PermissionDialog.qml`) is a full-screen Silica
+    dialog; this is the closest an overlay gets inside Android's dialog
+    frame.
+- **Drawing the prompt in Marathon.** The image's PermissionController APEX
+  is flattened: `/system/apex/com.android.permission/` is a directory, with
+  `priv-app/PermissionController@TQ3A.230901.001/PermissionController.apk`.
+  A whiteout of that directory in Waydroid's overlay plus a replacement
+  PermissionController (or a GrantPermissionsActivity that forwards to
+  Marathon's `Permissions1` prompt) could later let Marathon draw the prompt
+  itself.
+- The chooser/resolver belongs to the slim agent (`config_chooserActivity`
+  → Marathon share sheet).
+- Not verified on screen: a DeviceDefault popup menu. By source it is opaque
+  (`popup_background_material` = `colorBackgroundFloating`, now
+  `#1a1b1c`). Two shell problems got in the way on 19 Oct: the probe's card
+  went black, then showed "couldn't open".
+
 ## What still needs a framework, SystemUI or hwcomposer change
 
 - **Toasts and other system windows** never reach Marathon (no task id), so
@@ -213,14 +312,12 @@ AI-sparkle glyph, another reason to keep the stock browser out of the grid.
   21:08:16 and 21:13:16 (Android clock, IST). The fix is in the hwcomposer
   (hotplug only when the size changes) or in the shell (one configure per
   new toplevel, which helps but can't avoid the first).
-- **Dialog-style system UI** drawn by the framework inside an app's task
-  (permission prompts, the chooser, the app-not-responding dialog) shows in
-  that app's window with Material chrome, themed by the palette. Replacing
-  them with Marathon-drawn prompts is §12/M3 work (portal, PermissionController
-  hooks).
+- **Dialog-style system UI** is restyled (see *Dialogs*) but still drawn by
+  Android inside the app's window; Marathon drawing it needs the
+  PermissionController replacement above and the slim agent's share sheet.
 - **Stock apps** stay installed (hidden from the grid) as test fixtures and
   intent handlers (DocumentsUI for SAF pickers, Jelly for links, Settings for
   per-app settings and FallbackHome); removing them is for the image build.
-- **Glass.** Marathon apps draw over the ambience wallpaper; Android windows
-  are opaque `#040404`. A translucent `colorBackground` would also make
-  surfaces, sheets and menus see-through, so it isn't done.
+- **Glass for Material Components / AppCompat / SettingsLib apps** (see
+  *Glass*): only per-app overlays or an MDC change can clear their window
+  background without clearing their menus.
