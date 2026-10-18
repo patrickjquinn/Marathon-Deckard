@@ -111,7 +111,9 @@ void Notifications::post(const QJsonObject &message) {
     {
         QByteArray  bytes;
         QDataStream stream(&bytes, QIODevice::WriteOnly);
-        stream << p->label << p->title << p->body << p->actions << hints << p->image;
+        QVariantMap shown = hints;
+        shown.remove(QStringLiteral("suppress-sound"));
+        stream << p->label << p->title << p->body << p->actions << shown << p->image;
         digest.addData(bytes);
     }
     Entry entry = m_entries.value(p->key);
