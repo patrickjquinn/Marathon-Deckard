@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.marathonos.deckard.overlay.permissioncontroller"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="33" />
+
+    <!-- PermissionController's PermissionControllerStyles overlayable takes
+         product, system and vendor overlays. -->
+    <overlay
+        android:targetPackage="com.android.permissioncontroller"
+        android:targetName="PermissionControllerStyles"
+        android:isStatic="true"
+        android:priority="900" />
+
+    <application android:hasCode="false" />
+</manifest>

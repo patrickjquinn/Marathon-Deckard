@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Silica's dialog actions: text on the surface, accept in the
+         highlight colour, decline in the primary colour. -->
+    <style name="PermissionGrantButtonTop" parent="@android:style/Widget.DeviceDefault.Button.Borderless.Colored">
+        <item name="android:textSize">20sp</item>
+        <item name="android:textColor">@android:color/system_accent1_200</item>
+        <item name="android:background">@drawable/deckard_grant_button_top</item>
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">56dp</item>
+        <item name="android:layout_marginLeft">16dp</item>
+        <item name="android:layout_marginTop">0dp</item>
+        <item name="android:layout_marginRight">16dp</item>
+        <item name="android:layout_marginBottom">0dp</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:textAllCaps">false</item>
+    </style>
+    <style name="PermissionGrantButtonMiddle" parent="@android:style/Widget.DeviceDefault.Button.Borderless.Colored">
+        <item name="android:textSize">20sp</item>
+        <item name="android:textColor">@android:color/system_accent1_200</item>
+        <item name="android:background">@drawable/deckard_grant_button_middle</item>
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">56dp</item>
+        <item name="android:layout_marginLeft">16dp</item>
+        <item name="android:layout_marginTop">0dp</item>
+        <item name="android:layout_marginRight">16dp</item>
+        <item name="android:layout_marginBottom">0dp</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:textAllCaps">false</item>
+    </style>
+    <style name="PermissionGrantButtonBottom" parent="@android:style/Widget.DeviceDefault.Button.Borderless.Colored">
+        <item name="android:textSize">20sp</item>
+        <item name="android:textColor">@android:color/system_neutral1_100</item>
+        <item name="android:background">@drawable/deckard_grant_button_bottom</item>
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">56dp</item>
+        <item name="android:layout_marginLeft">16dp</item>
+        <item name="android:layout_marginTop">0dp</item>
+        <item name="android:layout_marginRight">16dp</item>
+        <item name="android:layout_marginBottom">0dp</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:textAllCaps">false</item>
+    </style>
+    <style name="PermissionGrantTitleIconMaterial3">
+        <item name="android:layout_width">32dp</item>
+        <item name="android:layout_height">32dp</item>
+        <item name="android:layout_marginBottom">12dp</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="android:tint">@android:color/system_accent1_200</item>
+    </style>
+    <style name="PermissionGrantDialogMaterial3">
+        <item name="android:orientation">vertical</item>
+        <item name="android:background">@drawable/deckard_grant_dialog_background</item>
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+    </style>
+</resources>
