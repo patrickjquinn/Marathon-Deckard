@@ -1,5 +1,6 @@
 #include "audio.h"
 #include "bridge.h"
+#include "doze.h"
 #include "ime.h"
 #include "intents.h"
 #include "mpris.h"
@@ -47,6 +48,7 @@ int main(int argc, char *argv[]) {
     Mpris         mpris(&bridge, cache + QStringLiteral("/art"));
     AudioSync     audio(&bridge);
     AmbiencePalette palette(data + QStringLiteral("/deckard/palette"));
+    DozeSync      doze(data + QStringLiteral("/deckard/doze"));
 
     QObject::connect(&bridge, &Bridge::received, &app,
                      [&](const QString &type, const QJsonObject &message) {

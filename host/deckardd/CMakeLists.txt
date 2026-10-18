@@ -11,6 +11,7 @@ include(GNUInstallDirs)
 add_library(deckardcore STATIC
     src/audio.cpp
     src/bridge.cpp
+    src/doze.cpp
     src/images.cpp
     src/ime.cpp
     src/intents.cpp

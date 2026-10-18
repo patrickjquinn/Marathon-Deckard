@@ -1,0 +1,18 @@
+# Host state deckardd writes into /data/deckard: the palette for Marathon's
+# ambience (applied as a fabricated overlay) and Marathon's Doze (Android's
+# deep idle).
+service deckard-watch /system/bin/inotifyd /system/bin/deckard-watch /data/deckard:wy
+    class main
+    user system
+    group system
+    disabled
+
+on post-fs-data
+    mkdir /data/deckard 0755 system system
+    # Android's cached-app freezer, now that the container's cgroups are writable.
+    setprop persist.device_config.activity_manager_native_boot.use_freezer true
+
+on property:sys.boot_completed=1
+    exec_background - system system -- /system/bin/deckard-watch m /data/deckard palette
+    exec_background - system system -- /system/bin/deckard-watch m /data/deckard doze
+    start deckard-watch

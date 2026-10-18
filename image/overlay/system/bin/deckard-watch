@@ -1,0 +1,16 @@
+#!/system/bin/sh
+# Run by inotifyd as: deckard-watch EVENTS DIR FILE, for files deckardd
+# writes into /data/deckard.
+case "$3" in
+palette)
+	export CLASSPATH=/system/framework/deckard-palette.jar
+	exec /system/bin/app_process /system/bin org.marathonos.deckard.palette.Main /data/deckard/palette
+	;;
+doze)
+	if [ "$(cat /data/deckard/doze)" = 1 ]; then
+		exec /system/bin/cmd deviceidle force-idle deep
+	else
+		exec /system/bin/cmd deviceidle unforce
+	fi
+	;;
+esac
