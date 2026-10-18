@@ -170,40 +170,92 @@ stays the boot default.
 
 ## Back
 
-The pill's back gesture can stay a Wayland key: no bridge transport is
-needed.
+The pill's back gesture is a Wayland key, and that works: no bridge
+transport is needed.
 
-- **Path.** For a window without `marathon_surface_v1` (stock Waydroid's
-  hwcomposer doesn't speak it), `WaylandCompositor::sendNativeBack` ends in
-  `sendKeyTo(Qt::Key_Back)`. Qt Wayland turns `Qt::Key_Back` into the XKB
-  keycode of `XF86Back` (`keyToScanCode`) minus 8, which is evdev
-  `KEY_BACK` (158). Waydroid's hwcomposer (`wayland-hwc.cpp`,
-  `keyboard_handle_key`) writes every key except `KEY_POWER` unchanged into
-  `/dev/input/wl_keyboard_events`. Android reads that pipe as a keyboard with
-  `Generic.kl`, where `key 158 BACK` is `AKEYCODE_BACK`.
-- **Measured.** Writing `EV_KEY 158` down and up into that pipe, exactly as
-  the hwcomposer does, finished deskclock's SettingsActivity
-  (topResumedActivity went from `SettingsActivity t29` to the home task).
-  The same write with no focused window in Android did nothing:
-  `dumpsys input` showed `FocusedWindows:` empty.
-- **The condition.** Android delivers the key to its focused window, and in
-  multi-window mode Android's focus follows `wl_keyboard.enter`: the
-  hwcomposer calls `IWaydroidTask::setFocusedTask(taskId)` for the entered
-  surface (the call that deadlocks when it races a configure). The shell
-  already gives an Android window keyboard focus once it is on screen and its
-  configure has settled (`WaylandShellSurfaceItem.takeFocusForKeyboard`), so
-  by the time of a back the right task is focused.
-- **On the device (shell 4692c6f8, 22:55).** Inconclusive. Notify Test's card
-  opened as a black surface, the pill back took the shell Home through the
-  unhandled-back watch (no visible change within 350 ms), and Android's
-  focused task was Jelly, which Navigation1.LaunchApp had started though it
-  returned false. So the window-showing and focus problems come first;
-  back's own path is shown above.
-- **If it's ever needed:** a bridge `Back(appId)` would still depend on
-  Android's focus. A non-platform app can't inject keys (`INJECT_EVENTS` is
-  signature-only), and an AccessibilityService's GLOBAL_ACTION_BACK also goes
-  to the focused window. It would need `moveTaskToFront` first, which makes
-  the hwcomposer reshuffle windows. The Wayland key is the better route.
+- **Path.** For a window without `marathon_surface_v1`,
+  `WaylandCompositor::sendNativeBack` ends in `sendKeyTo(Qt::Key_Back)`.
+  Qt Wayland turns `Qt::Key_Back` into `XF86Back`'s keycode minus 8, which is
+  evdev `KEY_BACK` (158). Waydroid's hwcomposer writes it unchanged into
+  `/dev/input/wl_keyboard_events`. Android reads that pipe with `Generic.kl`,
+  where `key 158 BACK` gives `AKEYCODE_BACK`. Android delivers it to its
+  focused window, and Android's focus follows `wl_keyboard.enter` on the
+  task's surface (`setFocusedTask`). The shell gives an Android window
+  keyboard focus once it's in front and its configure is acked (998bff84),
+  and sends back to the front Android window (5ce3cf76).
+- **On the device (shell at 6f89be4b+, 2026-10-19 00:13):**
+
+  | App | Gesture | Result |
+  |---|---|---|
+  | Clock | back with the overflow menu open | menu closed, Clock stayed |
+  | Clock | back from Settings (SettingsActivity) | back to DeskClock (topResumedActivity) |
+  | Notify Test | back on its root activity | the activity logged `KEYCODE_BACK down` / `up`; Android moved the task back (Android 12+ root back) and Marathon showed Home |
+  | Settings | back from Connected devices (SubSettings) | back to Settings |
+
+  On r479 (18 Oct), before the shell's focus and black-card fixes, the
+  same gesture went nowhere. Either Android had no focused window
+  (`dumpsys input` showed `FocusedWindows:` empty), or the window was black
+  and the shell's unhandled-back watch went Home.
+- **Not needed:** a bridge `Back(appId)`. An app can't inject keys
+  (`INJECT_EVENTS` is signature-only), and an accessibility
+  `GLOBAL_ACTION_BACK` also goes to Android's focused window.
+- **Still needs the spec's forked hwcomposer:** back with progress
+  (`marathon_surface_v1` back events).
+
+## Toasts
+
+Waydroid's multi-window mode drops every layer without a task except the IME
+(`hwcomposer/modes/multi-window.cpp`), so toasts never reached the screen.
+`ToastPresenter` announces each toast to accessibility, so DeckardBridge has
+an accessibility service, `ToastWatcher`, subscribed only to
+`TYPE_NOTIFICATION_STATE_CHANGED` and filtered on class
+`android.widget.Toast`. Apps only build accessibility events of the types an
+enabled service asks for, so this is the only event type they generate.
+`deckard-toasts` appends the service to `enabled_accessibility_services` at
+boot, keeping any others.
+
+deckardd posts the toast with summary = the text, `app_name` = the app label,
+the app's icon, `urgency` 0, `transient`, `suppress-sound`,
+`x-marathon-toast` and a 3.5 s timeout, and closes it after 4 s; at most one
+per app per 500 ms. The shell (6f89be4b+) draws `x-marathon-toast` as a
+Marathon app toast and keeps transient notifications out of the Hub.
+
+- **On the device:** `Toast.makeText(..., "Saved to Downloads")` from Notify
+  Test showed as a Marathon toast with the app's icon at the bottom of the
+  screen, with no Hub row and no badge. 10 ms from `Toast.show()` to the Hub's
+  `Notify` call.
+
+## Android's freezer and Doze
+
+- **Android's cached-app freezer can't run in this container.**
+  `CachedAppOptimizer` takes `use_freezer` from DeviceConfig (the persist
+  property does nothing). Even after `device_config put
+  activity_manager_native_boot use_freezer true` and a restart it logs
+  `unable to read freezer info` / `Freezer disabled`. `isFreezerSupported()`
+  calls `BINDER_GET_FROZEN_INFO` with system_server's pid, and the binder
+  driver matches pids in the host pid namespace, while the LXC container has
+  its own (`pid:[4026532784]` against the host's `pid:[4026531836]`).
+  `BINDER_FREEZE` looks processes up the same way. The kernel has the
+  feature (binderfs `features/freeze_notification` is 1, and
+  `binder_add_freeze_work` exists); the namespace is the obstacle. Android's
+  init must be pid 1, so the container can't share the host's pid namespace.
+  The fix would be a binder driver that translates pids from the caller's
+  namespace (kernel work). Freezing app cgroups from the host without binder
+  freeze would hang their binder peers. The DeviceConfig value is left true;
+  it has no effect.
+- **Doze → deviceidle.** deckardd writes `/data/deckard/doze` (1 or 0) when
+  the shell's `Power1.StateChanged` carries `dozing`. The shell doesn't
+  publish Doze yet (queued with the shell agent). `deckard-watch` then runs
+  `cmd deviceidle force-idle deep` or `unforce` as system. Checked by
+  writing the file by hand: `mForceIdle=true`, `mState=IDLE` (light state
+  OVERRIDE), then back to `ACTIVE`.
+- **Idle cost** (60 s windows, container cgroup `cpu.stat` and per-task
+  context switches, no Android app in front, Android awake, with the shell no
+  longer freezing the container): **0.07 % of one core, 64 context
+  switches/s**, 91 processes. The same with deviceidle forced to deep idle:
+  0.07 %, 64/s. A 60 s window shows no difference, because deep idle holds
+  back alarms, jobs and network over longer periods. For comparison, M0
+  measured 0.11–0.30 % and 68–81 context switches/s.
 
 ## Install
 
