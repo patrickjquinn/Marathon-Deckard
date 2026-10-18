@@ -1,0 +1,19 @@
+#!/bin/sh
+# Gives Android Marathon's UI face: copies the host's Source Sans 3 into
+# Waydroid's overlay with a fonts.xml that makes it Android's sans-serif.
+# Without the fonts, Android keeps its own fonts.xml (an empty default family
+# would stop Android from booting).
+set -eu
+fonts=/usr/share/fonts/source-sans-3
+xml=/usr/share/deckard/fonts/fonts.xml
+dst=/var/lib/waydroid/overlay/system
+
+rm -f "$dst"/etc/fonts.xml "$dst"/fonts/SourceSans3-*.ttf
+for f in ExtraLight Light LightIt Regular It Semibold Bold; do
+	[ -f "$fonts/SourceSans3-$f.ttf" ] || exit 0
+done
+[ -f "$xml" ] || exit 0
+mkdir -p "$dst/etc" "$dst/fonts"
+cp "$fonts"/SourceSans3-*.ttf "$dst/fonts/"
+cp "$xml" "$dst/etc/fonts.xml"
+chmod 644 "$dst"/fonts/SourceSans3-*.ttf "$dst/etc/fonts.xml"
