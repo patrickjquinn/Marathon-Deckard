@@ -1,6 +1,6 @@
 # Android's system colours follow Marathon's ambience: deckardd writes
 # /data/deckard/palette and this applies it as a fabricated overlay.
-service deckard-palette /system/bin/inotifyd /system/bin/deckard-palette /data/deckard:mw
+service deckard-palette /system/bin/inotifyd /system/bin/deckard-palette /data/deckard:wy
     class main
     user system
     group system
