@@ -6,6 +6,7 @@
 
     <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application android:label="Notify Test">
         <activity android:name=".TestActivity" android:exported="true" android:label="Notify Test">

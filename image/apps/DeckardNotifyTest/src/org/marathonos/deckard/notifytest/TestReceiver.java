@@ -4,12 +4,14 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.DownloadManager;
 import android.app.Person;
 import android.app.RemoteInput;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.Icon;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -17,7 +19,7 @@ import android.util.Log;
 
 /**
  * Posts test notifications on a silent channel ("am broadcast -a
- * org.marathonos.deckard.notifytest.POST --es kind chat|progress|plain|media|media_stop|cancel") and
+ * org.marathonos.deckard.notifytest.POST --es kind chat|progress|plain|toast|download|media|media_stop|cancel") and
  * logs what comes back: taps, actions and inline replies.
  */
 public class TestReceiver extends BroadcastReceiver {
@@ -46,6 +48,18 @@ public class TestReceiver extends BroadcastReceiver {
             nm.notify(1, chat(context, null));
         } else if ("progress".equals(kind)) {
             progress(context, nm, 0);
+        } else if ("toast".equals(kind)) {
+            android.widget.Toast.makeText(context, intent.hasExtra("text")
+                    ? intent.getStringExtra("text") : "Saved to Downloads",
+                    android.widget.Toast.LENGTH_SHORT).show();
+        } else if ("download".equals(kind)) {
+            DownloadManager dm = context.getSystemService(DownloadManager.class);
+            long id = dm.enqueue(new DownloadManager.Request(Uri.parse(intent.getStringExtra("url")))
+                    .setTitle("Deckard download test")
+                    .setNotificationVisibility(
+                            DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setDestinationInExternalFilesDir(context, null, "download-test.bin"));
+            Log.i(TAG, "download " + id);
         } else if ("media".equals(kind)) {
             TestMedia.start(context);
         } else if ("media_stop".equals(kind)) {
