@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.marathonos.deckard.system"
+    android:sharedUserId="android.uid.system"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="33" />
+
+    <!-- Signed with the platform key: the image's test-keys build accepts it
+         as android.uid.system. It stands in for the stock browser, dialer,
+         mail, maps, camera, file pickers and settings pages, handing each to
+         the Marathon app (protocol/bridge.md, system channel). -->
+    <application
+        android:label="Marathon"
+        android:persistent="true"
+        android:allowBackup="false"
+        android:hasCode="true"
+        android:name=".SystemApp">
+
+        <activity
+            android:name=".Forward"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.DIAL" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tel" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+                <data android:scheme="mailto" />
+                <data android:scheme="geo" />
+            </intent-filter>
+            <intent-filter android:priority="2">
+                <action android:name="android.settings.SETTINGS" />
+                <action android:name="android.settings.WIFI_SETTINGS" />
+                <action android:name="android.settings.WIRELESS_SETTINGS" />
+                <action android:name="android.settings.panel.action.INTERNET_CONNECTIVITY" />
+                <action android:name="android.settings.panel.action.WIFI" />
+                <action android:name="android.settings.BLUETOOTH_SETTINGS" />
+                <action android:name="android.settings.SOUND_SETTINGS" />
+                <action android:name="android.settings.panel.action.VOLUME" />
+                <action android:name="android.settings.DISPLAY_SETTINGS" />
+                <action android:name="android.settings.DATE_SETTINGS" />
+                <action android:name="android.settings.INTERNAL_STORAGE_SETTINGS" />
+                <action android:name="android.settings.MEMORY_CARD_SETTINGS" />
+                <action android:name="android.settings.BATTERY_SAVER_SETTINGS" />
+                <action android:name="android.intent.action.POWER_USAGE_SUMMARY" />
+                <action android:name="android.settings.SECURITY_SETTINGS" />
+                <action android:name="android.settings.INPUT_METHOD_SETTINGS" />
+                <action android:name="android.settings.SYNC_SETTINGS" />
+                <action android:name="android.settings.ADD_ACCOUNT_SETTINGS" />
+                <action android:name="android.settings.DEVICE_INFO_SETTINGS" />
+                <action android:name="android.settings.LOCATION_SOURCE_SETTINGS" />
+                <action android:name="android.settings.NOTIFICATION_SETTINGS" />
+                <action android:name="android.settings.ZEN_MODE_SETTINGS" />
+                <action android:name="android.settings.MANAGE_APPLICATIONS_SETTINGS" />
+                <action android:name="android.settings.MANAGE_ALL_APPLICATIONS_SETTINGS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter android:priority="2">
+                <action android:name="android.settings.APPLICATION_DETAILS_SETTINGS" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="package" />
+            </intent-filter>
+            <intent-filter android:priority="2">
+                <action android:name="android.settings.APP_NOTIFICATION_SETTINGS" />
+                <action android:name="android.settings.CHANNEL_NOTIFICATION_SETTINGS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".Pick"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|density|uiMode"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter android:priority="200">
+                <action android:name="android.intent.action.OPEN_DOCUMENT" />
+                <action android:name="android.intent.action.CREATE_DOCUMENT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.OPENABLE" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:priority="200">
+                <action android:name="android.intent.action.GET_CONTENT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.OPENABLE" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:priority="200">
+                <action android:name="android.intent.action.GET_CONTENT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter android:priority="200">
+                <action android:name="android.intent.action.PICK" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter android:priority="200">
+                <action android:name="android.media.action.IMAGE_CAPTURE" />
+                <action android:name="android.media.action.VIDEO_CAPTURE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name=".Files"
+            android:authorities="org.marathonos.deckard.system.files"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+</manifest>
