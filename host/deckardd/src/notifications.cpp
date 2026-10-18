@@ -79,6 +79,8 @@ void Notifications::handle(const QString &type, const QJsonObject &message) {
         sync(message);
     else if (type == QLatin1String("icon"))
         icon(message);
+    else if (type == QLatin1String("toast"))
+        toast(message);
 }
 
 void Notifications::post(const QJsonObject &message) {
@@ -188,6 +190,39 @@ void Notifications::icon(const QJsonObject &message) {
         return;
     }
     Images::save(image, m_iconDir + QLatin1Char('/') + pkg + QStringLiteral(".png"));
+}
+
+// A toast is a short-lived, silent Hub banner that closes itself; the shell
+// has no D-Bus toast of its own (x-marathon-toast marks it for one).
+void Notifications::toast(const QJsonObject &message) {
+    const QString pkg  = message.value(QStringLiteral("pkg")).toString();
+    const QString text = Validate::text(message, QStringLiteral("text"), 512).trimmed();
+    if (!Validate::isPackageName(pkg) || text.isEmpty())
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - m_lastToast.value(pkg) < 500)
+        return;
+    m_lastToast.insert(pkg, now);
+    QString label = Validate::text(message, QStringLiteral("label"), 128);
+    if (label.trimmed().isEmpty())
+        label = pkg;
+    const QString iconPath = m_iconDir + QLatin1Char('/') + pkg + QStringLiteral(".png");
+    const QVariantMap hints{
+        {QStringLiteral("desktop-entry"), QString(QStringLiteral("waydroid.") + pkg)},
+        {QStringLiteral("urgency"), QVariant::fromValue(uchar(0))},
+        {QStringLiteral("transient"), true},
+        {QStringLiteral("suppress-sound"), true},
+        {QStringLiteral("x-marathon-toast"), true}};
+    QDBusMessage call = QDBusMessage::createMethodCall(kService, kPath, kInterface,
+                                                       QStringLiteral("Notify"));
+    call << label << 0u
+         << (QFileInfo::exists(iconPath) ? QStringLiteral("file://") + iconPath : QString())
+         << text << QString() << QStringList() << hints << 3500;
+    const QDBusMessage reply = QDBusConnection::sessionBus().call(call, QDBus::Block, 5000);
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty())
+        return;
+    const uint id = reply.arguments().constFirst().toUInt();
+    QTimer::singleShot(4000, this, [this, id] { close(id); });
 }
 
 void Notifications::close(uint id) {

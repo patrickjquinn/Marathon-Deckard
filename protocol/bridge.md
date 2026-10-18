@@ -67,6 +67,7 @@ The body is HTML-escaped because the Hub advertises `body-markup`.
 | `sync` | `keys` | After the initial `post`s on every connection: the keys of all active notifications. deckardd closes any notification it tracks that isn't listed. |
 | `media` | see below | A media session appeared or changed. |
 | `media_gone` | `sid` | A media session ended. |
+| `toast` | `pkg`, `label`, `text` | An app showed a toast (from the bridge's accessibility service: `TYPE_NOTIFICATION_STATE_CHANGED` with class `android.widget.Toast`). deckardd posts a silent banner (`urgency` 0, `transient`, `suppress-sound`, `x-marathon-toast`, `expire_timeout` 3500, summary = the text, `app_name` = the label) and closes it after 4 s. At most one per package per 500 ms; text up to 512 characters. |
 
 `post`:
 
@@ -159,6 +160,21 @@ each on its own bus connection, with `Identity` = label, `DesktopEntry` =
 last report), the `Can*` properties, `Seeked`, and Play, Pause, PlayPause,
 Stop, Next, Previous, Seek and SetPosition. Players go away when the bridge
 disconnects and come back when it reconnects.
+
+## Ambience palette
+
+Not a socket message. deckardd writes `/data/deckard/palette`
+(`~/.local/share/waydroid/data/deckard/palette`), one `system_<palette>_<shade>
+#aarrggbb` line for each of Android's 65 system colours. It writes the file
+whenever Marathon's ambience highlight changes (`Ambience1.AmbienceChanged`,
+`GetAmbience`), with the same generator as DeckardPalette's gen-palette.py
+(`palette.cpp`, checked against it in `tests/test_palette.cpp`). Android's
+`deckard-palette` service (`inotifyd` on `/data/deckard`, user system) runs
+`deckard-palette.jar` under `app_process`. That registers one fabricated
+overlay `android:deckard_ambience` on `android` with those colours and enables
+it, in a single overlay-manager transaction (enabling also makes it the
+highest priority, above DeckardPalette). Lines that don't match
+`system_(accent[123]|neutral[12])_N #AARRGGBB` are ignored.
 
 ## IME channel
 

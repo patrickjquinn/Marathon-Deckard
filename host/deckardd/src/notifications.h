@@ -44,6 +44,7 @@ class Notifications : public QObject {
     void remove(const QString &key);
     void sync(const QJsonObject &message);
     void icon(const QJsonObject &message);
+    void toast(const QJsonObject &message);
     void close(uint id);
     void load();
     void save() const;
@@ -54,4 +55,5 @@ class Notifications : public QObject {
     QHash<QString, Entry> m_entries;
     QHash<uint, QString>  m_keys;
     QHash<uint, Closing>  m_closing;
+    QHash<QString, qint64> m_lastToast;
 };

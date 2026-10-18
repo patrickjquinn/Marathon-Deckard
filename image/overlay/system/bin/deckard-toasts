@@ -1,0 +1,10 @@
+#!/system/bin/sh
+# Adds DeckardBridge's toast watcher to the enabled accessibility services.
+c=org.marathonos.deckard.bridge/org.marathonos.deckard.bridge.ToastWatcher
+v=$(settings get secure enabled_accessibility_services)
+case "$v" in
+*"$c"*) ;;
+null|"") settings put secure enabled_accessibility_services "$c" ;;
+*) settings put secure enabled_accessibility_services "$v:$c" ;;
+esac
+settings put secure accessibility_enabled 1

@@ -44,12 +44,14 @@ public class BridgeService extends NotificationListenerService implements Link.L
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final Map<String, StatusBarNotification> mForwarded = new HashMap<>();
     private final Set<String> mIconsSent = new HashSet<>();
+    private static BridgeService sInstance;
     private Link mLink;
     private Media mMedia;
 
     @Override
     public void onListenerConnected() {
         Log.i(Link.TAG, "listener connected");
+        sInstance = this;
         mLink = new Link(mMain, this);
         mMedia = new Media(this, mMain, mLink, new ComponentName(this, BridgeService.class));
     }
@@ -57,6 +59,7 @@ public class BridgeService extends NotificationListenerService implements Link.L
     @Override
     public void onListenerDisconnected() {
         Log.i(Link.TAG, "listener disconnected");
+        sInstance = null;
         mMedia.stop();
         mLink.stop();
         mForwarded.clear();
@@ -98,6 +101,28 @@ public class BridgeService extends NotificationListenerService implements Link.L
             sendRemove(sbn.getKey());
     }
 
+    /** From ToastWatcher, on the main thread like the listener callbacks. */
+    static void toast(String pkg, String text) {
+        BridgeService self = sInstance;
+        if (self == null || self.mLink == null)
+            return;
+        try {
+            self.sendIcon(pkg);
+            self.mLink.send(new JSONObject().put("t", "toast").put("pkg", pkg)
+                    .put("label", self.label(pkg)).put("text", text));
+        } catch (JSONException e) {
+            Log.w(Link.TAG, e.getMessage());
+        }
+    }
+
+    private void sendIcon(String pkg) throws JSONException {
+        if (!mIconsSent.add(pkg))
+            return;
+        String icon = appIcon(pkg);
+        if (icon != null)
+            mLink.send(new JSONObject().put("t", "icon").put("pkg", pkg).put("png", icon));
+    }
+
     private void sendRemove(String key) {
         try {
             mLink.send(new JSONObject().put("t", "remove").put("key", key));
@@ -134,12 +159,7 @@ public class BridgeService extends NotificationListenerService implements Link.L
             return;
         }
         try {
-            String pkg = sbn.getPackageName();
-            if (mIconsSent.add(pkg)) {
-                String icon = appIcon(pkg);
-                if (icon != null)
-                    mLink.send(new JSONObject().put("t", "icon").put("pkg", pkg).put("png", icon));
-            }
+            sendIcon(sbn.getPackageName());
             Ranking ranking = new Ranking();
             int importance = rankingMap != null && rankingMap.getRanking(key, ranking)
                     ? ranking.getImportance() : NotificationManager.IMPORTANCE_DEFAULT;

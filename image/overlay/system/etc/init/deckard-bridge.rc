@@ -1,7 +1,8 @@
 # DeckardBridge mirrors notifications and media sessions to Marathon, which
 # draws and sounds them; Android shows no heads-up banners and makes no
 # touch sounds or haptics of its own. Without a notification assistant,
-# Android posts at once instead of 200 ms later.
+# Android posts at once instead of 200 ms later. Toasts reach Marathon through
+# an accessibility service.
 on property:sys.boot_completed=1
     exec_background - root root -- /system/bin/cmd notification allow_listener org.marathonos.deckard.bridge/org.marathonos.deckard.bridge.BridgeService
     exec_background - root root -- /system/bin/cmd notification allow_dnd org.marathonos.deckard.bridge
@@ -9,3 +10,4 @@ on property:sys.boot_completed=1
     exec_background - root root -- /system/bin/settings put system sound_effects_enabled 0
     exec_background - root root -- /system/bin/settings put system haptic_feedback_enabled 0
     exec_background - root root -- /system/bin/cmd notification disallow_assistant android.ext.services/android.ext.services.notification.Assistant
+    exec_background - root root -- /system/bin/deckard-toasts
