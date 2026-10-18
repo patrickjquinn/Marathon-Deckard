@@ -2,10 +2,10 @@
 # Waydroid writes them to waydroid_base.prop, which init reads as
 # /vendor/waydroid.prop after the image's build.prop, so they override it.
 
-# S2: one 64-bit zygote (init.zygote64.rc from the overlay). ro.product.cpu.abilist
-# set explicitly stops init deriving the lists, so all three are given; no
-# 32-bit ABI means 32-bit-only apps fail to install instead of failing to start.
-ro.zygote = zygote64
+# S2: one 64-bit zygote (zygote_secondary is disabled in the overlay's
+# init.zygote64_32.rc). ro.product.cpu.abilist set explicitly stops init
+# deriving the lists, so all three are given; with no 32-bit ABI, 32-bit-only
+# apps fail to install instead of failing to start. Harmless on their own.
 ro.product.cpu.abilist = arm64-v8a
 ro.product.cpu.abilist64 = arm64-v8a
 ro.product.cpu.abilist32 =
