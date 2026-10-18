@@ -169,7 +169,7 @@ Not a socket message. deckardd writes `/data/deckard/palette`
 whenever Marathon's ambience highlight changes (`Ambience1.AmbienceChanged`,
 `GetAmbience`), with the same generator as DeckardPalette's gen-palette.py
 (`palette.cpp`, checked against it in `tests/test_palette.cpp`). Android's
-`deckard-palette` service (`inotifyd` on `/data/deckard`, user system) runs
+`deckard-watch` service (`inotifyd` on `/data/deckard`, user system) runs
 `deckard-palette.jar` under `app_process`. That registers one fabricated
 overlay `android:deckard_ambience` on `android` with those colours and enables
 it, in a single overlay-manager transaction (enabling also makes it the
