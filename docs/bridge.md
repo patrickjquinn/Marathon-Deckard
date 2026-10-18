@@ -130,7 +130,40 @@ a chime through a Bluetooth speaker while Marathon was silent. Now:
 
 ## Back
 
-TODO
+The pill's back gesture can stay a Wayland key: no bridge transport is
+needed.
+
+- **Path.** For a window without `marathon_surface_v1` (stock Waydroid's
+  hwcomposer doesn't speak it), `WaylandCompositor::sendNativeBack` ends in
+  `sendKeyTo(Qt::Key_Back)`. Qt Wayland turns `Qt::Key_Back` into the XKB
+  keycode of `XF86Back` (`keyToScanCode`) minus 8, which is evdev
+  `KEY_BACK` (158). Waydroid's hwcomposer (`wayland-hwc.cpp`,
+  `keyboard_handle_key`) writes every key except `KEY_POWER` unchanged into
+  `/dev/input/wl_keyboard_events`. Android reads that pipe as a keyboard with
+  `Generic.kl`, where `key 158 BACK` is `AKEYCODE_BACK`.
+- **Measured.** Writing `EV_KEY 158` down and up into that pipe, exactly as
+  the hwcomposer does, finished deskclock's SettingsActivity
+  (topResumedActivity went from `SettingsActivity t29` to the home task).
+  The same write with no focused window in Android did nothing:
+  `dumpsys input` showed `FocusedWindows:` empty.
+- **The condition.** Android delivers the key to its focused window, and in
+  multi-window mode Android's focus follows `wl_keyboard.enter`: the
+  hwcomposer calls `IWaydroidTask::setFocusedTask(taskId)` for the entered
+  surface (the call that deadlocks when it races a configure). The shell
+  already gives an Android window keyboard focus once it is on screen and its
+  configure has settled (`WaylandShellSurfaceItem.takeFocusForKeyboard`), so
+  by the time of a back the right task is focused.
+- **On the device (shell 4692c6f8, 22:55).** Inconclusive. Notify Test's card
+  opened as a black surface, the pill back took the shell Home through the
+  unhandled-back watch (no visible change within 350 ms), and Android's
+  focused task was Jelly, which Navigation1.LaunchApp had started though it
+  returned false. So the window-showing and focus problems come first;
+  back's own path is shown above.
+- **If it's ever needed:** a bridge `Back(appId)` would still depend on
+  Android's focus. A non-platform app can't inject keys (`INJECT_EVENTS` is
+  signature-only), and an AccessibilityService's GLOBAL_ACTION_BACK also goes
+  to the focused window. It would need `moveTaskToFront` first, which makes
+  the hwcomposer reshuffle windows. The Wayland key is the better route.
 
 ## Install
 
@@ -158,3 +191,11 @@ through `~/.config/systemd/user/marathon-waydroid.service.d/deckard-test.conf`.
 - **Headless SystemUI notification plumbing:** not needed. A privileged
   listener sees everything SystemUI would.
 - **Per-app identity for portals (§6):** not touched.
+- **Back with progress (§8):** needs the forked hwcomposer to speak
+  `marathon_surface_v1`; stock Waydroid only gets the key on release.
+
+## Cleanup
+
+The 19 rows that Waydroid's own forwarder had left in the Hub ("Configure
+physical keyboard" and others) were closed with `CloseNotification`. Rows
+deckard posted were left alone; it had none open.
