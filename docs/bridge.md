@@ -128,6 +128,46 @@ a chime through a Bluetooth speaker while Marathon was silent. Now:
   `input.loopback.sink.role.multimedia`. No `PULSE_PROP` override is needed.
   Not observed live: no Android audio was played.
 
+## Palette follows the ambience
+
+Android's 65 `system_accent*`/`system_neutral*` colours track Marathon's
+ambience highlight at runtime. DeckardPalette (the chrome agent's static RRO)
+stays the boot default.
+
+- **deckardd** reads `/desktop/jolla/theme/color/highlight` from
+  `Ambience1.GetAmbience`, again on `AmbienceChanged` and on a shell restart. It
+  generates the colours with `palette.cpp`, a port of gen-palette.py: all 65
+  are identical to DeckardPalette for #7df0d4 (`test_palette`, which also
+  drives a fake Ambience1 on a private dbus-daemon). It writes them to
+  `/data/deckard/palette` when they change.
+- **Android:** `deckard-watch` (inotifyd on `/data/deckard`, user system) runs
+  `deckard-palette.jar` under `app_process`. One overlay-manager transaction
+  registers `android:deckard_ambience`, a fabricated overlay holding all 65
+  colours, and enables it, which also makes it the highest priority (above
+  DeckardPalette at 3; it shows as 2147483647). This is allowed because AOSP 13
+  only blocks shell from fabricating, SELinux (disabled here) is what blocks
+  apps, and the system uid is an allowed actor. `cmd overlay fabricate` would
+  need 65 overlays and 65 configuration changes; this is one.
+- **On the device:**
+  - Writing a palette for #ff8a3d turned Clock's FAB, selected tab, dialog
+    buttons and icons orange.
+  - Changing the wallpaper from Meridian to Indigo Dusk gave highlight
+    #84e8da. deckardd rewrote the palette and Android resolved
+    `system_accent1_100` to #ff84e8da.
+  - Contour brought #7df0d4 back through the watcher, live, without a restart
+    (the app_process run started 4 s after the tap). Meridian is restored.
+  - Every built-in wallpaper derives a teal highlight, so on stock ambiences
+    the change is subtle.
+- **Found on the way:** toybox inotifyd reports a file renamed into a watched
+  directory as `y`, not `m` (deckardd's atomic write is temp file plus rename).
+  Also, a configuration change from an overlay relaunches activities; Waydroid
+  then recreates the task's window, and Clock's card closed once (shell r479).
+- **Open:**
+  - Light ambiences (`darkonlight`): the pinned roles and the chrome agent's
+    `cmd uimode night yes` assume dark.
+  - Apps already running pick up the new colours through the configuration
+    change; apps with their own palettes don't change.
+
 ## Back
 
 The pill's back gesture can stay a Wayland key: no bridge transport is
