@@ -79,6 +79,11 @@ public final class DeckardIme extends InputMethodService implements Bridge.Liste
 
     @Override
     public boolean onShowInputRequested(int flags, boolean configChange) {
+        if (!editing && getCurrentInputEditorInfo() != null && getCurrentInputConnection() != null) {
+            editing = true;
+            sendStart(getCurrentInputEditorInfo());
+            sendState();
+        }
         if (editing)
             bridge.send(message("show"));
         return true;
@@ -94,10 +99,14 @@ public final class DeckardIme extends InputMethodService implements Bridge.Liste
     @Override
     public void onStartInput(EditorInfo attribute, boolean restarting) {
         super.onStartInput(attribute, restarting);
-        editing = true;
         selStart = attribute.initialSelStart;
         selEnd = attribute.initialSelEnd;
         contentType = ContentType.of(attribute.inputType);
+        // A raw-key connection is also Android's stand-in for windows with no
+        // editor: it only counts once something asks for the keyboard.
+        editing = attribute.inputType != InputType.TYPE_NULL;
+        if (!editing)
+            return;
         sendStart(attribute);
         sendState();
     }
