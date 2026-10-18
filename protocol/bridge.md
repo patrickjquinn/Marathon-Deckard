@@ -221,3 +221,66 @@ that window from the reported editor, and does not shrink the windows of
 apps under the registered prefix when the keyboard is up (resizing a Waydroid
 toplevel hot-plugs Android's display). Hardware keys reach Android over
 `wl_keyboard` as before.
+
+## System channel
+
+Intents that Marathon apps answer, for an Android trimmed to a runtime
+([../docs/slim.md](../docs/slim.md)). DeckardSystem (`image/apps/DeckardSystem`,
+package `org.marathonos.deckard.system`, `/system/priv-app`) is signed with
+AOSP's platform test key and runs as `android.uid.system`. Its activities
+take links, `tel:`/`sms:`/`mailto:`/`geo:` URIs, settings pages, the file
+pickers and the camera intents. deckardd's `SystemIntents`
+(`host/deckardd/src/intents.cpp`) hands each one to a Marathon app.
+
+Transport: the same framing, limits and `SO_PEERCRED` check, on
+`/data/deckard/system.sock`, accepting the uid `packages.list` gives
+`org.marathonos.deckard.system`. That uid is 1000, Android's `system`, which
+is also the host user's uid (the container has no user namespace). So the
+check admits Android's own system processes and this user's host processes,
+nothing that runs as an Android app uid.
+
+Files cross through `/data/deckard/xfer/<id>/<name>`
+(`~/.local/share/waydroid/data/deckard/xfer/…`), owned by uid 1000 on both
+sides. DeckardSystem serves them to the asking app through its
+DocumentsProvider `org.marathonos.deckard.system.files` (document id
+`<id>/<name>`) with a URI grant. deckardd removes transfers older than 30
+days at start.
+
+### Android to host
+
+| `t` | Fields | Meaning |
+|---|---|---|
+| `hello` | `v` | Sent first after connecting. |
+| `open` | `kind`, then per kind | Show something in a Marathon app. `url`: `uri` (http or https). `tel`: `uri`. `sms`: `uri`, `body`. `mailto`: `uri`, `to`, `cc` (arrays), `subject`, `body`. `geo`: `uri`. `settings`: `action` (the Android settings action), `pkg` (the app it is about, optional). |
+| `pick` | `id`, `mode`, `mime`, `multiple`, `name`, `kind` | A file or camera request. `id` is 16 lowercase hex digits, chosen by DeckardSystem. `mode` `open` (ACTION_OPEN_DOCUMENT, ACTION_GET_CONTENT; `mime` the accepted types, `multiple`), `save` (ACTION_CREATE_DOCUMENT; `name` the suggested file name) or `capture` (ACTION_IMAGE_CAPTURE, ACTION_VIDEO_CAPTURE; `kind` `image` or `video`). |
+| `pick_done` | `id` | The app closed a file it wrote for a `save`; copy it to where the person chose. Sent on every close. |
+| `pick_cancel` | `id` | The app or the person gave up; deckardd forgets the request. |
+
+### Host to Android
+
+| `t` | Fields | Meaning |
+|---|---|---|
+| `hello` | `v` | |
+| `picked` | `id`, `ok`, `files` | The answer to a `pick`. For `open` and `capture`, `files` (`[{name, size}]`) are in `xfer/<id>/`. For `save`, one `{name}`: DeckardSystem creates the empty file there and gives the app write access. `ok` false: cancelled or failed. |
+
+### Where each goes
+
+| From Android | To Marathon |
+|---|---|
+| `url` | Keel `org.marathonos.browser` `browser.open {url, newTab}` |
+| `tel` | `Navigation1.LaunchAppWithRoute("phone", "/call", {number})`: the dialler with the number filled in, not a call. No number: `LaunchApp("phone")`. |
+| `sms` | `LaunchAppWithRoute("messages", "conversation", {number})`. Messages' route has no body, so `body` is dropped. |
+| `mailto` | Keel `org.marathonos.email` `mail.compose {to, cc, subject, body}` |
+| `geo` | Keel `org.marathonos.maps` `map.show {lat, lon, name}` for coordinates (or a `q=lat,lon(name)`); `LaunchApp("maps")` for a text query |
+| `settings` | `LaunchAppWithRoute("settings", page)`: Wi-Fi, Bluetooth, sound, display, date and time, storage, battery, security, keyboard, accounts, about, notifications and the app manager pages; `notifications/waydroid.<pkg>` and `appmanager/waydroid.<pkg>` for one app. Others (location): `LaunchApp("settings")`. |
+| `pick` `open` / `save` | `org.freedesktop.portal.FileChooser` `OpenFile` / `SaveFile`, with a MIME filter unless the app accepts `*/*` |
+| `pick` `capture` | Keel `org.marathonos.camera` `camera.open {mode}`; the first new photo or video in `~/Pictures/Marathon` whose size holds for a second answers it (10 minutes at most) |
+
+deckardd's checks (`tests/test_intents.cpp`): `uri` at most 4,096 characters
+and of the kind's scheme; a URL needs a host and at most 2,048 characters;
+numbers keep only digits, `+*#,;pw` and at most 64 of them (anything else and
+the app opens without one); addresses have no spaces, commas, `<>"`, at most
+254 characters and 20 of each; subject and body are cut to 1,000 and 100,000
+characters; settings actions come from a fixed table; `id` must match
+`^[0-9a-f]{16}$`; at most 4 picks wait at once; file names are reduced to a
+base name without control characters, `/` or `\`.

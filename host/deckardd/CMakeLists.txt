@@ -13,8 +13,10 @@ add_library(deckardcore STATIC
     src/bridge.cpp
     src/images.cpp
     src/ime.cpp
+    src/intents.cpp
     src/mpris.cpp
     src/notifications.cpp
+    src/palette.cpp
     src/validate.cpp
 )
 target_include_directories(deckardcore PUBLIC src)
@@ -40,4 +42,12 @@ if(BUILD_TESTING)
     add_executable(test_ime tests/test_ime.cpp)
     target_link_libraries(test_ime PRIVATE deckardcore Qt6::Test)
     add_test(NAME ime COMMAND test_ime)
+    add_executable(test_intents tests/test_intents.cpp)
+    target_link_libraries(test_intents PRIVATE deckardcore Qt6::Test)
+    add_test(NAME intents COMMAND test_intents)
+    add_executable(test_palette tests/test_palette.cpp)
+    target_link_libraries(test_palette PRIVATE deckardcore Qt6::Test)
+    target_compile_definitions(test_palette PRIVATE
+        DECKARD_PALETTE_XML="${CMAKE_CURRENT_SOURCE_DIR}/../../image/vendor_deckard/overlay/DeckardPalette/res/values/colors.xml")
+    add_test(NAME palette COMMAND test_palette)
 endif()

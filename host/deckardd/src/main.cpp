@@ -1,6 +1,7 @@
 #include "audio.h"
 #include "bridge.h"
 #include "ime.h"
+#include "intents.h"
 #include "mpris.h"
 #include "notifications.h"
 
@@ -72,6 +73,23 @@ int main(int argc, char *argv[]) {
     QObject::connect(&imeBridge, &Bridge::received, &ime, &Ime::handle);
     QObject::connect(&imeBridge, &Bridge::connectedChanged, &ime, &Ime::setConnected);
     if (!imeBridge.listen())
+        return 1;
+
+    // DeckardSystem runs as Android's system uid, which is also this user's.
+    Bridge        systemBridge(data + QStringLiteral("/deckard/system.sock"),
+                               data + QStringLiteral("/system/packages.list"),
+                               QByteArrayLiteral("org.marathonos.deckard.system"));
+    SystemIntents intents([&systemBridge](const QJsonObject &message) { systemBridge.send(message); },
+                          data + QStringLiteral("/deckard/xfer"),
+                          QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) +
+                              QStringLiteral("/Marathon"),
+                          bus);
+    QObject::connect(&systemBridge, &Bridge::received, &intents, &SystemIntents::handle);
+    QObject::connect(&systemBridge, &Bridge::connectedChanged, &intents, [&](bool connected) {
+        if (!connected)
+            intents.cancelAll();
+    });
+    if (!systemBridge.listen())
         return 1;
     return app.exec();
 }
