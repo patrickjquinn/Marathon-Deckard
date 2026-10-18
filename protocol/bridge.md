@@ -154,3 +154,65 @@ each on its own bus connection, with `Identity` = label, `DesktopEntry` =
 last report), the `Can*` properties, `Seeked`, and Play, Pause, PlayPause,
 Stop, Next, Previous, Seek and SetPosition. Players go away when the bridge
 disconnects and come back when it reconnects.
+
+## IME channel
+
+Marathon's keyboard in Android apps. DeckardIme (`image/apps/DeckardIme`,
+package `org.marathonos.deckard.ime`, `/system/app` in the overlay) is
+Android's only input method; it draws nothing. deckardd's `Ime`
+(`host/deckardd/src/ime.cpp`) relays between it and the shell's
+`org.marathonos.Shell.TextInput1`.
+
+Transport: the same framing, limits and `SO_PEERCRED` check as the bridge, on
+its own socket `/data/deckard/ime.sock` (`~/.local/share/waydroid/data/deckard/ime.sock`),
+accepting only the uid `packages.list` gives `org.marathonos.deckard.ime`. A
+separate socket so keystrokes never wait behind 1 MiB image frames.
+
+Text offsets are UTF-16 code units on both sides (Java and Qt strings), so
+nothing is converted.
+
+### Android to host
+
+| `t` | Fields | Meaning |
+|---|---|---|
+| `start` | `package`, `purpose`, `hints`, `inputType`, `imeOptions` | An editor gained input (`onStartInput`). `purpose` and `hints` are `zwp_text_input_v3` content purpose and hint bits mapped from `EditorInfo.inputType` (`ContentType.java`); the raw values are informational. Also sent for Android's fallback connection on non-editor windows (`inputType` 0, purpose `terminal`), which never asks for the keyboard. |
+| `state` | `text`, `cursor`, `anchor` | Up to 256 characters either side of the cursor, and the selection within them. Empty for password and PIN fields. Sent on start and on every selection change. |
+| `show` | | Android asked for the keyboard (`onShowInputRequested`). |
+| `hide` | | Android hid the keyboard (`hideWindow`). |
+| `finish` | | The editor lost input (`onFinishInput`). |
+
+deckardd checks `package` against the package-name rule, clamps `purpose` to 0–13,
+masks `hints` to `0x3ff`, drops `state` over 4,096 characters and clamps the
+offsets. It ignores everything but `start` until a valid `start`.
+
+### Host to Android
+
+| `t` | Fields | Meaning |
+|---|---|---|
+| `commit` | `text`, `before`, `after` | Replace `before` characters before and `after` after the cursor with `text` (both 0: insert, or replace the selection). DeckardIme applies a replacement as one edit by selecting the range and committing over it. |
+| `key` | `key` | `enter`, `backspace`, `left`, `right`, `up`, `down`, `tab` or `escape` from the on-screen keyboard. `enter` runs the editor's IME action (Go, Search, Send, Next, Done) when it has one and is single-line, inserts a newline in multi-line fields, and is a plain Enter key otherwise. The rest are key events through the input connection, so they stay in order with commits. |
+| `panel` | `covered`, `height` | How much of the app's window Marathon's keyboard covers, out of the window's height, in the shell's logical pixels (0 when it is down). DeckardIme scales it to Android pixels, makes its invisible window report that inset, and shows or hides itself to match. Sent when it changes for the editor's app, and replayed on `start`. |
+
+### Host to shell
+
+`org.marathonos.Shell` `/org/marathonos/Shell/TextInput`
+`org.marathonos.Shell.TextInput1`. App ids are `waydroid.<package>`.
+
+| Method | From |
+|---|---|
+| `Register(s prefix)` | deckardd at start and whenever the shell reappears, with `waydroid.`. Needs the caller to be a declared session service (`/usr/share/marathon-shell/services/deckardd.service.json`, permission `text-input`); the last caller owns the channel. |
+| `SetEditor(s appId, u purpose, u hints)` | `start` |
+| `SetSurroundingText(s appId, s text, i cursor, i anchor)` | `state` |
+| `ShowPanel(s appId)` / `HidePanel(s appId)` | `show` / `hide`; also `HidePanel` when the IME disconnects |
+| `ClearEditor(s appId)` | `finish`, or the IME disconnecting |
+
+Targeted signals from the shell to the owner: `CommitString(s appId, s text,
+i before, i after)` → `commit`, `Key(s appId, s key)` → `key`,
+`PanelChanged(s appId, i covered, i height)` → `panel`.
+
+The shell shows the keyboard for `ShowPanel` only when that app's window has
+focus and no hardware keyboard is present, answers the keyboard's queries for
+that window from the reported editor, and does not shrink the windows of
+apps under the registered prefix when the keyboard is up (resizing a Waydroid
+toplevel hot-plugs Android's display). Hardware keys reach Android over
+`wl_keyboard` as before.
