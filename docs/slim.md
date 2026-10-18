@@ -69,15 +69,19 @@ no app open, the same way as every stage.
   `/vendor/waydroid.prop`, which Waydroid writes from `waydroid.cfg`
   `[properties]`; `ro.sf.lcd_density=254` already works that way. A13 init
   lets a later file override an earlier `ro.` value. To confirm in phase 2
-  for `ro.zygote`.
+  for the ABI lists.
 - **`ro.config.low_ram` is out.** A13's
   `ActivityTaskManager.supportsMultiWindow()` returns false on a low-RAM
   device, which ends freeform windows and with them Waydroid's one window
   per task.
-- **No 32-bit zygote is possible without an image change other than props.**
-  The image has only `init.zygote64_32.rc`; init imports
-  `init.${ro.zygote}.rc`, so the overlay adds `init.zygote64.rc`. With
-  `ro.product.cpu.abilist32` empty, `SystemServer` skips the secondary
+- **The 32-bit zygote can go without an image change.** The image has only
+  `init.zygote64_32.rc` (init imports `init.${ro.zygote}.rc`). Changing
+  `ro.zygote` to `zygote64` would need an `init.zygote64.rc` in the overlay,
+  and a seed that reached a device before that file would leave Android with
+  no zygote at all. So `ro.zygote` stays; the overlay replaces
+  `init.zygote64_32.rc` with a copy whose `zygote_secondary` is `disabled`,
+  and the seed empties the 32-bit ABI list. Either half alone is harmless.
+  With `ro.product.cpu.abilist32` empty, `SystemServer` skips the secondary
   zygote preload (`Build.SUPPORTED_32_BIT_ABIS` empty) and PackageManager
   installs only arm64 code. Cortex-A76 runs AArch32 at EL0, so this does
   cost something: a 32-bit-only app stops installing.
@@ -108,7 +112,7 @@ no app open, the same way as every stage.
 | Lever | Where | Used for |
 |---|---|---|
 | Whiteouts | `image/whiteouts` (one path per line), installed to `/usr/share/deckard/whiteouts`; `deckard-overlay-sync` creates the `c 0 0` nodes and removes the ones a later list drops (tested on the device in a scratch tree; it never replaces a real file in the overlay) | packages, permission and feature files, unused VNDK APEXes, apps inside flattened APEX directories |
-| Overlay files | `image/overlay` | `init.zygote64.rc`, a trimmed `vendor/etc/permissions/handheld_core_hardware.xml`, `deckard-slim.rc`, DeckardSystem |
+| Overlay files | `image/overlay` | `init.zygote64_32.rc` without the secondary zygote, a trimmed `vendor/etc/permissions/handheld_core_hardware.xml`, `deckard-slim.rc`, DeckardSystem |
 | Props | device `waydroid.cfg` seed (`packaging/packages/device-hackberrypi-cm5-marathon/waydroid.cfg` in Marathon-Shell) | zygote, ABI lists, heap |
 | Runtime settings | `deckard-slim.rc` at `sys.boot_completed` | `device_provisioned`, browser role, `max_empty_time_millis` |
 | Platform-signed app | DeckardSystem (`android.uid.system`) | intent stubs, file provider, window fit |
@@ -144,7 +148,7 @@ step that removes it.
 | `com.android.inputdevices` | keyboard layouts for the HackberryPi's hardware keyboard |
 | `com.android.soundpicker` | apps start `RINGTONE_PICKER` and crash without a handler |
 | `com.android.shell` | the shell uid's permissions, `SYSTEM_SHELL` role |
-| `com.android.settings` | per-app special access (all-files access, overlay, usage access, notification access, battery optimisation, install sources) has no Marathon page. Kept, on demand only: DeckardSystem takes the generic settings pages (priority 2 over Settings' 1) and Settings' boot-started process goes after `max_empty_time_millis`. |
+| `com.android.settings` | per-app special access has no Marathon page (see *Follow-up: Marathon Settings pages*). Kept installed but on demand only: DeckardSystem takes the generic settings pages (priority 2 over Settings' 1) and Settings' boot-started process goes after `max_empty_time_millis`. |
 | Deckard: bridge, home, IME, `overlay.framework`, `overlay.palette`, `system` (new) | |
 
 ### STUB (DeckardSystem)
@@ -215,7 +219,8 @@ Native services from `init` and the vendor rc files, PSS at idle:
 | Candidate to stop | Saving | How |
 |---|---|---|
 | zygote_secondary | 84 MB | S2 |
-| deckard-wm (app_process64) | ≈30 MB | its code runs in DeckardSystem (`WindowFit`, a zygote child with a few MB of its own); the `deckard-wm` service in `deckard-chrome.rc` would go. That file is the chrome agent's: a phase-2 stage, agreed through the coordinator. |
+| deckard-wm (app_process64) | ≈30 MB | S9: its code runs in DeckardSystem (`WindowFit`, a zygote child) and the `deckard-wm` service leaves `deckard-chrome.rc` (agreed with the coordinator, who told the chrome agent) |
+| DeckardHome's process | ≈10 MB | S9: DeckardHome is platform-signed with `sharedUserId android.uid.system` and `android:process="org.marathonos.deckard.system"`, so its invisible home activity lives in DeckardSystem's process. It stays its own package, so `waydroid.blacklist_apps` still names only it. |
 | adbd, adb_root | 3 MB | `auto_adb = False`, but userdebug starts adbd; would need a `persist.sys.usb.config` change, to test |
 | traced, traced_probes, incidentd, storaged, mdnsd, wificond | 1–2 MB each | most are `class main/late_start` with no property switch; stopping them is an rc `stop`, to try after the big stages |
 
@@ -262,6 +267,53 @@ Limits of the stubs:
 - **OPEN_DOCUMENT_TREE** (folder access) has no answer: a tree needs a
   DocumentsProvider that lists a host folder through deckardd.
 
+### Window fit and the Contacts → Clock report
+
+The chrome agent saw this: with Jelly in front, launching Contacts left
+Android's top resumed activity as Clock. deckard-wm converted *every*
+standard root task on the display, hidden ones included. In LineageOS 20's
+`WindowOrganizerController.applyTaskChanges`, a windowing-mode change sets
+`TRANSACT_EFFECTS_LIFECYCLE`. The transaction then ends in
+`ensureActivitiesVisible()` and `resumeFocusedTasksTopActivities()`. A hidden
+fullscreen task (Clock behind a fullscreen launch) turned freeform becomes
+visible and can be resumed while the new task is still starting.
+`WindowFit` now:
+
+- skips root tasks that aren't visible (they are fitted when they show);
+- changes the mode only of fullscreen tasks, and only sets bounds on
+  freeform ones (no lifecycle pass);
+- when it converts the top visible task, adds `reorder(token, onTop)` so the
+  launching task keeps focus.
+
+This is the likely cause from the source, not yet reproduced: phase 2
+repeats the launch (Jelly in front, then Contacts) after S9 and reads
+`dumpsys activity activities` for `topResumedActivity`.
+
+## Follow-up: Marathon Settings pages
+
+Android Settings stays installed only for the per-app grants Marathon
+Settings has no page for. Each needs a Marathon page (deckardd can grant them
+through `appops`/`cmd` as Android's system uid) before Settings can go:
+
+| Grant | Android action | Granted by |
+|---|---|---|
+| All files access | `MANAGE_ALL_FILES_ACCESS_PERMISSION`, `MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` | appop `MANAGE_EXTERNAL_STORAGE` |
+| Install unknown apps (F-Droid, browsers) | `MANAGE_UNKNOWN_APP_SOURCES` | appop `REQUEST_INSTALL_PACKAGES` |
+| Display over other apps | `action.MANAGE_OVERLAY_PERMISSION` | appop `SYSTEM_ALERT_WINDOW` (its windows never reach Marathon anyway) |
+| Modify system settings | `action.MANAGE_WRITE_SETTINGS` | appop `WRITE_SETTINGS` |
+| Usage access | `USAGE_ACCESS_SETTINGS` | appop `GET_USAGE_STATS` |
+| Notification access (listeners) | `ACTION_NOTIFICATION_LISTENER_SETTINGS`, `NOTIFICATION_LISTENER_DETAIL_SETTINGS` | `cmd notification allow_listener` |
+| Do Not Disturb access | `NOTIFICATION_POLICY_ACCESS_SETTINGS` | `cmd notification allow_dnd` |
+| Ignore battery optimisation | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `IGNORE_BATTERY_OPTIMIZATION_SETTINGS` | `cmd deviceidle whitelist +<pkg>`; Marathon's own freezer decides anyway, so this one could simply be granted |
+| Alarms & reminders | `REQUEST_SCHEDULE_EXACT_ALARM` | appop `SCHEDULE_EXACT_ALARM` |
+| Picture in picture | `PICTURE_IN_PICTURE_SETTINGS` | appop `PICTURE_IN_PICTURE` |
+| Accessibility services | `ACCESSIBILITY_SETTINGS` | `settings put secure enabled_accessibility_services` |
+| Device admin | `DeviceAdminAdd` (`ACTION_ADD_DEVICE_ADMIN`) | `dpm set-active-admin` |
+| Default apps (browser, dialer, SMS, home) | `MANAGE_DEFAULT_APPS_SETTINGS`, `RoleManager` requests | PermissionController's role dialogs (an APEX app), `cmd role` |
+| Per-app language | `APP_LOCALE_SETTINGS` | `cmd locale` |
+| App info: permissions, storage, force stop, uninstall | `APPLICATION_DETAILS_SETTINGS` (DeckardSystem already sends it to `appmanager/waydroid.<pkg>`) | `pm grant/revoke`, `pm clear`, `am force-stop`, `pm uninstall` |
+| Per-app notifications and channels | `APP_NOTIFICATION_SETTINGS`, `CHANNEL_NOTIFICATION_SETTINGS` (sent to `notifications/waydroid.<pkg>`) | `cmd notification` / INotificationManager |
+
 ## Needs the Android image rebuilt
 
 - Removing APEX modules (adservices, ondevicepersonalization's jar, uwb,
@@ -292,14 +344,14 @@ an app breaks.
 |---|---|
 | S0 | baseline, nothing changed |
 | S1 | inert whiteouts |
-| S2 | 64-bit zygote only (props + `init.zygote64.rc`) |
+| S2 | 64-bit zygote only (`init.zygote64_32.rc` with the secondary disabled + empty 32-bit ABI list) |
 | S3 | no SystemUI |
 | S4 | DeckardSystem in; Jelly, DocumentsUI, Aperture, Gallery, Contacts, HTMLViewer out |
 | S5 | telephony out |
 | S6 | trimmed `handheld_core_hardware.xml` (no Bluetooth, telecom, backup, print, companion devices, controls, managed users, voice recognisers); LineageOS extras out |
 | S7 | smaller idle heaps |
 | S8 | `deckard-slim.rc` (`max_empty_time_millis` 60 s, provisioning, browser role) |
-| S9 | deckard-wm's service off; `WindowFit` alone (with the chrome agent) |
+| S9 | deckard-wm's service off, `WindowFit` alone; DeckardHome in DeckardSystem's process |
 
 Hand-applying a stage on the device mirrors what the package will do:
 whiteouts are `mknod` in `/var/lib/waydroid/overlay`, files are copied there,
