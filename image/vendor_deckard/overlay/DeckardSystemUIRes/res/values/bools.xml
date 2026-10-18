@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- No wallpaper-derived palette: DeckardPalette carries Marathon's. -->
+    <bool name="flag_monet">false</bool>
+</resources>
