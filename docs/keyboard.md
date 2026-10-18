@@ -133,6 +133,20 @@ up. The nav bar's keyboard button still opens it, and then the inset follows.
 | On-screen keyboard typing into an Android field | **Not working on 2edb21fd.** The keyboard opened and Android had the editor, but no `CommitString` was sent, and the keyboard offered word predictions in a URL field. The shell's keyboard writes to Qt's focus object, which was not the Waydroid surface item, although the seat's keyboard focus (hardware keys) was. Fixed in Marathon-Shell b25a8096 (the target falls back to the window with the seat's keyboard focus); not yet deployed. | `p5`, `busctl monitor` |
 | Contacts, Files search, Jelly web form | Not reached. See blockers. | |
 
+Second pass (2026-10-19 00:23–00:31, shell with b25a8096 and 998bff84, no
+container freezing):
+
+| Check | Result | Evidence |
+|---|---|---|
+| Files search editor reaches the shell | `SetEditor(waydroid.com.android.documentsui, 0, 0)`, `SetSurroundingText("", 0, 0)`, `ShowPanel` | `busctl monitor` |
+| IME inset in Files | `PanelChanged(355, 628)`; Android's IME source is `[0,273][720,628]` and `visible=true`. The search bar and chips stay above the keyboard | dumpsys, shot `f4` |
+| Jelly address bar again | `SetEditor(..jelly, 5, 0)`, surrounding text and `ShowPanel` arrive; the keyboard opened without word predictions | `busctl monitor`, `r12` |
+| On-screen keyboard typing | **Still no `CommitString` seen.** In each attempt the shell switched the front window during the test, which hid the keyboard and cleared the editor. Glass Probe came back on its own and took over (00:24, 00:25, 00:26). Tapping the Browser card showed Files. `LaunchApp waydroid.com.android.documentsui` showed Contacts' notification-permission dialog, which then took no touches. In Files, with the keyboard up, hardware keys went to Marathon's type-to-search instead of Android, so neither Qt's focus nor the seat's keyboard focus was on the Android window at that point. | shots `r16`, `r19`, `f5`, `f6` |
+
+Still to verify once window and focus tracking hold for a whole test:
+on-screen typing (commits, corrections, Enter as the editor's action) in
+Jelly's address bar and a web form, Contacts, Clock's label and Files search.
+
 Blockers found while testing (not keyboard code):
 
 - The shell froze the Waydroid container while an Android app was in front:
