@@ -12,6 +12,15 @@
     <dimen name="navigation_bar_frame_height_landscape">0dp</dimen>
     <dimen name="navigation_bar_gesture_height">0dp</dimen>
 
+    <!-- Platform-themed windows are clear so Marathon's ambience shows
+         behind them, as behind Marathon apps; dialogs, menus and action bars
+         stay on bb10Card. -->
+    <color name="background_device_default_dark">#00000000</color>
+    <color name="primary_device_default_dark">#ff1a1b1c</color>
+    <color name="background_floating_device_default_dark">#ff1a1b1c</color>
+    <dimen name="config_dialogCornerRadius">4dp</dimen>
+    <dimen name="config_bottomDialogCornerRadius">4dp</dimen>
+
     <!-- Marathon is dark (UiModeManager.MODE_NIGHT_YES). -->
     <integer name="config_defaultNightMode">2</integer>
 
