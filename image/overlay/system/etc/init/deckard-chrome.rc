@@ -2,8 +2,8 @@
 # of sight, every app task fills its Marathon window, and Android is dark.
 
 on init
-    # Waydroid's hwcomposer maps no window for these packages.
-    setprop waydroid.blacklist_apps com.android.launcher3:org.marathonos.deckard.home
+    # Waydroid's hwcomposer maps no window for DeckardHome (Launcher3 is built in).
+    setprop waydroid.blacklist_apps org.marathonos.deckard.home
 
 service deckard-wm /system/bin/app_process64 /system/bin org.marathonos.deckard.wm.Main
     class main
