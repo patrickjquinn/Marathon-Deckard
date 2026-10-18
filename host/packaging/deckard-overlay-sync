@@ -1,11 +1,15 @@
 #!/bin/sh
 # Copies Deckard's Android files into Waydroid's overlay, which Waydroid
 # mounts over the Android system and vendor partitions when the container
-# starts, and removes files an earlier version shipped.
+# starts, and removes files an earlier version shipped. Paths listed in
+# /usr/share/deckard/whiteouts become overlayfs whiteouts (0/0 character
+# devices), which hide those files of the Android image (docs/slim.md).
 set -eu
 src=/usr/share/deckard/overlay
 dst=/var/lib/waydroid/overlay
 list=/var/lib/waydroid/deckard-overlay.list
+wo=/usr/share/deckard/whiteouts
+wolist=/var/lib/waydroid/deckard-whiteouts.list
 
 [ -d "$src" ] || exit 0
 mkdir -p "$dst"
@@ -17,3 +21,28 @@ fi
 (cd "$src" && find . -type f) > "$list.new"
 cp -a "$src/." "$dst/"
 mv "$list.new" "$list"
+
+is_whiteout() {
+	[ -c "$1" ] && [ "$(stat -c %t:%T "$1")" = 0:0 ]
+}
+wanted=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$wo" 2>/dev/null || true)
+if [ -f "$wolist" ]; then
+	while IFS= read -r p; do
+		printf '%s\n' "$wanted" | grep -qxF "$p" && continue
+		if is_whiteout "$dst/$p"; then rm -f "$dst/$p"; fi
+	done < "$wolist"
+fi
+: > "$wolist.new"
+printf '%s\n' "$wanted" | while IFS= read -r p; do
+	case "$p" in "" | /* | *..*) continue ;; esac
+	if ! is_whiteout "$dst/$p"; then
+		if [ -e "$dst/$p" ] || [ -L "$dst/$p" ]; then
+			echo "deckard-overlay-sync: $p exists in the overlay; not hiding it" >&2
+			continue
+		fi
+		mkdir -p "$dst/$(dirname "$p")"
+		mknod "$dst/$p" c 0 0
+	fi
+	printf '%s\n' "$p" >> "$wolist.new"
+done
+mv "$wolist.new" "$wolist"
