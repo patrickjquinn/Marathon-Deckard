@@ -4,6 +4,7 @@
 #include "intents.h"
 #include "mpris.h"
 #include "notifications.h"
+#include "palette.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
@@ -45,6 +46,7 @@ int main(int argc, char *argv[]) {
                                 state + QStringLiteral("/notifications.json"));
     Mpris         mpris(&bridge, cache + QStringLiteral("/art"));
     AudioSync     audio(&bridge);
+    AmbiencePalette palette(data + QStringLiteral("/deckard/palette"));
 
     QObject::connect(&bridge, &Bridge::received, &app,
                      [&](const QString &type, const QJsonObject &message) {

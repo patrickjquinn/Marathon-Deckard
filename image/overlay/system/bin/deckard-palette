@@ -1,0 +1,5 @@
+#!/system/bin/sh
+# Run by inotifyd as: deckard-palette EVENTS DIR FILE
+[ "$3" = palette ] || exit 0
+export CLASSPATH=/system/framework/deckard-palette.jar
+exec /system/bin/app_process /system/bin org.marathonos.deckard.palette.Main /data/deckard/palette
