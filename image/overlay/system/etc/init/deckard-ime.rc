@@ -1,0 +1,6 @@
+# Marathon's keyboard is Android's only keyboard: DeckardIme hands every
+# editor to it, and LatinIME never appears.
+on property:sys.boot_completed=1
+    exec_background - root root -- /system/bin/pm disable com.android.inputmethod.latin
+    exec_background - root root -- /system/bin/ime enable org.marathonos.deckard.ime/.DeckardIme
+    exec_background - root root -- /system/bin/ime set org.marathonos.deckard.ime/.DeckardIme
