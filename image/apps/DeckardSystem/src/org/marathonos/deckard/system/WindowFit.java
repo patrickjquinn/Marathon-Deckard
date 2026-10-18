@@ -35,6 +35,7 @@ final class WindowFit {
     private static Class<?> wctClass;
     private static Method wctSetWindowingMode;
     private static Method wctSetBounds;
+    private static Method wctReorder;
     private static Object displayManager;
     private static Method getDisplayInfo;
     private static Handler handler;
@@ -61,6 +62,7 @@ final class WindowFit {
         Class<?> token = Class.forName("android.window.WindowContainerToken");
         wctSetWindowingMode = wctClass.getMethod("setWindowingMode", token, int.class);
         wctSetBounds = wctClass.getMethod("setBounds", token, Rect.class);
+        wctReorder = wctClass.getMethod("reorder", token, boolean.class);
         applyTransaction = windowOrganizer.getClass().getMethod("applyTransaction", wctClass);
 
         Class<?> dmg = Class.forName("android.hardware.display.DisplayManagerGlobal");
@@ -122,36 +124,55 @@ final class WindowFit {
             Rect full = displayBounds();
             if (full == null) return;
             List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
-            for (Object root : roots) fit(root, full);
+            boolean top = true;
+            for (Object root : roots) {
+                if (fit(root, full, top)) top = false;
+            }
         } catch (Throwable t) {
             Log.w(TAG, "fit failed", t);
         }
     }
 
-    private static void fit(Object root, Rect full) throws Exception {
-        if (intField(root, "displayId") != DISPLAY) return;
+    /** Returns whether root is a visible app task (roots come top first). */
+    private static boolean fit(Object root, Rect full, boolean top) throws Exception {
+        if (intField(root, "displayId") != DISPLAY) return false;
+        if (!isVisible(root)) return false;
         Object windowConfig = windowConfiguration(root);
         int type = (int) windowConfig.getClass().getMethod("getActivityType").invoke(windowConfig);
-        if (type != ACTIVITY_TYPE_STANDARD && type != ACTIVITY_TYPE_UNDEFINED) return;
+        if (type != ACTIVITY_TYPE_STANDARD && type != ACTIVITY_TYPE_UNDEFINED) return false;
         int mode = (int) windowConfig.getClass().getMethod("getWindowingMode").invoke(windowConfig);
+        if (mode != WINDOWING_MODE_FREEFORM && mode != WINDOWING_MODE_FULLSCREEN) return true;
 
         Rect bounds = (Rect) root.getClass().getField("bounds").get(root);
-        if (mode == WINDOWING_MODE_FREEFORM && full.equals(bounds)) return;
-        if (mode != WINDOWING_MODE_FREEFORM && mode != WINDOWING_MODE_FULLSCREEN) return;
+        if (mode == WINDOWING_MODE_FREEFORM && full.equals(bounds)) return true;
 
         // A fullscreen task hides every task below it, and Waydroid then
         // destroys their windows, so fullscreen tasks become freeform too.
+        // A mode change resumes the focused task's activity, so the task on
+        // top is kept on top; hidden tasks are left until they show.
         Object token = root.getClass().getField("token").get(root);
         Object wct = wctClass.newInstance();
-        wctSetWindowingMode.invoke(wct, token, WINDOWING_MODE_FREEFORM);
+        if (mode != WINDOWING_MODE_FREEFORM) {
+            wctSetWindowingMode.invoke(wct, token, WINDOWING_MODE_FREEFORM);
+            if (top) wctReorder.invoke(wct, token, true);
+        }
         wctSetBounds.invoke(wct, token, full);
         applyTransaction.invoke(windowOrganizer, wct);
+        return true;
     }
 
     private static Object windowConfiguration(Object taskInfo) throws Exception {
         Field f = taskInfo.getClass().getField("configuration");
         Object config = f.get(taskInfo);
         return config.getClass().getField("windowConfiguration").get(config);
+    }
+
+    private static boolean isVisible(Object taskInfo) throws Exception {
+        try {
+            return taskInfo.getClass().getField("visible").getBoolean(taskInfo);
+        } catch (NoSuchFieldException e) {
+            return taskInfo.getClass().getField("isVisible").getBoolean(taskInfo);
+        }
     }
 
     private static int intField(Object o, String name) throws Exception {
