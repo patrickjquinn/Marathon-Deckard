@@ -17,7 +17,7 @@ import android.util.Log;
 
 /**
  * Posts test notifications on a silent channel ("am broadcast -a
- * org.marathonos.deckard.notifytest.POST --es kind chat|progress|plain") and
+ * org.marathonos.deckard.notifytest.POST --es kind chat|progress|plain|media|media_stop|cancel") and
  * logs what comes back: taps, actions and inline replies.
  */
 public class TestReceiver extends BroadcastReceiver {
@@ -46,6 +46,10 @@ public class TestReceiver extends BroadcastReceiver {
             nm.notify(1, chat(context, null));
         } else if ("progress".equals(kind)) {
             progress(context, nm, 0);
+        } else if ("media".equals(kind)) {
+            TestMedia.start(context);
+        } else if ("media_stop".equals(kind)) {
+            TestMedia.stop();
         } else if ("cancel".equals(kind)) {
             nm.cancelAll();
         } else {
