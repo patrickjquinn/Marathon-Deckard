@@ -1,0 +1,150 @@
+# Candidate overlayfs whiteouts, by stage (docs/slim.md). Paths are relative
+# to Waydroid's overlay root (/var/lib/waydroid/overlay). "<stage> <path>".
+# Phase 2 applies them stage by stage; what survives goes to image/whiteouts.
+
+# S1: inert packages. Unused themes and overlays, pickers, wallpapers, dreams,
+# printing, backup, DSU, work profiles, Waydroid's OTA app, stock apps that
+# Marathon replaces and that answer no intent an app needs.
+S1 system/product/overlay/DisplayCutoutEmulationCorner
+S1 system/product/overlay/DisplayCutoutEmulationDouble
+S1 system/product/overlay/DisplayCutoutEmulationHole
+S1 system/product/overlay/DisplayCutoutEmulationTall
+S1 system/product/overlay/DisplayCutoutEmulationWaterfall
+S1 system/product/overlay/FontLato
+S1 system/product/overlay/FontNotoSerifSource
+S1 system/product/overlay/FontRubik
+S1 system/product/overlay/IconPackCircularAndroid
+S1 system/product/overlay/IconPackCircularLauncher
+S1 system/product/overlay/IconPackCircularSettings
+S1 system/product/overlay/IconPackCircularSystemUI
+S1 system/product/overlay/IconPackFilledAndroid
+S1 system/product/overlay/IconPackFilledLauncher
+S1 system/product/overlay/IconPackFilledSettings
+S1 system/product/overlay/IconPackFilledSystemUI
+S1 system/product/overlay/IconPackKaiAndroid
+S1 system/product/overlay/IconPackKaiLauncher
+S1 system/product/overlay/IconPackKaiSettings
+S1 system/product/overlay/IconPackKaiSystemUI
+S1 system/product/overlay/IconPackRoundedAndroid
+S1 system/product/overlay/IconPackRoundedLauncher
+S1 system/product/overlay/IconPackRoundedSettings
+S1 system/product/overlay/IconPackRoundedSystemUI
+S1 system/product/overlay/IconPackSamAndroid
+S1 system/product/overlay/IconPackSamLauncher
+S1 system/product/overlay/IconPackSamSettings
+S1 system/product/overlay/IconPackSamSystemUI
+S1 system/product/overlay/IconPackVictorAndroid
+S1 system/product/overlay/IconPackVictorLauncher
+S1 system/product/overlay/IconPackVictorSettings
+S1 system/product/overlay/IconPackVictorSystemUI
+S1 system/product/overlay/IconShapePebble
+S1 system/product/overlay/IconShapeRoundedRect
+S1 system/product/overlay/IconShapeSquare
+S1 system/product/overlay/IconShapeSquircle
+S1 system/product/overlay/IconShapeTaperedRect
+S1 system/product/overlay/IconShapeTeardrop
+S1 system/product/overlay/IconShapeVessel
+S1 system/product/overlay/LineageBlackTheme
+S1 system/product/overlay/LineageNavigationBarNoHint
+S1 system/product/overlay/NavigationBarMode2Button
+S1 system/product/overlay/NavigationBarMode3Button
+S1 system/product/overlay/NavigationBarModeGestural
+S1 system/product/overlay/NavigationBarModeGesturalExtraWideBack
+S1 system/product/overlay/NavigationBarModeGesturalNarrowBack
+S1 system/product/overlay/NavigationBarModeGesturalWideBack
+S1 system/product/overlay/TrebuchetOverlay.apk
+S1 system/system_ext/apex/com.android.vndk.v28
+S1 system/system_ext/apex/com.android.vndk.v29
+S1 system/system_ext/apex/com.android.vndk.v30
+S1 system/etc/permissions/android.software.live_wallpaper.xml
+S1 system/product/etc/permissions/android.software.nfc.beam.xml
+S1 system/product/etc/permissions/android.software.sip.voip.xml
+S1 vendor/etc/permissions/android.software.sip.voip.xml
+S1 system/app/BasicDreams
+S1 system/app/BookmarkProvider
+S1 system/app/CameraExtensionsProxy
+S1 system/app/CaptivePortalLogin
+S1 system/app/CompanionDeviceManager
+S1 system/app/CtsShimPrebuilt
+S1 system/app/EasterEgg
+S1 system/app/NfcNci
+S1 system/app/PrintRecommendationService
+S1 system/app/PrintSpooler
+S1 system/app/SecureElement
+S1 system/app/WallpaperBackup
+S1 system/priv-app/BackupRestoreConfirmation
+S1 system/priv-app/BuiltInPrintService
+S1 system/priv-app/CtsShimPrivPrebuilt
+S1 system/priv-app/DownloadProviderUi
+S1 system/priv-app/DynamicSystemInstallationService
+S1 system/priv-app/IntentResolver
+S1 system/priv-app/LiveWallpapersPicker
+S1 system/priv-app/LocalTransport
+S1 system/priv-app/ManagedProvisioning
+S1 system/priv-app/MtpService
+S1 system/priv-app/NetworkStackNext
+S1 system/priv-app/ProxyHandler
+S1 system/priv-app/SharedStorageBackup
+S1 system/priv-app/StatementService
+S1 system/product/app/ApertureLensLauncher
+S1 system/product/app/Backgrounds
+S1 system/product/app/DeskClock
+S1 system/product/app/Etar
+S1 system/product/app/ExactCalculator
+S1 system/product/app/LatinIME
+S1 system/product/app/LocalContactsBackup
+S1 system/product/app/ModuleMetadata
+S1 system/product/app/PhotoTable
+S1 system/product/app/Recorder
+S1 system/product/app/ThemesStub
+S1 system/product/priv-app/Eleven
+S1 system/product/priv-app/OneTimeInitializer
+S1 system/product/priv-app/SettingsIntelligence
+S1 system/system_ext/priv-app/EmergencyInfo
+S1 system/system_ext/priv-app/Provision
+S1 system/system_ext/priv-app/QuickAccessWallet
+S1 system/system_ext/priv-app/Seedvault
+S1 system/system_ext/priv-app/StorageManager
+S1 system/system_ext/priv-app/ThemePicker
+S1 system/system_ext/priv-app/TrebuchetQuickStep
+S1 system/system_ext/priv-app/WaydroidUpdater
+S1 system/apex/com.android.ondevicepersonalization/app/OnDevicePersonalization
+S1 system/apex/com.android.tethering/app/HalfSheetUX
+S1 system/apex/com.android.wifi/app/OsuLogin
+
+# S2 is props and init.zygote64.rc only (no whiteouts).
+
+# S3: SystemUI. Its windows never reach Marathon in multi-window mode, Monet
+# is off, notifications go through DeckardBridge, Launcher3 is gone.
+S3 system/system_ext/priv-app/SystemUI
+S3 system/product/overlay/DeckardSystemUIRes
+
+# S4: stock handlers DeckardSystem replaces (links, files, camera, gallery,
+# contacts UI). Needs DeckardSystem in the overlay.
+S4 system/product/app/Jelly
+S4 system/priv-app/DocumentsUI
+S4 system/product/overlay/DocumentsUIOverlay.apk
+S4 system/product/app/Aperture
+S4 system/product/app/Gallery2
+S4 system/product/priv-app/Contacts
+S4 system/app/HTMLViewer
+
+# S5: telephony. No modem reaches Android and no android.hardware.telephony.
+S5 system/priv-app/TeleService
+S5 system/priv-app/TelephonyProvider
+S5 system/priv-app/MmsService
+S5 system/priv-app/Telecom
+S5 system/priv-app/BlockedNumberProvider
+S5 system/app/SimAppDialog
+S5 system/system_ext/app/WAPPushManager
+
+# S6: LineageOS extras and their framework services (with the trimmed
+# handheld_core_hardware.xml, which is an overlay file, not a whiteout).
+S6 system/system_ext/priv-app/LineageParts
+S6 system/system_ext/app/Profiles
+S6 system/system_ext/app/SimpleSettingsConfig
+S6 system/system_ext/priv-app/SimpleDeviceConfig
+S6 system/product/etc/permissions/org.lineageos.profiles.xml
+S6 system/product/etc/permissions/org.lineageos.livedisplay.xml
+S6 system/product/etc/permissions/org.lineageos.health.xml
+S6 system/product/etc/permissions/org.lineageos.globalactions.xml
