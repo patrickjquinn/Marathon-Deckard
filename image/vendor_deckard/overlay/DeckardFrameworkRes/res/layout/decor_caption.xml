@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Waydroid's freeform caption with a zero-height bar: Marathon draws the
+     chrome, and DecorCaptionView looks these ids up, so they stay. -->
+<com.android.internal.widget.DecorCaptionView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:descendantFocusability="beforeDescendants">
+
+    <LinearLayout
+        android:id="@*android:id/caption"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:gravity="end|center_vertical"
+        android:focusable="false"
+        android:descendantFocusability="blocksDescendants">
+
+        <Button android:id="@*android:id/back_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+        <Space android:layout_width="0dp" android:layout_height="0dp"
+            android:layout_weight="1" />
+        <Button android:id="@*android:id/pip_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/minimize_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/maximize_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/close_window"
+            android:layout_width="0dp" android:layout_height="0dp" />
+    </LinearLayout>
+</com.android.internal.widget.DecorCaptionView>

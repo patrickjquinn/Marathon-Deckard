@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Marathon draws the status bar and navigation; Android has neither. -->
+    <bool name="config_showNavigationBar">false</bool>
+    <dimen name="status_bar_height_default">0dp</dimen>
+    <dimen name="status_bar_height_portrait">0dp</dimen>
+    <dimen name="status_bar_height_landscape">0dp</dimen>
+    <dimen name="navigation_bar_height">0dp</dimen>
+    <dimen name="navigation_bar_height_landscape">0dp</dimen>
+    <dimen name="navigation_bar_width">0dp</dimen>
+    <dimen name="navigation_bar_frame_height">0dp</dimen>
+    <dimen name="navigation_bar_frame_height_landscape">0dp</dimen>
+    <dimen name="navigation_bar_gesture_height">0dp</dimen>
+
+    <!-- Marathon is dark (UiModeManager.MODE_NIGHT_YES). -->
+    <integer name="config_defaultNightMode">2</integer>
+
+    <!-- Fixed-orientation apps letterboxed on Marathon's floor, square, no
+         reachability education. -->
+    <integer name="config_letterboxBackgroundType">0</integer>
+    <color name="config_letterboxBackgroundColor">#ff040404</color>
+    <integer name="config_letterboxActivityCornersRadius">0</integer>
+    <bool name="config_letterboxIsEducationEnabled">false</bool>
+    <bool name="config_letterboxIsHorizontalReachabilityEnabled">false</bool>
+    <bool name="config_letterboxIsVerticalReachabilityEnabled">false</bool>
+</resources>
