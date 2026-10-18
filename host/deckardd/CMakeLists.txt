@@ -1,0 +1,37 @@
+cmake_minimum_required(VERSION 3.21)
+project(deckardd VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core DBus Gui Network)
+include(GNUInstallDirs)
+
+add_library(deckardcore STATIC
+    src/bridge.cpp
+    src/images.cpp
+    src/mpris.cpp
+    src/notifications.cpp
+    src/validate.cpp
+)
+target_include_directories(deckardcore PUBLIC src)
+target_link_libraries(deckardcore PUBLIC Qt6::Core Qt6::DBus Qt6::Gui Qt6::Network)
+target_compile_definitions(deckardcore PUBLIC QT_NO_CAST_FROM_ASCII QT_NO_KEYWORDS PROJECT_VERSION="${PROJECT_VERSION}")
+
+add_executable(deckardd src/main.cpp)
+target_link_libraries(deckardd PRIVATE deckardcore)
+install(TARGETS deckardd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES deckardd.service DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user)
+
+option(BUILD_TESTING "Build the tests" ON)
+if(BUILD_TESTING)
+    enable_testing()
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    add_executable(test_validate tests/test_validate.cpp)
+    target_link_libraries(test_validate PRIVATE deckardcore Qt6::Test)
+    add_test(NAME validate COMMAND test_validate)
+    add_executable(test_bridge tests/test_bridge.cpp)
+    target_link_libraries(test_bridge PRIVATE deckardcore Qt6::Test)
+    add_test(NAME bridge COMMAND test_bridge)
+endif()
