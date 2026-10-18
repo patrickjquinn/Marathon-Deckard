@@ -56,7 +56,7 @@ public class TestReceiver extends BroadcastReceiver {
             nm.notify(3, new Notification.Builder(context, CHANNEL)
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
                     .setContentTitle("Plain test")
-                    .setContentText("Two actions & a <tag>")
+                    .setContentText(intent.hasExtra("text") ? intent.getStringExtra("text") : "Two actions & a <tag>")
                     .setContentIntent(open(context, "plain", 30))
                     .setAutoCancel(true)
                     .addAction(new Notification.Action.Builder(null, "First", event(context, "first", 31)).build())
