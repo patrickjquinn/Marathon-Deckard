@@ -273,6 +273,8 @@ public class BridgeService extends NotificationListenerService implements Link.L
     @Override
     public void onMessage(JSONObject m) {
         String type = m.optString("t");
+        if (type.equals("hello"))
+            return;
         if (type.equals("media_cmd")) {
             mMedia.command(m);
             return;
@@ -309,7 +311,6 @@ public class BridgeService extends NotificationListenerService implements Link.L
      * off. Media plays at full volume under Marathon's output volume.
      */
     private void applyAudio(boolean quiet, double alarm) {
-        requestInterruptionFilter(quiet ? INTERRUPTION_FILTER_ALARMS : INTERRUPTION_FILTER_ALL);
         AudioManager am = getSystemService(AudioManager.class);
         for (int stream : new int[] {AudioManager.STREAM_NOTIFICATION, AudioManager.STREAM_RING,
                 AudioManager.STREAM_SYSTEM}) {
@@ -319,6 +320,9 @@ public class BridgeService extends NotificationListenerService implements Link.L
         int alarmMax = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
         setVolume(am, AudioManager.STREAM_ALARM,
                 (int) Math.round(Math.max(0, Math.min(1, alarm)) * alarmMax));
+        // After the volumes: a ringer-mode change from them turns Do Not Disturb off.
+        mMain.postDelayed(() -> requestInterruptionFilter(
+                quiet ? INTERRUPTION_FILTER_ALARMS : INTERRUPTION_FILTER_ALL), 200);
         Log.i(Link.TAG, "audio: " + (quiet ? "quiet" : "audible") + ", alarm " + alarm);
     }
 
