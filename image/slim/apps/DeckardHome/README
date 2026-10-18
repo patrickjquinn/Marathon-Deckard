@@ -1,0 +1,6 @@
+S9's DeckardHome manifest (android.uid.system, DeckardSystem's process).
+It needs the platform key, so it replaces image/apps/DeckardHome/AndroidManifest.xml
+only together with build-chrome.sh building DeckardHome with
+PLATFORM_KEY=~/.marathon-secrets/deckard/aosp-test-keys/platform. Until
+then a Deckard-key build of it would fail to install and leave Android
+without a home.
