@@ -1,0 +1,17 @@
+#!/usr/bin/python3
+# "waydroid" with Waydroid's own notification forwarder off: DeckardBridge
+# carries Android notifications to Marathon instead, with replies, removal
+# and progress the forwarder lacks.
+import os
+import sys
+
+sys.path.insert(0, "/usr/lib/waydroid")
+import tools  # noqa: E402
+import tools.services.notification_manager as forwarder  # noqa: E402
+
+forwarder.start = lambda args, session: None
+forwarder.stop = lambda args: None
+
+if __name__ == "__main__":
+    os.umask(0o0022)
+    sys.exit(tools.main())

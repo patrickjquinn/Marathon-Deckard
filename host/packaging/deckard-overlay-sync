@@ -1,0 +1,19 @@
+#!/bin/sh
+# Copies Deckard's Android files into Waydroid's overlay, which Waydroid
+# mounts over the Android system and vendor partitions when the container
+# starts, and removes files an earlier version shipped.
+set -eu
+src=/usr/share/deckard/overlay
+dst=/var/lib/waydroid/overlay
+list=/var/lib/waydroid/deckard-overlay.list
+
+[ -d "$src" ] || exit 0
+mkdir -p "$dst"
+if [ -f "$list" ]; then
+	while IFS= read -r f; do
+		[ -e "$src/$f" ] || rm -f "$dst/$f"
+	done < "$list"
+fi
+(cd "$src" && find . -type f) > "$list.new"
+cp -a "$src/." "$dst/"
+mv "$list.new" "$list"
