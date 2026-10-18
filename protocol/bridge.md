@@ -116,6 +116,7 @@ Android system noise (`android` package channels `PHYSICAL_KEYBOARD`,
 | `reply` | `key`, `action`, `text` | Fill the action's `RemoteInput` with `text` (`SOURCE_FREE_FORM_INPUT`) and send its `PendingIntent`. |
 | `dismiss` | `key` | `cancelNotification(key)`. Android ignores it for ongoing notifications. |
 | `media_cmd` | `sid`, `cmd`, `position` | `play`, `pause`, `playpause`, `stop`, `next`, `previous`, or `seek` to `position` ms, through the session's `TransportControls`. |
+| `audio` | `quiet`, `alarm` | Marathon's sound state, sent on connect and on every change. `quiet` is true when Marathon's profile is silent or vibrate or Do Not Disturb is on; the bridge then requests `INTERRUPTION_FILTER_ALARMS` (Marathon's own alarms ring through all three), otherwise `INTERRUPTION_FILTER_ALL`. Either way Android's notification, ring and system streams stay at 0 (the Hub plays Marathon's notification sound, which follows the profile), the music stream is at its maximum under Marathon's output volume, and the alarm stream is `alarm` (0 to 1) of its maximum. deckardd reads these from `org.marathonos.Shell.Settings1.GetState` (`audioProfile`, `dndEnabled`, `alarmVolume`) and re-reads on `Audio1.StateChanged`, `Settings1.PropertyChanged` and a shell restart. |
 
 ## Mapping to Marathon
 
@@ -135,6 +136,10 @@ Notifications go to `org.freedesktop.Notifications` on the session bus:
 | hint `value` | Progress in percent, -1 when indeterminate (the Hub's ongoing-progress row) |
 | hint `x-kde-reply-placeholder-text` | `reply.placeholder` |
 | hint `x-marathon-conversation` | `conversation` as compact JSON. The Hub carries it but doesn't render threads yet. |
+
+A row the user closes (`NotificationClosed` reason 2) stays matchable for
+500 ms, because the Hub can report the close of a tapped row before the tap
+itself.
 
 An unchanged `post` (same digest of everything sent to the Hub) is not
 re-sent, so updates that change nothing visible make no new banner or sound.
