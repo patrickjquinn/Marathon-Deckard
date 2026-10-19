@@ -161,6 +161,100 @@ last report), the `Can*` properties, `Seeked`, and Play, Pause, PlayPause,
 Stop, Next, Previous, Seek and SetPosition. Players go away when the bridge
 disconnects and come back when it reconnects.
 
+## Keel Actions
+
+Android apps as Keel Actions providers, so that keel-mcp and Pilot can use
+them as they use Marathon apps. These messages share the bridge socket.
+
+deckardd (`host/deckardd/src/keelapps.cpp`) owns the session bus name
+`waydroid.<pkg>` for each launchable app, on a bus connection of its own,
+and serves `org.shipwright.Keel.Actions` at `/org/shipwright/Keel/Actions`.
+This is the app id Waydroid gives the app's window and desktop file, and the
+one the shell's `apps.list` reports. keel-mcp finds these names by calling
+`Describe` on each name it sees (there is no installed manifest for them).
+keel-mcp describes a name again only when its owner changes. So when an
+app's manifest changes, deckardd releases the name and takes it again on a
+new connection. The catalogue is kept in `~/.local/state/deckard/apps.json`,
+so the names are back as soon as deckardd starts, before Android is up.
+
+`Invoke` and `GetContext` are served only to `/usr/bin/keel-mcp` and
+`/usr/bin/pilotd`, compared by file (device and inode of
+`/proc/<pid>/exe`). Other callers get `AccessDenied`; `Describe` is open
+to everyone. A keel-mcp started with `--external` (a paired computer) gets no
+screen content. Every action except `screen.read` and the context is refused
+while the phone is locked (`org.marathonos.shell` `shell.state`).
+
+### Android to host
+
+| `t` | Fields | Meaning |
+|---|---|---|
+| `app_info` | `pkg`, `label`, `links`, `share`, `search`, `shortcuts` | One launchable app. Sent for every app after each connect, and again when the package or its shortcuts change. `links`: `[{s, h}]`, the scheme and host of each `VIEW` + `BROWSABLE` intent filter of an exported activity, read from the app's compiled `AndroidManifest.xml` (at most 16). `share`: an activity takes `ACTION_SEND` `text/plain`. `search`: `gms` for `com.google.android.gms.actions.SEARCH_ACTION` (the assistant's search intent), `android` for `ACTION_SEARCH`, or `""`. `shortcuts`: `[{id, label, long}]` (at most 15), from `LauncherApps` (manifest and dynamic) when the bridge may host shortcuts, otherwise the manifest's `android.app.shortcuts` XML. |
+| `app_gone` | `pkg` | The app was removed or has no launcher activity left. |
+| `app_list` | `pkgs` | After the `app_info`s of a connect: every app. deckardd withdraws any app not listed. |
+| `launched` | `req`, `ok`, `error` | The answer to `launch`. |
+| `screen` | `req`, `ok`, `error`, `pkg`, `snap`, `title`, `nodes` | The answer to `screen_read`. `snap` is a snapshot number (1 to 2^31-1). `nodes` are in tree order, at most 300: `{i, d, c, t, cd, h, v, f}` = index in this snapshot, depth among the nodes sent, class name, text, content description, hint, view id, flags. Flags: 1 clickable, 2 long-clickable, 4 editable, 8 checkable, 16 checked, 32 selected, 64 disabled, 128 focused, 256 scrollable, 512 password, 1024 heading. A node is sent when it is visible and has text, a description, a hint, or one of flags 1, 2, 4, 8, 256 or 512. A password field never has `t`. |
+| `ui_done` | `req`, `ok`, `error` | The answer to `ui_act`. |
+
+### Host to Android
+
+| `t` | Fields | Meaning |
+|---|---|---|
+| `launch` | `req`, `pkg`, `kind`, then per kind | Start an activity of `pkg`, with `FLAG_ACTIVITY_NEW_TASK`. `view`: `uri`, as `ACTION_VIEW` + `BROWSABLE`. `send`: `text`, `subject`, as `ACTION_SEND` `text/plain`. `search`: `query`, `mode` (`gms` or `android`). `shortcut`: `id`, through `LauncherApps.startShortcut`, or the manifest shortcut's intents (`startActivities`, the first with `NEW_TASK` and `CLEAR_TASK`, as Android's launcher starts them). Each is limited to `pkg` (`setPackage`) and must resolve with `MATCH_DEFAULT_ONLY`. |
+| `screen_read` | `req`, `pkg` | Describe the window of `pkg`. |
+| `ui_act` | `req`, `pkg`, `snap`, `node`, `act`, `text` | `act` `click` (`ACTION_CLICK` on the node or its nearest clickable ancestor) or `set_text` (`ACTION_SET_TEXT`, not on a password field) on node `node` of snapshot `snap`. Refused unless `snap` is the bridge's latest snapshot and the node is still on screen in `pkg`. |
+
+The screen comes from DeckardBridge's `ScreenReader` accessibility service
+(`canRetrieveWindowContent`, `flagRetrieveInteractiveWindows`,
+`flagReportViewIds`, no event types). It is bound only on demand. A
+`screen_read` or `ui_act` adds it to `enabled_accessibility_services` (with
+`WRITE_SECURE_SETTINGS`, a privapp permission), and it is removed again two
+minutes after the last request. The window it reads is the `TYPE_APPLICATION`
+window whose root belongs to `pkg`, the focused one if there are several.
+
+deckardd waits up to 15 s for a reply, then fails the call. A request made
+while the bridge is down is sent when the bridge connects, within the same
+15 s; requests already sent fail when the bridge drops. Bounds: label 128
+characters; shortcut ids 1 to 128 without control characters (taken as
+sent, never rewritten), labels 64, long labels 256; schemes
+`[a-z][a-z0-9+.-]{0,31}` other than `file`, `content`, `javascript`,
+`data`, `intent`, `android-app`, `about`, `jar`, `blob` and
+`android.resource`; hosts `[a-z0-9*][a-z0-9.*-]{0,252}`; node text 1,000,
+description 500, hint 200, class and view id 128, at most 400 nodes; error
+strings 256. Deckard's own packages are never published.
+
+### The manifest
+
+`Describe` returns a Keel manifest (`version` 1, `appId` `waydroid.<pkg>`,
+`context` `keel://waydroid.<pkg>/context`) with these tools:
+
+| Action | Arguments | Hints | What deckardd does |
+|---|---|---|---|
+| `app.show` | `link` (only if the app declares links; up to 2,048 characters) | idempotent, not destructive | Without a link: `org.marathonos.shell` `app.launch {id}`. With a link: `launch` `view`, then the shell's `app.launch` once the app's window is filed (below). The description lists up to 8 of the app's link schemes and hosts. |
+| `share.text` | `text` (20,000), `subject` (200) | open world | `launch` `send`. The app's share screen opens; the person sends from there. |
+| `app.search` | `query` (500) | idempotent | `launch` `search` |
+| `shortcut.<word>` | none | `confirm` and destructive when the label says delete, remove, erase, wipe, clear, reset, send, pay, buy, order, purchase, transfer, call, dial, post, publish, record, uninstall, block, report, sign out or log out | `launch` `shortcut`. `<word>` is the shortcut id in lower case with runs of other characters as `_`, prefixed `s` if it does not start with a letter, at most 40 characters, with `_2`, `_3`... when two collide. The title is `<label> (<app>)`. |
+| `screen.read` | none | read-only, `untrusted` | Only for the app in front of an unlocked, lit screen (`shell.state` `foregroundApp`). `screen_read`, then one line per node: `[<snap>.<i>] <role> "<text>" (<description>) hint "<hint>" #<view id> {<state>}`, indented by depth, at most 16,000 characters (`truncated` says if more were cut). Roles: `field`, `checkbox`, `switch`, `radio`, `button`, `image`, `web`, `slider`, `progress`, `list`, `text`, `item` (clickable), `group`. Result `{app, label, title, snapshot, screen, truncated}`. |
+| `ui.tap` | `node` (`<snap>.<i>`) | `confirm`, destructive | Only with `userInitiated` from Pilot (keel-mcp sets it only for pilotd) and for the app in front; `node` must be from the latest `screen.read`. `ui_act` `click`. |
+| `ui.type` | `node`, `text` (4,000) | `confirm`, destructive | As `ui.tap`, `ui_act` `set_text`. |
+
+keel-mcp refuses `confirm` and destructive tools to every client but Pilot
+(`NeedsConfirmation`), and Pilot asks the person before each of them.
+Pilot also asks before open-world tools (`share.text`).
+
+`GetContext` returns `{app, purpose, text}`, with `text` the `screen.read`
+lines (at most 4,000 characters), when the app is in front; otherwise `{}`.
+keel-mcp reads it only for a request Pilot says the person started.
+
+**Bringing the window forward.** An activity started by `launch` maps a
+window that the shell files as a card, because nobody launched it from
+Marathon. deckardd then polls the shell's `apps.running` every 250 ms, for
+up to 15 s, until it lists `waydroid.<pkg>`, and calls `app.launch`. The
+shell shows the window it already has instead of starting the app again.
+Launching through the shell first would race Waydroid's launcher intent
+against the action's. When Android is not running, deckardd calls
+`app.launch` first, which starts the session, and sends the `launch` when
+the bridge connects.
+
 ## Ambience palette
 
 Not a socket message. deckardd writes `/data/deckard/palette`
