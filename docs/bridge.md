@@ -399,6 +399,83 @@ descriptors and the app as `source`. Host tests cover deckardd's half
 (`tests/test_share.cpp`, with a fake sheet on a private bus); not yet run on
 the device, and the sheet needs the shell's half.
 
+## Shared storage
+
+Android's shared storage folders are the user's own folders, so a photo an
+Android app saves shows in Marathon's Gallery and Files, and a document
+saved in Marathon opens in an Android app.
+
+| Android (`/sdcard/…`) | Marathon |
+|---|---|
+| Documents | `~/Documents` (XDG_DOCUMENTS_DIR) |
+| Download | `~/Downloads` (XDG_DOWNLOAD_DIR) |
+| Pictures | `~/Pictures` (XDG_PICTURES_DIR; Marathon's camera saves in `Pictures/Marathon`) |
+| Music | `~/Music` (XDG_MUSIC_DIR) |
+| Movies | `~/Videos` (XDG_VIDEOS_DIR) |
+| DCIM | `~/DCIM` (Android cameras save in `DCIM/Camera`) |
+
+`Android/data` and `Android/obb`, and anything else in `/sdcard`, stay in
+Android's own data.
+
+**Waydroid has nothing for this** (1.6.3 and main at db7294c4): its session
+config binds only the Wayland and PulseAudio sockets and the user's data;
+its documentation suggests bind-mounting folders by hand.
+
+**Android 13's stack in the container.** Apps see `/storage/emulated/0`
+through MediaProvider's FUSE daemon, which works on `/data/media/0` (on the
+host `~/.local/share/waydroid/data/media/0`) as MediaProvider's own app
+uid, in group media_rw (1023, from WRITE_MEDIA_STORAGE). MediaProvider
+decides per app who may see what (storage permissions, ownership in its
+database); the lower filesystem only has to let MediaProvider in. Android
+apps never reach `/data/media` directly (0770 media_rw). The host user is
+uid 1000, which is Android's system uid; SELinux is off, so file modes and
+ACLs are all there is.
+
+**Mounting.** The LXC mount hook `deckard-shared-folders` (pipeline patch
+0046 adds `lxc.hook.mount` to Waydroid's `config_base`) runs as root in the
+container's mount namespace before `pivot_root`. It finds the session's
+data from Waydroid's `config_session` (the `data` bind), the user from its
+owner and the folder names from the user's `user-dirs.dirs`, one level under
+the home only. It creates missing folders (the user's as the user's,
+Android's as 1023:1023 0770, `/data/media/0` too on a first start) and
+binds each user folder over Android's, without `MS_REC`. Both trees are the
+user's to change, so every path is opened one component at a time with
+`O_NOFOLLOW` and mounted through `/proc/self/fd`: a link in either can't
+point a root mount anywhere else, and a folder not owned by the user is not
+shared. The mounts live in the container's namespace and go with it.
+Whatever an Android folder held before is moved into the user's folder
+(kept in Android if the name is taken), owned by the user, group media_rw,
+group read and write.
+
+**Permissions both ways, nothing world-writable.** deckardd gives each
+folder an access ACL with group media_rw rwx and a default ACL with
+media_rw rwx and the user rwx, and once (the first time it runs) the same to
+everything inside that the user owns (`SharedStorage`, written as the
+kernel's `system.posix_acl_*` xattrs). Files the user's apps create inherit
+read and write for MediaProvider; files MediaProvider creates (owned by its
+uid) inherit read and write for the user. New entries made on the host get
+the ACL as deckardd sees them. A file whose mode a program narrows with
+`chmod` loses the group's write (the mask), and stays readable.
+
+**Indexing.** Files added or removed on the host bypass the FUSE daemon, so
+MediaProvider doesn't see them. deckardd watches each folder and its
+subfolders and, 3 s after a change, sends DeckardSystem `media_scan` with
+the folders' Android paths; DeckardSystem calls `MediaStore.scanFile` on
+each, which indexes new files and forgets gone ones. When Android comes up,
+all six folders are scanned once, for what changed while it was off.
+Changes deeper than one level under a folder are indexed on the next scan of
+it or MediaProvider's idle scan.
+
+**Security.** Android apps reach only these six folders of the user's home,
+through MediaProvider's rules; nothing else of the home is mounted, links
+inside the folders resolve inside the container, and submounts are not
+carried over.
+
+Host tests: `test-deckard-shared-folders.py` (mapping, creation, moving
+Android's files, refusing links and data outside the home) and
+`test_sharedstorage` (ACLs, inheritance, the paths sent for scanning). Not
+yet run on the device.
+
 ## A boot that never completes
 
 The first start after a reset hung for about six minutes: the composer HAL

@@ -16,6 +16,7 @@
 #include "sessionfollower.h"
 #include "settingsapi.h"
 #include "share.h"
+#include "sharedstorage.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
@@ -177,6 +178,17 @@ int main(int argc, char *argv[]) {
         if (type == QLatin1String("install_result"))
             packages.handle(type, message);
     });
+    // The user's folders are Android's shared storage (deckard-shared-folders).
+    SharedStorage storage(SharedStorage::userFolders(), state + QStringLiteral("/shared-acl-v1"),
+                          [&systemBridge](const QJsonObject &message) {
+                              if (!systemBridge.isConnected())
+                                  return false;
+                              systemBridge.send(message);
+                              return true;
+                          });
+    storage.prepare();
+    QObject::connect(&systemBridge, &Bridge::connectedChanged, &storage, &SharedStorage::setConnected);
+
     // Shares with Android apps; only the shell asks for targets and hands one a request.
     Sharing sharing(
         &dbusRoot, bus,

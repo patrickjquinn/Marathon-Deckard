@@ -125,6 +125,8 @@ final class HostLink {
             Uninstall.handle(m);
         else if ("share_targets".equals(m.optString("t")) || "share".equals(m.optString("t")))
             Share.handle(m);
+        else if ("media_scan".equals(m.optString("t")))
+            MediaScan.handle(m);
     }
 
     private void onDisconnected() {
