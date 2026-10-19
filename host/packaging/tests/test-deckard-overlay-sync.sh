@@ -49,7 +49,21 @@ cfg "system_datetime = 1790486210"
 run
 [ ! -e "$W/waydroid/overlay/$hwc" ] || fail "installed with no vendor_datetime"
 
+pc=system/apex/com.android.permission/priv-app/PermissionController@TQ3A.230901.001/PermissionController.apk
+mkdir -p "$W/share/overlay/$(dirname "$pc")"
+echo patched > "$W/share/overlay/$pc"
+cfg "vendor_datetime = 1790486210
+system_datetime = 1790477549"
+run
+[ -f "$W/waydroid/overlay/$pc" ] || fail "PermissionController not installed for its image"
+cfg "vendor_datetime = 1790486210
+system_datetime = 1800000000"
+run
+[ ! -e "$W/waydroid/overlay/$pc" ] || fail "PermissionController kept for another system image"
+[ -f "$W/waydroid/overlay/$hwc" ] || fail "vendor file removed for a system image change"
+
 rm "$W/waydroid/waydroid.cfg"
 run
 [ ! -e "$W/waydroid/overlay/$hwc" ] || fail "installed with no waydroid.cfg"
+[ ! -e "$W/waydroid/overlay/$pc" ] || fail "PermissionController installed with no waydroid.cfg"
 echo "PASS"

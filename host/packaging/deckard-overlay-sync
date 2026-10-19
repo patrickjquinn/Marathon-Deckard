@@ -16,7 +16,8 @@ cfg=$wd/waydroid.cfg
 
 # Overlay files made for one Waydroid image only, "<waydroid.cfg key> <value>
 # <path>": anywhere else they are left out, so they never shadow a newer image.
-guards='vendor_datetime 1790486210 vendor/lib64/hw/hwcomposer.waydroid.so'
+guards='vendor_datetime 1790486210 vendor/lib64/hw/hwcomposer.waydroid.so
+system_datetime 1790477549 system/apex/com.android.permission/priv-app/PermissionController@TQ3A.230901.001/PermissionController.apk'
 
 [ -d "$src" ] || exit 0
 mkdir -p "$dst"
