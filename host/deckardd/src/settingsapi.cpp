@@ -9,6 +9,7 @@
 #include <QBuffer>
 #include <QDBusMessage>
 #include <QDBusMetaType>
+#include <QDBusPendingCall>
 #include <QFile>
 #include <QJsonArray>
 
@@ -222,7 +223,27 @@ void SettingsApi::SetGoogleServices(const QString &key, bool enabled, const QDBu
                 QString());
 }
 
+// microG's window comes from Android, not from a Marathon launch: once
+// Android has started it, the shell is asked to show it (or the next one).
 void SettingsApi::OpenGoogleServices(const QString &page, const QDBusMessage &message) {
-    if (!invalid(message, !ManageCheck::isGooglePage(page)))
-        forward(message, QStringLiteral("gms_open"), {{QStringLiteral("page"), page}}, QString());
+    if (invalid(message, !ManageCheck::isGooglePage(page)))
+        return;
+    m_callers->require(message, privileged(), [this, message, page] {
+        m_manage->request(QStringLiteral("gms_open"), {{QStringLiteral("page"), page}},
+                          [this, message](bool ok, const QJsonObject &reply) {
+                              if (!ok) {
+                                  m_bus.send(message.createErrorReply(
+                                      kFailed, reply.value(QStringLiteral("error")).toString()));
+                                  return;
+                              }
+                              QDBusMessage expect = QDBusMessage::createMethodCall(
+                                  QStringLiteral("org.marathonos.Shell"),
+                                  QStringLiteral("/org/marathonos/Shell/Navigation"),
+                                  QStringLiteral("org.marathonos.Shell.Navigation1"),
+                                  QStringLiteral("ExpectAppWindow"));
+                              expect << QStringLiteral("waydroid.com.google.android.gms");
+                              m_bus.asyncCall(expect, 2000);
+                              m_bus.send(message.createReply());
+                          });
+    });
 }
