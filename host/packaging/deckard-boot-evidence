@@ -1,9 +1,9 @@
 #!/bin/sh
 # Prints what a stuck Android boot is waiting on, for deckardd's boot
 # watchdog to put in the journal: the container's freezer state, the boot
-# properties, and the composer HAL's and SurfaceFlinger's stacks and Unix
-# sockets (the composer's Wayland link among them). Run as root through
-# pkexec; it only reads.
+# properties, the composer HAL's start-up log, and the composer HAL's and
+# SurfaceFlinger's stacks and Unix sockets (both ends of the composer's
+# Wayland link among them). Run as root through pkexec; it only reads.
 set -u
 [ $# -eq 0 ] || { echo "usage: deckard-boot-evidence" >&2; exit 2; }
 cg=/sys/fs/cgroup/lxc.payload.waydroid
@@ -15,6 +15,8 @@ attach() {
 echo "== freezer: cgroup.freeze $(cat "$cg/cgroup.freeze" 2>&1); $(grep frozen "$cg/cgroup.events" 2>&1)"
 echo "== properties"
 attach /system/bin/getprop | grep -E '^\[(sys\.boot_completed|dev\.bootcomplete|init\.svc\.(surfaceflinger|vendor\.hwcomposer[^]]*|zygote|servicemanager|hwservicemanager))\]'
+echo "== composer start-up log"
+attach /system/bin/logcat -d -v threadtime -s hwcomposer HidlServiceManagement ServiceManagement | tail -n 200
 
 find "$cg" -name cgroup.procs -exec cat {} + 2>/dev/null | sort -un | while read -r pid; do
 	exe=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | head -n 1)
@@ -25,7 +27,11 @@ find "$cg" -name cgroup.procs -exec cat {} + 2>/dev/null | sort -un | while read
 	inner=$(awk '/^NSpid:/ { print $NF }' "/proc/$pid/status")
 	echo "== $exe: host pid $pid, Android pid $inner, state $(awk '/^State:/ { print $2 }' "/proc/$pid/status")"
 	echo "-- unix sockets"
-	timeout 10 nsenter -t "$pid" -n ss -xp 2>&1 | grep -F "pid=$pid,"
+	pat="pid=$pid,"
+	case $exe in
+	*composer*) pat="$pat|marathon-wayland" ;;
+	esac
+	timeout 10 nsenter -t "$pid" -n ss -xp 2>&1 | grep -E "^Netid|$pat"
 	echo "-- stacks"
 	attach /system/bin/debuggerd -b "$inner"
 done
