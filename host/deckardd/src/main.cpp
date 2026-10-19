@@ -10,6 +10,7 @@
 #include "notifications.h"
 #include "packages.h"
 #include "palette.h"
+#include "reclaimer.h"
 #include "runtime.h"
 #include "sessionfollower.h"
 #include "settingsapi.h"
@@ -167,12 +168,15 @@ int main(int argc, char *argv[]) {
 
     const QString sessionUnit = QStringLiteral("marathon-waydroid.service");
     Manage        manage([&systemBridge](const QJsonObject &message) { systemBridge.send(message); });
-    Runtime       runtime({qEnvironmentVariable("DECKARD_CGROUP", QStringLiteral("/sys/fs/cgroup/lxc.payload.waydroid")) +
-                               QStringLiteral("/memory.current"),
+    const QString cgroup = qEnvironmentVariable("DECKARD_CGROUP", QStringLiteral("/sys/fs/cgroup/lxc.payload.waydroid"));
+    Runtime       runtime({cgroup + QStringLiteral("/memory.current"),
                            state + QStringLiteral("/settings.json"),
                            QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation)},
                           [&](const QString &method) { UnitWatch::call(bus, method, sessionUnit); });
     UnitWatch     unitWatch(bus, sessionUnit, &runtime);
+    Reclaimer     reclaimer({cgroup}, [&systemBridge](const QJsonObject &message) { systemBridge.send(message); });
+    QObject::connect(&systemBridge, &Bridge::connectedChanged, &reclaimer, &Reclaimer::setConnected);
+    QObject::connect(&systemBridge, &Bridge::received, &reclaimer, &Reclaimer::handle);
     QObject::connect(&systemBridge, &Bridge::received, &manage, &Manage::handle);
     QObject::connect(&systemBridge, &Bridge::connectedChanged, &manage, &Manage::setConnected);
     QObject::connect(&manage, &Manage::connectedChanged, &runtime, [&](bool connected) {

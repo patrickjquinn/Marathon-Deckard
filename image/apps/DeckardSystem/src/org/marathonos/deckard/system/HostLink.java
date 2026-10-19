@@ -119,6 +119,8 @@ final class HostLink {
             AppActions.handle(m);
         else if ("focus".equals(m.optString("t")))
             WindowFit.focus(m.optString("pkg"));
+        else if ("reclaim".equals(m.optString("t")))
+            Reclaim.handle(m);
     }
 
     private void onDisconnected() {

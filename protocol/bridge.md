@@ -397,6 +397,7 @@ days at start.
 | `pick` | `id`, `mode`, `mime`, `multiple`, `name`, `kind` | A file or camera request. `id` is 16 lowercase hex digits, chosen by DeckardSystem. `mode` `open` (ACTION_OPEN_DOCUMENT, ACTION_GET_CONTENT; `mime` the accepted types, `multiple`), `save` (ACTION_CREATE_DOCUMENT; `name` the suggested file name) or `capture` (ACTION_IMAGE_CAPTURE, ACTION_VIDEO_CAPTURE; `kind` `image` or `video`). |
 | `pick_done` | `id` | The app closed a file it wrote for a `save`; copy it to where the person chose. Sent on every close. |
 | `pick_cancel` | `id` | The app or the person gave up; deckardd forgets the request. |
+| `reclaimed` | `id`, `ok`, `killed` (`[{pid, process}]`) or `error` | The answer to a `reclaim`. |
 
 ### Host to Android
 
@@ -405,6 +406,7 @@ days at start.
 | `hello` | `v` | |
 | `picked` | `id`, `ok`, `files` | The answer to a `pick`. For `open` and `capture`, `files` (`[{name, size}]`) are in `xfer/<id>/`. For `save`, one `{name}`: DeckardSystem creates the empty file there and gives the app write access. `ok` false: cancelled or failed. |
 | `focus` | `pkg` | Marathon has `waydroid.<pkg>` in front (deckardd follows `org.marathonos.Shell.Navigation1.ForegroundAppChanged`; sent on every change and on connect). Android's focus normally follows the hwcomposer's `wl_keyboard.enter`; when that never came, DeckardSystem calls `setFocusedTask` on the package's top visible task, 150 ms later, unless Android already has it focused. |
+| `reclaim` | `id`, `count` (1–8), `reason` | Memory is short: end up to `count` cached app processes, least recently used first. Only processes ActivityManager ranks `IMPORTANCE_CACHED`, with an app uid (10000 and up) and not Deckard's own, are candidates; each goes through `killPids` without `secure`, which re-checks its adj and spares one that came forward. deckardd sends it when the container's `memory.events` `high` or `max` counter rises, on a PSI trigger on the container's `memory.pressure` (`some 200000 2000000`, 10 % of 2 s) or the phone's `/proc/pressure/memory` (`some 400000 2000000`, the shell's High level), with `count` 2, at most once every 2 s, or 10 s after a reclaim that found nothing. |
 
 ### Where each goes
 

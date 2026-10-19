@@ -22,6 +22,7 @@ add_library(deckardcore STATIC
     src/notifications.cpp
     src/packages.cpp
     src/palette.cpp
+    src/reclaimer.cpp
     src/runtime.cpp
     src/sessionfollower.cpp
     src/settingsapi.cpp
@@ -58,6 +59,9 @@ if(BUILD_TESTING)
     target_compile_definitions(test_palette PRIVATE
         DECKARD_PALETTE_XML="${CMAKE_CURRENT_SOURCE_DIR}/../../image/vendor_deckard/overlay/DeckardPalette/res/values/colors.xml")
     add_test(NAME palette COMMAND test_palette)
+    add_executable(test_reclaimer tests/test_reclaimer.cpp)
+    target_link_libraries(test_reclaimer PRIVATE deckardcore Qt6::Test)
+    add_test(NAME reclaimer COMMAND test_reclaimer)
     add_executable(test_sessionfollower tests/test_sessionfollower.cpp)
     target_link_libraries(test_sessionfollower PRIVATE deckardcore Qt6::Test)
     add_test(NAME sessionfollower COMMAND test_sessionfollower)
