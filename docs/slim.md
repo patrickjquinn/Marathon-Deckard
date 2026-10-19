@@ -5,9 +5,9 @@ Goal from the user: Deckard's Android (Waydroid 1.6.3, LineageOS 20 VANILLA
 runs Android apps for Marathon, with as much as possible taken out **without
 rebuilding the Android image**. 400 MB is still too heavy.
 
-Status: **phase 1** (inventory, plan, stubs, scripts; no device changes),
-written 18 October 2026. Phase 2 applies the stages on the device, measures
-each, and fills in the results table at the end.
+Status: phase 2 done on 19 October 2026. Stages S1–S6, S8 and S9 are
+measured, regression-tested and shipped in `image/` (whiteouts, overlay,
+`waydroid.prop`); S7 was measured and left out. Results at the end.
 
 ## Where the memory goes today
 
@@ -117,9 +117,17 @@ no app open, the same way as every stage.
 | Runtime settings | `deckard-slim.rc` at `sys.boot_completed` | `device_provisioned`, browser role, `max_empty_time_millis` |
 | Platform-signed app | DeckardSystem (`android.uid.system`) | intent stubs, file provider, window fit |
 
-Until phase 2 has validated them, the new files live in `image/slim/`
-(`whiteouts.staged` with stage tags, `properties`, `overlay/`), not in
-`image/overlay`, so no other agent's deploy picks them up.
+What shipped: `image/whiteouts` (128 paths), `image/waydroid.prop` (the
+ABI lists, written by `deckard-overlay-sync` because they must match the
+zygote rc), and in `image/overlay`: `init.zygote64_32.rc`,
+`handheld_core_hardware.xml`, `DeckardSlimRes`, `DeckardSystem` with
+`deckard-system.rc`, `deckard-slim.rc`, the shared-uid DeckardHome and a
+`deckard-chrome.rc` without deckard-wm. `image/slim/` keeps the staging
+copies, `whiteouts.staged` with stage tags and the unshipped S7 props.
+`image/tools/slim/` has `measure.sh` and `restart.sh`. For taps in
+scripts on the HackberryPi, `marathon-touchctl` needs
+`MARATHON_TOUCH_HEIGHT=720` (it defaults to 1440); then screenshot
+coordinates are tap coordinates.
 
 ## Package inventory and verdicts
 
@@ -421,7 +429,23 @@ crash in the crash buffer, the intents resolved as expected.
 | S3 | 335 | 31 | 85 | 786 MB | 76 | 71 | 16.4 s | 0.06 % | 62 | all 5 OK; per-task windows, focus and Settings' all-files page work without SystemUI |
 | S4 | 338 | 33 | 88 | 795 MB | 78 | 65 | 11.7 s | 0.07 % | 62 | all 5 OK; links → Marathon Browser, app details → Marathon Settings, DIAL → Marathon Phone (screenshots) |
 | S5 | 321 | 33 | 80 | 764 MB | 74 | 58 | 21.2 s | 0.06 % | 62 | all 5 OK; `phone`, `isub`, `telecom` services absent |
-| S6 | 316 | 39 | 78 | 751 MB | 73 | 54 | 16.3 s | (0.24 %) | (98) | all 5 OK; CPU window overlapped a shell redeploy, to repeat |
+| S6 | 317 | 33 | 79 | 757 MB | 74 | 53 | 11.5 s | 0.06 % | 62 | all 5 OK (re-measured after a data reset; the first S6 window overlapped a shell redeploy) |
+| S7 | 315 | 31 | 79 | 754 MB | 74 | 53 | 11.4 s | 0.06 % | 62 | all 5 OK; −3 MiB is noise, so not shipped |
+| S8 | 295 | 33 | 69 | 703 MB | 68 | 53 | 16.3 s | 0.06 % | 62 | all 5 OK; seven boot-woken processes gone |
+| S9 | 265 | 33 | 65 | 671 MB | 66 | 53 | 16.2 s | 0.06 % | 62 | all 5 OK; window fit converted a [124,43][596,585] task to the display, focus followed Marathon, taps reached the right task |
+
+**Before → after (S0 → S9):** anonymous memory 466 → 265 MiB (−43 %),
+anon + shmem + kernel 655 → 363 MiB (−45 %), summed PSS 1,063 → 671 MB
+(−37 %), 92 → 66 processes, 165 → 53 packages, boot 21–36 s → 11–16 s. Idle
+CPU was already low (0.06–0.07 % of a core, 62 context switches/s) and
+stayed there.
+
+What is left at idle (S9 top PSS): system_server 186 MB, surfaceflinger
+77, zygote64 49, MediaProvider 24, PermissionController 22, DeckardSystem
+(with DeckardHome) 22, composer HAL 20, NetworkStack 20, acore 17,
+mediaserver 17, allocator HAL 16, DeckardIme 14, android.process.media 14,
+webview_zygote 13, audioserver 12, DeckardBridge 12, ext.services 11,
+cameraserver 11, then the media codecs and small HALs.
 
 Boot times vary by several seconds run to run (the composer HAL aborts
 once at every session start, "Binder threadpool cannot be shrunk after
@@ -443,6 +467,14 @@ Fixed on the way:
   30 s `BOOT TIMEOUT` waiting for a wallpaper window. `DeckardSlimRes` (a
   separate static RRO on `android`) sets `config_checkWallpaperAtBoot`
   false.
+- **S8.** `max_empty_time_millis` changed nothing: OomAdjuster only trims
+  empty processes beyond `CUR_TRIM_EMPTY_PROCESSES` (8, derived from the
+  stock 32), and at idle no adjustment runs to apply it. `am kill-all` a
+  minute after boot does it.
+- **After a data reset** (Marathon Settings' Reset Android), nothing set
+  `device_provisioned` again, because Provision is whited out, and Android
+  Settings exited at once ("Device is not provisioned"). `deckard-slim.rc`
+  sets it and `user_setup_complete` at every boot.
 - **S4.** The FileChooser portal is called, but xdg-desktop-portal-gtk's
   dialog never appears on Marathon's screen ("Unhandled parent window type").
   Marathon needs to show that toplevel or provide its own
@@ -455,3 +487,20 @@ Rolled back:
   boot: `AppRestrictionController.onSystemReady` calls `getInstalledModules`,
   and `ModuleInfoProvider` throws "Call to getInstalledModules before
   metadata loaded" when there is no metadata package.
+
+## Left for Marathon
+
+- **Share sheet.** Android shares stay in Android's chooser until Marathon
+  has a share sheet (the shell's old one was removed in c0d1f559).
+- **File chooser.** The FileChooser portal's GTK dialog doesn't show on
+  Marathon; DeckardSystem's pickers wait on it.
+- **Camera.** A "capture and return" Keel action in Marathon Camera would
+  replace deckardd's watch on `~/Pictures/Marathon`.
+- **Messages and Maps.** A message body in Messages' route, and a Keel
+  action that shows a place search.
+- **Settings.** Marathon pages for Android apps' grants (*Follow-up:
+  Marathon Settings pages*), after which Android Settings can go.
+- **Foreground signal.** `Navigation1.ForegroundAppChanged` for deckardd's
+  focus fallback (requested; the shell's keyboard-enter fix made it
+  rarely needed).
+
