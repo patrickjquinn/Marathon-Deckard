@@ -61,7 +61,7 @@ namespace ManageCheck {
         const QString pkg = r.value(QStringLiteral("pkg")).toString();
         if (!Validate::isPackageName(pkg))
             return {};
-        QString label = Validate::text(r, QStringLiteral("label"), 128);
+        QString label = Validate::label(r, QStringLiteral("label"));
         if (label.trimmed().isEmpty())
             label = pkg;
 
@@ -116,7 +116,7 @@ namespace ManageCheck {
             if (!Validate::isPackageName(pkg) || seen.contains(pkg) || out.size() >= 500)
                 continue;
             seen.insert(pkg);
-            QString label = Validate::text(a, QStringLiteral("label"), 128);
+            QString label = Validate::label(a, QStringLiteral("label"));
             if (label.trimmed().isEmpty())
                 label = pkg;
             out.append(QVariantMap{{QStringLiteral("pkg"), pkg},
