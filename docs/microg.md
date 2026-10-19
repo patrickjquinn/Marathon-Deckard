@@ -16,7 +16,7 @@ Only the parts that make apps work are in, and Marathon owns location.
 | `/system/etc/permissions/privapp-permissions-microg.xml` | The privileged permissions, each granted or denied (below) |
 | `/system/etc/sysconfig/microg.xml` | microG on Doze's allowlist and the data saver's, so push keeps its connection and microG needs no foreground-service notification |
 | `/system/etc/microg.xml` | microG's defaults (its `SettingsProvider` reads this file): device registration, push and SafetyNet on |
-| `/system/etc/init/deckard-microg.rc`, `/system/bin/deckard-microg` | At `sys.boot_completed`: microG's runtime permissions (location, accounts, notifications), and microG's launcher entry and its own network-location sources disabled |
+| `/system/etc/init/deckard-microg.rc`, `/system/bin/deckard-microg` | At `sys.boot_completed`: microG's runtime permissions (location, accounts, notifications), and four of its components disabled: its Wi-Fi/cell `NetworkLocationService` and its system network, fused and geocoder providers |
 
 Not installed: GsfProxy (only for C2DM, the push system before GCM; microG
 says most users don't need it), UnifiedNlp backends, the Huawei (`-hw`) and
@@ -79,7 +79,7 @@ asks for 12 (from its merged manifest, against the image's
 
 | Granted to GmsCore | Why |
 |---|---|
-| `INSTALL_LOCATION_PROVIDER` | microG's fused location provider |
+| `INSTALL_LOCATION_PROVIDER` | microG's location service for apps |
 | `CHANGE_DEVICE_IDLE_TEMP_WHITELIST` | push: lets the app a high-priority message is for run in Doze |
 | `UPDATE_APP_OPS_STATS`, `WATCH_APPOPS`, `UPDATE_DEVICE_STATS` | location on behalf of apps: attribution, their app ops, wake-lock accounting |
 
@@ -91,7 +91,9 @@ for Companion `INSTALL_PACKAGES` and `DELETE_PACKAGES` (Marathon's Store
 installs) and `INTERACT_ACROSS_USERS`.
 
 Runtime permissions, granted at every boot: GmsCore `ACCESS_FINE_LOCATION`,
-`ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION`, `GET_ACCOUNTS`,
+`ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION` (restricted: microG
+added to an Android that was already set up isn't exempt, so DeckardSystem
+allowlists it at start), `GET_ACCOUNTS`,
 `POST_NOTIFICATIONS`; Companion `GET_ACCOUNTS`, `POST_NOTIFICATIONS`. Not
 granted: contacts, phone, storage, camera, body sensors, SMS, Bluetooth.
 
@@ -115,9 +117,14 @@ app → LocationManager / microG's FusedLocationProviderClient
   `LocationProviderBase` with the v3 network provider action and
   `serviceVersion` 3, above microG's 2. `deckard-microg` also disables
   microG's `NetworkLocationProviderService` and `NetworkLocationService`,
-  so microG takes its locations from the system network provider (its
-  `hasNetworkLocationServiceBuiltIn()` is then false) and its fused
-  provider fuses Marathon's fixes.
+  so microG's location service for apps takes its locations from the
+  system network provider (its `hasNetworkLocationServiceBuiltIn()` is
+  then false).
+- microG's system fused and geocoder providers are disabled too. Bound by
+  system_server, they kept microG's main process (about 64 MB PSS) running
+  all the time; Android's own fused provider runs in system_server. microG's
+  geocoder has no backend here anyway (its Nominatim default is off), so
+  `Geocoder.isPresent()` stays false as before.
 - deckardd runs one GeoClue client only while Android has a request, with
   GeoClue's accuracy level exact and `TimeThreshold` from the request's
   interval, and stops it when the request ends or the bridge drops.
@@ -128,8 +135,6 @@ app → LocationManager / microG's FusedLocationProviderClient
 - The provider reports the `network` provider. Apps that ask for the
   `gps` provider by name get nothing: Android 13 can't take a GNSS provider
   from an app (Android 14 can, `config_gnssLocationProviderPackageName`).
-- microG's geocoder stays off (its default without a backend): it would
-  send queries to Nominatim.
 
 ## Settings and the Store
 
@@ -145,58 +150,66 @@ app → LocationManager / microG's FusedLocationProviderClient
   `device` answer, whose `gms` is now true only when microG is installed and
   enabled.
 
-## State on 2026-10-19 (stopped before the device slot)
+- Settings opens microG's sign-in and self-check through DeckardSystem and
+  then asks the shell's `ExpectAppWindow` for `waydroid.com.google.android.gms`,
+  since the window comes from Android rather than a Marathon launch.
 
-Committed: deckardd's location bridge (a9a6da6) and Settings API (7935771);
-Marathon-Shell's GeoClue agent change (17222ea0) and the Settings section
-(eb1640ef). Host tests pass (18 ctest suites, 163 Settings QML tests).
+## On the HackberryPi (2026-10-19, shell a10ec2b0, deckard 20e5381)
 
-Left uncommitted, built but **not run on a device**:
+Installed through the package path: the `deckard` aport built with the
+microG sources and unpacked onto the device, `deckard-overlay-sync`, then a
+session restart.
 
-- `image/microg/` (`install.sh`, `SHA256SUMS`) and the overlay files listed
-  above; Marathon-Shell `packaging/packages/deckard/APKBUILD` (microG
-  sources, sha512, `unzip`, the `install.sh` call).
-- DeckardBridge: `NetworkLocation.java`, `stubs/`, the manifest service and
-  optional `uses-library`, routing in `BridgeService`, `Requirements` (gms =
-  installed and enabled). DeckardSystem: `GoogleServices.java` and the `gms`
-  ops in `Manage.java`. APKs rebuilt in `build/` only, not copied to the
-  overlay.
-- `protocol/bridge.md`: the `device_result` gms wording.
-- Device tools: `~/.cache/deckard-agents/microg/stage.sh` (pushes files,
-  `apply.sh`, `revert.sh` to `/var/tmp/deckard-microg`), `restart.sh` and
-  `measure.sh` (the slim ones, lock role `microg`); downloads in `…/microg/dl`.
+| Check | Result |
+|---|---|
+| Boot | PASS: system_server accepts the privapp file (no enforcement crash) |
+| Self-check | PASS: "System spoofs signature", microG Services installed with the correct signature, Companion (`com.android.vending`, microG's certificate) installed with the correct signature, location (precise, approximate, background), accounts and notifications granted. Unticked by choice: GsfProxy, storage, phone, SMS, overlay |
+| Check-in and push | PASS: check-in got an Android ID; `GmsGcmMcsSvc` connected to mtalk.google.com:5228 over TLS and logged in |
+| Push with a real app | PASS: Element `im.vector.app` 1.6.66 gplay (official GitHub asset, SHA-256 `9c605d17…a0675d66d`, cert `f3ff38d2…2deabf5f` = Element's `assetlinks.json`), launched only, nothing signed into. Firebase asked microG to register (sender 912726360885) and Google returned an FCM token (`…:APA91b…`). Then uninstalled; microG's `gcmstatus` database has no apps or registrations left; APK deleted on both sides |
+| Location | PASS: Android's `network` provider is `org.marathonos.deckard.bridge/.NetworkLocation`; a throwaway test app (uninstalled afterwards) got `Location[network 53.2439,-6.1331 hAcc=25000]` from both the `network` and `fused` providers: GeoClue's BeaconDB fix through deckardd, with the request off again afterwards. Not tested: an app calling microG's FusedLocationProviderClient (no such app installed) |
+| Settings | PASS: the Google services (microG) section; push off closes the MCS connection and on reconnects within a second; Google services off disables GmsCore and Companion and hides the rest of the section; self-check opens in front. Sign-in: Android starts microG's `LoginActivity`, but while another microG task (the self-check) has a window, Marathon shows that one instead (a second Android task of the same package; see below) |
+| Store | PASS: with microG off, the handler's `android-device.json` has `"gms":false`; on, `"gms":true`, so the warning clears |
+| No launcher icon | PASS: Waydroid writes `waydroid.com.google.android.gms.desktop` with `NoDisplay=true` (microG is one of its system apps), so no icon in the grid, and Marathon can still show microG's windows |
 
-Next, on the HackberryPi:
+### Cost
 
-1. Baseline: `restart.sh`, 2 min, `measure.sh` (compare slim.md's 612–625 MB
-   PSS, 246 MiB host cost, 11–16 s boot).
-2. `stage.sh`, then `restart.sh 'sh /var/tmp/deckard-microg/apply.sh'`. Check
-   it boots (privapp enforcement), `dumpsys package com.google.android.gms`
-   (signatures spoofed, the privileged grants), the same for Companion
-   (`com.android.vending`, microG's cert), the
-   `/system/etc/permissions/com.android.location.provider.xml` library, the
-   network provider (`dumpsys location`: DeckardBridge, not microG), no
-   `waydroid.com.google.android.gms.desktop` launcher entry, and no
-   foreground-service notification in the Hub.
-3. microG's self-check (Settings > Google services > Check), check-in, the
-   MCS connection (`dumpsys activity service …/org.microg.gms.gcm.McsService`),
-   and wake-ups over 30 min idle with Doze forced.
-4. Measure again: idle PSS of `com.google.android.gms` and `:persistent`,
-   boot time, host cost.
-5. Location: needs the shell with 17222ea0 deployed; an app gets a fix.
-6. Push with a real app (approved for one test only): Element
-   `vector-gplay-arm64-v8a-release-signed.apk` v1.6.66 from
-   element-hq/element-android releases, SHA-256
-   `9c605d17b3f2517119ea95bb0b55f5e2d582bbe7b2b1c72934e0fe9a0675d66d`,
-   signed `O=New Vector Ltd.` with certificate SHA-256
-   `f3ff38d2…2deabf5f`, which matches im.vector.app in Element's
-   `/.well-known/assetlinks.json`. Launch only, sign into nothing, confirm the
-   FCM token and microG's registration; then uninstall, clear the
-   registration and delete the file (deleted here; download again).
-7. If all of this passes, commit the overlay/APK part (copy the APKs into
-   `image/overlay/system/priv-app/`) and the APKBUILD, and record the numbers
-   here. If it fails, run `revert.sh`.
+Same method as slim.md: a session restart, 2 minutes idle, then
+`measure.sh` (60 s CPU window); host cost is MemAvailable with the session
+stopped (60 s settled) minus with it running.
 
-Known costs: GmsCore is 108 MB plus 42 MB of unpacked libraries, and
-deckard-overlay-sync copies the overlay, so about 300 MB of disk on the
-device. That still needs measuring and trimming.
+| | Baseline (no microG) | With microG |
+|---|---|---|
+| Summed PSS | 611.7 MB | 724.8–745.4 MB (+113–134 MB) |
+| microG processes | none | `:persistent` 62–65 MB (push; service adj 500), main 64–71 MB (`cch-empty`, adj 905) |
+| Anon | 220.8 MiB | 329–346 MiB |
+| Processes / packages | 56 / 54 | 58–60 / 56 |
+| Boot (session start to `sys.boot_completed`) | 11.0 s | 10.9–11.6 s |
+| Host cost | 311 MiB | 432–453 MiB (+121–142 MiB) |
+| Idle CPU, context switches | 0.15 % of a core, 69/s | 0.15–0.16 %, 65–69/s (also over a 600 s window) |
+| Wake-up alarms | — | one, microG's MCS heartbeat, every 324–331 s (about 11 an hour); check-in is a non-waking RTC alarm |
+
+- The first install had microG's own system fused and geocoder providers
+  bound, which kept the main process up as well: 734 MB. Disabling them
+  (above) moved it to `cch-empty`, so it's the first thing the reclaimer
+  ends when memory is short. The reclaimer takes only `IMPORTANCE_CACHED`
+  processes, so `:persistent` and its push connection stay. The main
+  process comes back for microG's settings provider and Firebase calls.
+- Push in Doze: microG is on deviceidle's `system-excidle` and `system`
+  allowlists (sysconfig), so Android's Doze (Marathon-Doze's
+  `force-idle`) doesn't cut its network, and no foreground-service
+  notification is posted (it would reach the Hub).
+- Disk: GmsCore is 108 MB plus 42 MB of unpacked libraries, in
+  `/usr/share/deckard` and again in Waydroid's overlay (about 300 MB).
+
+## Left to do
+
+- A second Android task of the same package: when microG already has a
+  window (self-check), its sign-in task's window doesn't come to the front
+  in Marathon. It isn't microG-specific; the shell's window matching or
+  Waydroid's per-task windows need a look.
+- An app using microG's FusedLocationProviderClient on the device.
+- The main process's 64 MB while idle: it only goes under memory pressure.
+  AOT-compiling GmsCore (`cmd package compile`) is still to measure.
+- Overlay disk: `deckard-overlay-sync` copies 150 MB of microG; hard links
+  or a bind mount would halve it.
+- Play Integrity stays unsupported (userdebug, test-keys), as design.md says.
