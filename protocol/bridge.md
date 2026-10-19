@@ -69,7 +69,7 @@ The body is HTML-escaped because the Hub advertises `body-markup`.
 | `media_gone` | `sid` | A media session ended. |
 | `inspect_result` | `id`, `ok`, `message`, `pkg`, `label`, `versionName`, `versionCode`, `minSdk`, `targetSdk`, `permissions`, `icon`, `installedVersionCode`, `installedVersionName` | An `inspect` answered from `PackageManager.getPackageArchiveInfo`. |
 | `install_progress` | `id`, `percent` | Copying the APK into the PackageInstaller session. |
-| `install_result` | `id`, `ok`, `pkg`, `message` | An `install` or `uninstall` finished (`PackageInstaller.EXTRA_STATUS`). |
+| `install_result` | `id`, `ok`, `pkg`, `message` | An `install` finished (`PackageInstaller.EXTRA_STATUS`). Removals go to DeckardSystem (`uninstall` on `system.sock`). |
 | `packages_result` | `id`, `packages: [{pkg, label, versionName, versionCode, system, launchable}]` | Every installed package; `launchable` is whether it has a launcher activity. |
 | `package_changed` | `pkg`, `change` | `installed`, `updated` or `removed`, from ACTION_PACKAGE_ADDED/REMOVED (a replace is one `updated`). |
 | `toast` | `pkg`, `label`, `text` | An app showed a toast (from the bridge's accessibility service: `TYPE_NOTIFICATION_STATE_CHANGED` with class `android.widget.Toast`). deckardd posts a silent banner (`urgency` 0, `transient`, `suppress-sound`, `x-marathon-toast`, `expire_timeout` 3500, summary = the text, `app_name` = the label) and closes it after 4 s. At most one per package per 500 ms; text up to 512 characters. |
@@ -124,7 +124,6 @@ Android system noise (`android` package channels `PHYSICAL_KEYBOARD`,
 | `media_cmd` | `sid`, `cmd`, `position` | `play`, `pause`, `playpause`, `stop`, `next`, `previous`, or `seek` to `position` ms, through the session's `TransportControls`. |
 | `inspect` | `id`, `path` | Read an APK deckardd staged at `/data/deckard/install/<random>.apk`. |
 | `install` | `id`, `path` | Install it through a PackageInstaller session (the bridge holds INSTALL_PACKAGES, so Android asks nothing). |
-| `uninstall` | `id`, `pkg` | Remove a user-installed app (DELETE_PACKAGES). System apps are refused. |
 | `packages` | `id` | List installed packages. |
 | `audio` | `quiet`, `alarm` | Marathon's sound state, sent on connect and on every change. `quiet` is true when Marathon's profile is silent or vibrate or Do Not Disturb is on; the bridge then requests `INTERRUPTION_FILTER_ALARMS` (Marathon's own alarms ring through all three), otherwise `INTERRUPTION_FILTER_ALL`. Either way Android's notification, ring and system streams stay at 0 (the Hub plays Marathon's notification sound, which follows the profile), the music stream is at its maximum under Marathon's output volume, and the alarm stream is `alarm` (0 to 1) of its maximum. deckardd reads these from `org.marathonos.Shell.Settings1.GetState` (`audioProfile`, `dndEnabled`, `alarmVolume`) and re-reads on `Audio1.StateChanged`, `Settings1.PropertyChanged` and a shell restart. |
 
@@ -398,6 +397,7 @@ days at start.
 | `pick_done` | `id` | The app closed a file it wrote for a `save`; copy it to where the person chose. Sent on every close. |
 | `pick_cancel` | `id` | The app or the person gave up; deckardd forgets the request. |
 | `reclaimed` | `id`, `ok`, `killed` (`[{pid, process}]`) or `error` | The answer to a `reclaim`. |
+| `install_result` | `id`, `ok`, `pkg`, `message` | The answer to an `uninstall`, as DeckardBridge's. |
 
 ### Host to Android
 
@@ -406,6 +406,7 @@ days at start.
 | `hello` | `v` | |
 | `picked` | `id`, `ok`, `files` | The answer to a `pick`. For `open` and `capture`, `files` (`[{name, size}]`) are in `xfer/<id>/`. For `save`, one `{name}`: DeckardSystem creates the empty file there and gives the app write access. `ok` false: cancelled or failed. |
 | `focus` | `pkg` | Marathon has `waydroid.<pkg>` in front (deckardd follows `org.marathonos.Shell.Navigation1.ForegroundAppChanged`; sent on every change and on connect). Android's focus normally follows the hwcomposer's `wl_keyboard.enter`; when that never came, DeckardSystem calls `setFocusedTask` on the package's top visible task, 150 ms later, unless Android already has it focused. |
+| `uninstall` | `id`, `pkg` | `Packages.UninstallPackage`: remove an app the person installed, through `PackageInstaller.uninstall` as the system uid, so with no confirmation whoever installed it. System apps and Deckard's own are refused. |
 | `reclaim` | `id`, `count` (1–8), `reason` | Memory is short: end up to `count` cached app processes, least recently used first. Only processes ActivityManager ranks `IMPORTANCE_CACHED`, with an app uid (10000 and up) and not Deckard's own, are candidates; each goes through `killPids` without `secure`, which re-checks its adj and spares one that came forward. deckardd sends it when the container's `memory.events` `high` or `max` counter rises, on a PSI trigger on the container's `memory.pressure` (`some 200000 2000000`, 10 % of 2 s) or the phone's `/proc/pressure/memory` (`some 400000 2000000`, the shell's High level), with `count` 2, at most once every 2 s, or 10 s after a reclaim that found nothing. |
 
 ### Where each goes

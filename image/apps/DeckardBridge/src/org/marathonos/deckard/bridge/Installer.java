@@ -25,9 +25,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Installs, inspects, lists and removes apps for deckardd through
- * PackageInstaller sessions. INSTALL_PACKAGES and DELETE_PACKAGES make them
- * silent: Android's installer UI never shows.
+ * Installs, inspects and lists apps for deckardd through PackageInstaller
+ * sessions. INSTALL_PACKAGES makes them silent: Android's installer UI never
+ * shows. DeckardSystem removes apps (protocol/bridge.md).
  */
 final class Installer {
     private static final String ACTION_RESULT = "org.marathonos.deckard.bridge.INSTALL_RESULT";
@@ -96,7 +96,6 @@ final class Installer {
             switch (type) {
                 case "inspect": reply(inspect(id, m.optString("path"))); break;
                 case "install": install(id, m.optString("path")); break;
-                case "uninstall": uninstall(id, m.optString("pkg")); break;
                 case "packages": reply(packages(id)); break;
                 default: break;
             }
@@ -194,24 +193,6 @@ final class Installer {
                 mMain.post(() -> sendResult(id, false, "", e.getMessage()));
             }
         });
-    }
-
-    private void uninstall(String id, String pkg) throws JSONException {
-        PackageManager pm = mContext.getPackageManager();
-        try {
-            ApplicationInfo ai = pm.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0));
-            if ((ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0) {
-                reply(result(id, false, pkg, "part of the system"));
-                return;
-            }
-        } catch (PackageManager.NameNotFoundException e) {
-            reply(result(id, false, pkg, "not installed"));
-            return;
-        }
-        Intent intent = new Intent(ACTION_RESULT).setPackage(mContext.getPackageName()).putExtra("id", id);
-        PendingIntent sender = PendingIntent.getBroadcast(mContext, id.hashCode(), intent,
-                PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        pm.getPackageInstaller().uninstall(pkg, sender.getIntentSender());
     }
 
     private JSONObject packages(String id) throws JSONException {

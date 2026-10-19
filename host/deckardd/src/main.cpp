@@ -78,13 +78,15 @@ int main(int argc, char *argv[]) {
     QObject  dbusRoot;
     Callers     callers(bus);
     // Installs and removals: Settings, the Store, and the Store's handler,
-    // known by its executable since it runs outside any app.
+    // known by its executable since it runs outside any app. Removals go to
+    // DeckardSystem: only the system uid may remove apps it did not install.
     Packages packages(
         &dbusRoot,
-        [&bridge](const QJsonObject &message) {
-            if (!bridge.isConnected())
+        [&bridge, &systemBridge](const QJsonObject &message) {
+            Bridge &to = message.value(QStringLiteral("t")) == QLatin1String("uninstall") ? systemBridge : bridge;
+            if (!to.isConnected())
                 return false;
-            bridge.send(message);
+            to.send(message);
             return true;
         },
         [&bus, &callers](const QDBusMessage &call, std::function<void()> run) {
@@ -163,6 +165,10 @@ int main(int argc, char *argv[]) {
             keelApps.handleSystem(type, message);
     });
     QObject::connect(&systemBridge, &Bridge::connectedChanged, &keelApps, &KeelApps::setSystemConnected);
+    QObject::connect(&systemBridge, &Bridge::received, &packages, [&](const QString &type, const QJsonObject &message) {
+        if (type == QLatin1String("install_result"))
+            packages.handle(type, message);
+    });
     if (!systemBridge.listen())
         return 1;
 

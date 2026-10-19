@@ -121,6 +121,8 @@ final class HostLink {
             WindowFit.focus(m.optString("pkg"));
         else if ("reclaim".equals(m.optString("t")))
             Reclaim.handle(m);
+        else if ("uninstall".equals(m.optString("t")))
+            Uninstall.handle(m);
     }
 
     private void onDisconnected() {

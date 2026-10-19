@@ -199,6 +199,12 @@ the Store (Callers::require) and the Store's handler (by executable,
     94032a45.
   - The update ran through the handler (`lastUpdateTime` 02:47:15 → 02:48:21).
   - Uninstalling removed the package and its desktop entry.
+  - That worked only because DeckardBridge had installed the app. For any
+    other app Android answered `STATUS_PENDING_USER_ACTION` (seen by the
+    Settings agent after a reset): `deletePackageVersioned` removes silently
+    only for the installer of record, the verifier, the uninstaller app or
+    the system uid, DELETE_PACKAGES or not. Removals now go to DeckardSystem,
+    which runs as the system uid.
 - **F-Droid catalogue on the device:** a full sync (verify entry.jar,
   download 16 MB, stream-parse 66 MB) took **4.4 s at 59 MB peak RSS**; with
   the index unchanged, 0.8 s. The catalogue holds 4,713 apps in 7.2 MB.
