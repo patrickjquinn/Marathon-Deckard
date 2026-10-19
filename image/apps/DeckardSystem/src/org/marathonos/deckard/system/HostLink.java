@@ -127,9 +127,12 @@ final class HostLink {
             Share.handle(m);
         else if ("media_scan".equals(m.optString("t")))
             MediaScan.handle(m);
+        else if ("perm_answer".equals(m.optString("t")))
+            PermissionPrompts.handle(m);
     }
 
     private void onDisconnected() {
+        PermissionPrompts.linkLost();
         for (String id : mWaiting.keySet().toArray(new String[0]))
             finish(id, null);
     }

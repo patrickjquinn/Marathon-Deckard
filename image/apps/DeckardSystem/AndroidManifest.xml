@@ -174,5 +174,27 @@
             </intent-filter>
         </activity>
 
+        <!-- Android's per-app permission page, above PermissionController's
+             (priority 1): "all the time" asks with Marathon's prompt
+             (docs/permissions.md). -->
+        <activity
+            android:name=".BackgroundAccess"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:permission="android.permission.GRANT_RUNTIME_PERMISSIONS"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|density|uiMode"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter android:priority="2">
+                <action android:name="android.intent.action.MANAGE_APP_PERMISSION" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- PermissionController's patched GrantPermissionsActivity asks here. -->
+        <provider
+            android:name=".PermissionPrompts"
+            android:authorities="org.marathonos.deckard.system.permissions"
+            android:exported="true" />
+
     </application>
 </manifest>
