@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Install Android app
+Icon=org.marathonos.store
+NoDisplay=true
+MimeType=application/vnd.android.package-archive;
+Exec=/usr/libexec/deckard-open-apk %f

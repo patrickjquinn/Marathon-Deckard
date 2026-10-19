@@ -1,0 +1,12 @@
+#!/bin/sh
+# Opens the App Store's install page for an Android app file: its Keel action
+# apps.openFile, which starts the Store if it isn't running.
+set -eu
+f=$(realpath -- "$1")
+case "$f" in
+*.apk | *.APK) ;;
+*) echo "deckard-open-apk: not an .apk: $f" >&2; exit 2 ;;
+esac
+args=$(python3 -c 'import json, sys; print(json.dumps({"path": sys.argv[1]}))' "$f")
+exec busctl --user call org.marathonos.store /org/shipwright/Keel/Actions \
+	org.shipwright.Keel.Actions Invoke 'ssa{sv}' apps.openFile "$args" 0
