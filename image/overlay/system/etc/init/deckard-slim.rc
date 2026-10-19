@@ -1,0 +1,6 @@
+# Android as a runtime (docs/slim.md). The setup wizard (Provision) is gone,
+# so the device must count as set up, or Settings and others refuse to run
+# ("Device is not provisioned") after Android's data is new or reset.
+on property:sys.boot_completed=1
+    exec_background - root root -- /system/bin/settings put global device_provisioned 1
+    exec_background - root root -- /system/bin/settings put secure user_setup_complete 1

@@ -1,8 +1,9 @@
-# Android as a runtime (docs/slim.md): no setup wizard, so the device counts
-# as set up; DeckardSystem answers links and pickers; processes that only
-# woke for a boot broadcast go after a minute instead of half an hour.
+# Android as a runtime (docs/slim.md). The setup wizard (Provision) is gone,
+# so the device must count as set up, or Settings and others refuse to run
+# ("Device is not provisioned") after Android's data is new or reset.
+# Processes that only woke for a boot broadcast go after a minute instead of
+# half an hour.
 on property:sys.boot_completed=1
     exec_background - root root -- /system/bin/settings put global device_provisioned 1
     exec_background - root root -- /system/bin/settings put secure user_setup_complete 1
-    exec_background - root root -- /system/bin/cmd role add-role-holder android.app.role.BROWSER org.marathonos.deckard.system
     exec_background - root root -- /system/bin/device_config put activity_manager max_empty_time_millis 60000
