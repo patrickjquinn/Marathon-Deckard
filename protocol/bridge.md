@@ -300,3 +300,87 @@ the app opens without one); addresses have no spaces, commas, `<>"`, at most
 characters; settings actions come from a fixed table; `id` must match
 `^[0-9a-f]{16}$`; at most 4 picks wait at once; file names are reduced to a
 base name without control characters, `/` or `\`.
+
+## Settings API
+
+How Marathon's Settings shows and changes Android apps. deckardd exports
+`org.marathonos.Deckard1` on `/org/marathonos/Deckard` (bus name
+`org.marathonos.Deckard`, session bus); the install methods live beside it as
+`org.marathonos.Deckard1.Packages`. Settings lists apps with
+`Packages.ListPackages` and removes them with `Packages.UninstallPackage`.
+
+### Callers
+
+`GetRuntime`, `AppIcon` and the signals are open to the session. Every other
+method needs the caller to be Settings: deckardd asks the bus for the sender's
+pid and the shell's `Navigation1.AppIdForPid` for that pid and up to seven of
+its ancestors (`src/callers.cpp`), as the shell resolves its own callers;
+the first app id found must be `settings`. Anything else gets
+`org.freedesktop.DBus.Error.AccessDenied` and nothing reaches Android.
+Arguments are checked first (`InvalidArgs`): package names by the package rule,
+permission groups, special-access kinds and battery modes from fixed lists. A
+failure in Android is `org.marathonos.Deckard1.Error.Failed` with its message.
+
+### Methods
+
+| Method | |
+|---|---|
+| `GetRuntime() → a{sv}` | `state` (`stopped`, `starting`, `running`, `stopping`), `memoryBytes` (the container cgroup's `memory.current`, `/sys/fs/cgroup/lxc.payload.waydroid`), `androidVersion`, `uptimeSeconds`, `startAtLogin`, `hasApps` |
+| `Start()`, `Stop()`, `Restart()` | `StartUnit`/`StopUnit`/`RestartUnit` of `marathon-waydroid.service` |
+| `SetStartAtLogin(b)` | Kept in `~/.local/state/deckard/settings.json`. Unset, it is on when Waydroid has a desktop entry without `NoDisplay=true` (an app the person installed). deckardd starts the session once per login when it is on. |
+| `AppIcon(s pkg) → s` | A `data:image/png` URI of `<waydroid data>/icons/<pkg>.png` or deckardd's notification icon, decoded and re-encoded at most 192 px; `""` if none |
+| `GetApp(s pkg) → a{sv}` | `pkg`, `label`, `versionName`, `versionCode`, `appBytes`, `dataBytes` (with cache), `cacheBytes`, `notifications`, `links`, `domains` (as), `battery` (`unrestricted`/`optimized`), `permissions` (av of `{group, granted, fixed}`) |
+| `SetPermission(s pkg, s group, b granted)` | Grants or revokes the group's runtime permissions the app asks for, marked user-set (the app may ask again) |
+| `SetNotifications(s pkg, b)` | Android's per-app setting |
+| `SetOpenLinks(s pkg, b)` | Opening the app's verified links in it |
+| `SetBattery(s pkg, s mode)` | `unrestricted` adds it to the idle allowlist |
+| `ForceStop(s pkg)`, `ClearCache(s pkg)`, `ClearData(s pkg)` | |
+| `GetSpecialAccess(s kind) → aa{sv}` | The person's apps that can have it: `{pkg, label, granted}` |
+| `SetSpecialAccess(s kind, s pkg, b granted)` | |
+| `ResetAndroid()` | Uninstalls every app the person installed, with its data |
+
+Signals: `RuntimeChanged(a{sv})` with `GetRuntime`'s map, `AppChanged(s pkg)`
+after a change to an app succeeded.
+
+Permission groups: `location`, `camera`, `microphone`, `contacts`,
+`calendar`, `phone`, `call_log`, `sms`, `storage` (before Android 13's media
+permissions), `photos` (images and video), `music`, `nearby` (Bluetooth,
+Wi-Fi, UWB), `sensors`, `activity`. Notifications are their own switch.
+
+Special access:
+
+| Kind | Granted by |
+|---|---|
+| `all_files` | app op `MANAGE_EXTERNAL_STORAGE` |
+| `install_apps` | app op `REQUEST_INSTALL_PACKAGES` |
+| `overlay` | app op `SYSTEM_ALERT_WINDOW` |
+| `write_settings` | app op `WRITE_SETTINGS` |
+| `usage` | app op `GET_USAGE_STATS` |
+| `alarms` | app op `SCHEDULE_EXACT_ALARM` |
+| `pip` | app op `PICTURE_IN_PICTURE`, apps with a PiP activity |
+| `notification_listener` | `NotificationManager.setNotificationListenerAccessGranted` |
+| `dnd` | `NotificationManager.setNotificationPolicyAccessGranted` |
+| `battery` | the idle allowlist |
+| `accessibility` | `Settings.Secure.enabled_accessibility_services` |
+| `device_admin` | `DevicePolicyManager.setActiveAdmin` / `removeActiveAdmin` |
+
+Left out: default apps (Marathon answers links, calls, messages and home
+through DeckardSystem) and per-app language.
+
+### Management channel
+
+deckardd sends the requests to DeckardSystem on the system channel, which
+runs as Android's system uid, so Android's own checks admit them
+(`image/apps/DeckardSystem/.../Manage.java`).
+
+| `t` | Fields | |
+|---|---|---|
+| `manage` (host to Android) | `id`, `op`, then per op | `info`; `app`, `stop`, `cache`, `clear` with `pkg`; `perm` with `pkg`, `group`, `granted`; `notifications`, `links` with `pkg`, `enabled`; `battery` with `pkg`, `mode`; `special` with `kind`; `special_set` with `kind`, `pkg`, `granted`; `reset` |
+| `managed` (Android to host) | `id`, `ok`, `error` or the answer | `info`: `release`, `sdk`. `app`: `GetApp`'s fields. `special`: `apps`. `reset`: `removed`. |
+
+DeckardSystem refuses every per-app op on packages with `FLAG_SYSTEM`, so
+only apps the person installed are changed. deckardd answers a request with
+an error after 30 s without a reply or when the channel drops, keeps at most
+32 waiting, and cleans each answer (`ManageCheck`, `tests/test_settingsapi.cpp`):
+labels at most 128 characters, sizes 0 to 2^50, only known groups and kinds,
+at most 50 well-formed domains and 500 apps.

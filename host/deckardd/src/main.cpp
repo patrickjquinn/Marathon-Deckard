@@ -1,13 +1,17 @@
 #include "audio.h"
 #include "bridge.h"
+#include "callers.h"
 #include "doze.h"
 #include "ime.h"
 #include "intents.h"
+#include "manage.h"
 #include "mpris.h"
 #include "notifications.h"
 #include "packages.h"
 #include "palette.h"
+#include "runtime.h"
 #include "sessionfollower.h"
+#include "settingsapi.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
@@ -15,8 +19,11 @@
 #include <QDBusError>
 #include <QDBusMessage>
 #include <QDir>
+#include <QFile>
+#include <QJsonObject>
 #include <QLoggingCategory>
 #include <QStandardPaths>
+#include <QTimer>
 
 // deckardd: Marathon's end of the Deckard system bridge (protocol/bridge.md).
 int main(int argc, char *argv[]) {
@@ -141,5 +148,35 @@ int main(int argc, char *argv[]) {
     });
     if (!systemBridge.listen())
         return 1;
+
+    const QString sessionUnit = QStringLiteral("marathon-waydroid.service");
+    Manage        manage([&systemBridge](const QJsonObject &message) { systemBridge.send(message); });
+    Runtime       runtime({qEnvironmentVariable("DECKARD_CGROUP", QStringLiteral("/sys/fs/cgroup/lxc.payload.waydroid")) +
+                               QStringLiteral("/memory.current"),
+                           state + QStringLiteral("/settings.json"),
+                           QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation)},
+                          [&](const QString &method) { UnitWatch::call(bus, method, sessionUnit); });
+    UnitWatch     unitWatch(bus, sessionUnit, &runtime);
+    QObject::connect(&systemBridge, &Bridge::received, &manage, &Manage::handle);
+    QObject::connect(&systemBridge, &Bridge::connectedChanged, &manage, &Manage::setConnected);
+    QObject::connect(&manage, &Manage::connectedChanged, &runtime, [&](bool connected) {
+        runtime.setAndroidConnected(connected);
+        if (connected)
+            manage.request(QStringLiteral("info"), {}, [&runtime](bool ok, const QJsonObject &reply) {
+                if (ok)
+                    runtime.setAndroidVersion(ManageCheck::info(reply).value(QStringLiteral("release")).toString());
+            });
+    });
+
+    Callers     callers(bus);
+    SettingsApi settingsApi(&dbusRoot, bus, &callers, &manage, &runtime,
+                            {data + QStringLiteral("/icons"), cache + QStringLiteral("/icons")});
+
+    // Once per login, not on every restart of deckardd.
+    QFile loginMark(qEnvironmentVariable("XDG_RUNTIME_DIR", QDir::tempPath()) + QStringLiteral("/deckard-login"));
+    if (!loginMark.exists() && loginMark.open(QIODevice::WriteOnly)) {
+        loginMark.close();
+        QTimer::singleShot(3000, &runtime, &Runtime::atLogin);
+    }
     return app.exec();
 }

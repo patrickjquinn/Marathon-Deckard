@@ -11,15 +11,19 @@ include(GNUInstallDirs)
 add_library(deckardcore STATIC
     src/audio.cpp
     src/bridge.cpp
+    src/callers.cpp
     src/doze.cpp
     src/images.cpp
     src/ime.cpp
     src/intents.cpp
+    src/manage.cpp
     src/mpris.cpp
     src/notifications.cpp
     src/packages.cpp
     src/palette.cpp
+    src/runtime.cpp
     src/sessionfollower.cpp
+    src/settingsapi.cpp
     src/validate.cpp
 )
 target_include_directories(deckardcore PUBLIC src)
@@ -59,4 +63,7 @@ if(BUILD_TESTING)
     add_executable(test_packages tests/test_packages.cpp)
     target_link_libraries(test_packages PRIVATE deckardcore Qt6::Test)
     add_test(NAME packages COMMAND test_packages)
+    add_executable(test_settingsapi tests/test_settingsapi.cpp)
+    target_link_libraries(test_settingsapi PRIVATE deckardcore Qt6::Test)
+    add_test(NAME settingsapi COMMAND test_settingsapi)
 endif()
