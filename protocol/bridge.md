@@ -67,6 +67,11 @@ The body is HTML-escaped because the Hub advertises `body-markup`.
 | `sync` | `keys` | After the initial `post`s on every connection: the keys of all active notifications. deckardd closes any notification it tracks that isn't listed. |
 | `media` | see below | A media session appeared or changed. |
 | `media_gone` | `sid` | A media session ended. |
+| `inspect_result` | `id`, `ok`, `message`, `pkg`, `label`, `versionName`, `versionCode`, `minSdk`, `targetSdk`, `permissions`, `icon`, `installedVersionCode`, `installedVersionName` | An `inspect` answered from `PackageManager.getPackageArchiveInfo`. |
+| `install_progress` | `id`, `percent` | Copying the APK into the PackageInstaller session. |
+| `install_result` | `id`, `ok`, `pkg`, `message` | An `install` or `uninstall` finished (`PackageInstaller.EXTRA_STATUS`). |
+| `packages_result` | `id`, `packages: [{pkg, label, versionName, versionCode, system}]` | Every installed package. |
+| `package_changed` | `pkg`, `change` | `installed`, `updated` or `removed`, from ACTION_PACKAGE_ADDED/REMOVED (a replace is one `updated`). |
 | `toast` | `pkg`, `label`, `text` | An app showed a toast (from the bridge's accessibility service: `TYPE_NOTIFICATION_STATE_CHANGED` with class `android.widget.Toast`). deckardd posts a silent banner (`urgency` 0, `transient`, `suppress-sound`, `x-marathon-toast`, `expire_timeout` 3500, summary = the text, `app_name` = the label) and closes it after 4 s. At most one per package per 500 ms; text up to 512 characters. |
 
 `post`:
@@ -117,6 +122,10 @@ Android system noise (`android` package channels `PHYSICAL_KEYBOARD`,
 | `reply` | `key`, `action`, `text` | Fill the action's `RemoteInput` with `text` (`SOURCE_FREE_FORM_INPUT`) and send its `PendingIntent`. |
 | `dismiss` | `key` | `cancelNotification(key)`. Android ignores it for ongoing notifications. |
 | `media_cmd` | `sid`, `cmd`, `position` | `play`, `pause`, `playpause`, `stop`, `next`, `previous`, or `seek` to `position` ms, through the session's `TransportControls`. |
+| `inspect` | `id`, `path` | Read an APK deckardd staged at `/data/deckard/install/<random>.apk`. |
+| `install` | `id`, `path` | Install it through a PackageInstaller session (the bridge holds INSTALL_PACKAGES, so Android asks nothing). |
+| `uninstall` | `id`, `pkg` | Remove a user-installed app (DELETE_PACKAGES). System apps are refused. |
+| `packages` | `id` | List installed packages. |
 | `audio` | `quiet`, `alarm` | Marathon's sound state, sent on connect and on every change. `quiet` is true when Marathon's profile is silent or vibrate or Do Not Disturb is on; the bridge then requests `INTERRUPTION_FILTER_ALARMS` (Marathon's own alarms ring through all three), otherwise `INTERRUPTION_FILTER_ALL`. Either way Android's notification, ring and system streams stay at 0 (the Hub plays Marathon's notification sound, which follows the profile), the music stream is at its maximum under Marathon's output volume, and the alarm stream is `alarm` (0 to 1) of its maximum. deckardd reads these from `org.marathonos.Shell.Settings1.GetState` (`audioProfile`, `dndEnabled`, `alarmVolume`) and re-reads on `Audio1.StateChanged`, `Settings1.PropertyChanged` and a shell restart. |
 
 ## Mapping to Marathon
@@ -254,6 +263,27 @@ Launching through the shell first would race Waydroid's launcher intent
 against the action's. When Android is not running, deckardd calls
 `app.launch` first, which starts the session, and sends the `launch` when
 the bridge connects.
+
+## Packages on D-Bus
+
+deckardd exports `org.marathonos.Deckard1.Packages` on `/org/marathonos/Deckard`:
+
+| Member | Signature | |
+|---|---|---|
+| `InspectPackage(path)` | `s` → `a{sv}` | `ok`, `message`, and for an app: `pkg`, `label`, `versionName`, `versionCode`, `minSdk`, `targetSdk`, `permissions` (`as`), `icon` (PNG bytes), and `installedVersionCode`/`installedVersionName` when it updates an installed app |
+| `InstallPackage(path)` | `s` → `s` job | `Progress` and `Finished` follow |
+| `UninstallPackage(pkg)` | `s` → `s` job | |
+| `ListPackages()` | → `aa{sv}` | `pkg`, `label`, `versionName`, `versionCode`, `system` |
+| `Progress(job, percent)` | signal `si` | |
+| `Finished(job, ok, pkg, message)` | signal `sbss` | |
+| `PackageChanged(pkg, change)` | signal `ss` | `installed`, `updated`, `removed` |
+
+deckardd checks the file is a zip, copies it into `/data/deckard/install/`
+under a random name (deleted after the result and at start), and refuses
+`InstallPackage` and `UninstallPackage` from a sandboxed app other than
+Settings or the Store (`Navigation1.AppIdForPid`). The Store's handler
+(Marathon-Shell `crates/marathon-store-handler`) drives installs from F-Droid
+and from opened `.apk` files through this interface.
 
 ## Ambience palette
 
