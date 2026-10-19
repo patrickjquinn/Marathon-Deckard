@@ -6,6 +6,7 @@
 #include "ime.h"
 #include "intents.h"
 #include "keelapps.h"
+#include "location.h"
 #include "manage.h"
 #include "mpris.h"
 #include "notifications.h"
@@ -116,10 +117,15 @@ int main(int argc, char *argv[]) {
                       bus, {QStringLiteral("/usr/bin/keel-mcp"), QStringLiteral("/usr/bin/pilotd")},
                       state + QStringLiteral("/apps.json"));
 
+    // Marathon's location for Android's network provider, while Android asks.
+    LocationSync location(QDBusConnection::systemBus(), [&bridge](const QJsonObject &message) { bridge.send(message); });
+
     QObject::connect(&bridge, &Bridge::received, &app,
                      [&](const QString &type, const QJsonObject &message) {
                          if (type.startsWith(QLatin1String("media")))
                              mpris.handle(type, message);
+                         else if (LocationSync::handles(type))
+                             location.handle(type, message);
                          else if (KeelApps::handles(type))
                              keelApps.handle(type, message);
                          else if (type.endsWith(QLatin1String("_result")) ||
@@ -134,6 +140,7 @@ int main(int argc, char *argv[]) {
         if (!connected) {
             mpris.clear();
             packages.bridgeLost();
+            location.bridgeLost();
             return;
         }
         bridge.send({{QStringLiteral("t"), QStringLiteral("hello")}, {QStringLiteral("v"), 1}});

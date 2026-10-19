@@ -18,6 +18,7 @@ add_library(deckardcore STATIC
     src/ime.cpp
     src/intents.cpp
     src/keelapps.cpp
+    src/location.cpp
     src/manage.cpp
     src/mpris.cpp
     src/notifications.cpp
@@ -94,6 +95,9 @@ if(BUILD_TESTING)
     add_executable(test_keelapps tests/test_keelapps.cpp)
     target_link_libraries(test_keelapps PRIVATE deckardcore Qt6::Test)
     add_test(NAME keelapps COMMAND test_keelapps)
+    add_executable(test_location tests/test_location.cpp)
+    target_link_libraries(test_location PRIVATE deckardcore Qt6::Test)
+    add_test(NAME location COMMAND test_location)
     add_executable(test_permissionprompts tests/test_permissionprompts.cpp)
     target_link_libraries(test_permissionprompts PRIVATE deckardcore Qt6::Test)
     add_test(NAME permissionprompts COMMAND test_permissionprompts)
