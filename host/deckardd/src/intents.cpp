@@ -14,7 +14,6 @@
 #include <QJsonDocument>
 #include <QLoggingCategory>
 #include <QRegularExpression>
-#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -121,6 +120,10 @@ namespace Intents {
                 return t;
             if (auto t = show(point.match(where)))
                 return t;
+            const QString text = Validate::text(QJsonObject{{QStringLiteral("q"), query}}, QStringLiteral("q"), 256).trimmed();
+            if (!text.isEmpty())
+                return Target{Target::Keel, QStringLiteral("maps"), QStringLiteral("search.show"),
+                              {{QStringLiteral("query"), text}}};
             return Target{Target::Launch, QStringLiteral("maps"), {}, {}};
         }
 
@@ -207,11 +210,27 @@ namespace Intents {
             }
             const QString app = isTel ? QStringLiteral("phone") : QStringLiteral("messages");
             const QString n   = number(uri);
-            if (n.isEmpty())
+            QString       body;
+            if (!isTel) {
+                body = str(m, QStringLiteral("body"), 10000);
+                if (body.isEmpty()) {
+                    QJsonObject fromUri{{QStringLiteral("body"),
+                                         QUrlQuery(uri.section(u'?', 1)).queryItemValue(QStringLiteral("body"),
+                                                                                        QUrl::FullyDecoded)}};
+                    body = str(fromUri, QStringLiteral("body"), 10000);
+                }
+            }
+            if (n.isEmpty() && body.isEmpty())
                 return Target{Target::Launch, app, {}, {}};
+            QJsonObject args;
+            if (!n.isEmpty())
+                args.insert(QStringLiteral("number"), n);
+            if (!body.isEmpty())
+                args.insert(QStringLiteral("body"), body);
+            if (isTel)
+                return Target{Target::Route, app, QStringLiteral("/call"), args};
             return Target{Target::Route, app,
-                          isTel ? QStringLiteral("/call") : QStringLiteral("conversation"),
-                          {{QStringLiteral("number"), n}}};
+                          n.isEmpty() ? QStringLiteral("compose") : QStringLiteral("conversation"), args};
         }
         if (kind == QLatin1String("mailto")) {
             QJsonObject args;
@@ -270,9 +289,6 @@ SystemIntents::SystemIntents(Send send, const QString &xferDir, const QString &c
     qDBusRegisterMetaType<QList<PortalRule>>();
     qDBusRegisterMetaType<PortalFilter>();
     qDBusRegisterMetaType<QList<PortalFilter>>();
-    m_cameraPoll = new QTimer(this);
-    m_cameraPoll->setInterval(1000);
-    connect(m_cameraPoll, &QTimer::timeout, this, &SystemIntents::pollCamera);
     QDir().mkpath(m_xfer);
     sweep();
     m_bus.connect(QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
@@ -358,23 +374,8 @@ void SystemIntents::pick(const QJsonObject &m) {
         p.kind = m.value(QStringLiteral("kind")).toString() == QLatin1String("video")
                      ? QStringLiteral("video")
                      : QStringLiteral("image");
-        QDir().mkpath(m_cameraDir);
-        const QStringList before = QDir(m_cameraDir).entryList(QDir::Files);
-        p.cameraBefore           = QSet<QString>(before.cbegin(), before.cend());
-        p.deadline               = QDateTime::currentMSecsSinceEpoch() + kCaptureTimeout;
         m_pending.insert(id, p);
-        QDBusMessage call = QDBusMessage::createMethodCall(
-            QStringLiteral("org.marathonos.camera"), QStringLiteral("/org/shipwright/Keel/Actions"),
-            QStringLiteral("org.shipwright.Keel.Actions"), QStringLiteral("Invoke"));
-        call << QStringLiteral("camera.open")
-             << QString::fromUtf8(QJsonDocument(QJsonObject{
-                                      {QStringLiteral("mode"),
-                                       p.kind == QLatin1String("video") ? QStringLiteral("video")
-                                                                        : QStringLiteral("photo")}})
-                                      .toJson(QJsonDocument::Compact))
-             << QVariantMap();
-        callLogged(call);
-        m_cameraPoll->start();
+        capture(id, p.kind);
         return;
     }
     if (mode != QLatin1String("open") && mode != QLatin1String("save")) {
@@ -498,41 +499,49 @@ void SystemIntents::pickDone(const QString &id) {
         qCInfo(lcIntents) << "saved" << target;
 }
 
-// A capture is answered with the first new photo or video in Marathon
-// Camera's folder once its size stops changing.
-void SystemIntents::pollCamera() {
-    const qint64      now = QDateTime::currentMSecsSinceEpoch();
-    const QStringList ids = m_pending.keys();
-    bool              waiting = false;
-    for (const QString &id : ids) {
-        Pending &p = m_pending[id];
-        if (p.mode != QLatin1String("capture"))
-            continue;
-        if (now > p.deadline) {
+// Marathon Camera's camera.capture answers once the person has shot, with
+// the file's path; only files in its folder, of the kind asked for, go to
+// Android.
+void SystemIntents::capture(const QString &id, const QString &kind) {
+    QDBusMessage call = QDBusMessage::createMethodCall(
+        QStringLiteral("org.marathonos.camera"), QStringLiteral("/org/shipwright/Keel/Actions"),
+        QStringLiteral("org.shipwright.Keel.Actions"), QStringLiteral("Invoke"));
+    call << QStringLiteral("camera.capture")
+         << QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("mode"),
+                                                          kind == QLatin1String("video") ? QStringLiteral("video")
+                                                                                         : QStringLiteral("photo")}})
+                                  .toJson(QJsonDocument::Compact))
+         << QVariantMap();
+    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(call, int(kCaptureTimeout + 30000)), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, id, kind, watcher] {
+        watcher->deleteLater();
+        if (!m_pending.contains(id) || m_pending.value(id).mode != QLatin1String("capture"))
+            return;
+        const QDBusMessage reply = watcher->reply();
+        if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
+            qCInfo(lcIntents) << "capture" << id << "ended:" << reply.errorName();
             finish(id, {}, false);
-            continue;
+            return;
         }
-        waiting = true;
+        const QString path = QJsonDocument::fromJson(reply.arguments().constFirst().toString().toUtf8())
+                                 .object()
+                                 .value(QStringLiteral("path"))
+                                 .toString();
         static const QStringList images{QStringLiteral("jpg"), QStringLiteral("jpeg"), QStringLiteral("png")};
         static const QStringList videos{QStringLiteral("mp4"), QStringLiteral("mkv"), QStringLiteral("webm"),
                                         QStringLiteral("mov")};
-        const QStringList &wanted = p.kind == QLatin1String("video") ? videos : images;
-        const QFileInfoList entries = QDir(m_cameraDir).entryInfoList(QDir::Files, QDir::Time);
-        for (const QFileInfo &f : entries) {
-            if (p.cameraBefore.contains(f.fileName()) || !wanted.contains(f.suffix().toLower()))
-                continue;
-            const qint64 size = f.size();
-            if (size > 0 && p.growing.value(f.fileName(), -1) == size) {
-                finish(id, {f.absoluteFilePath()}, true);
-                waiting = false;
-                break;
-            }
-            p.growing.insert(f.fileName(), size);
-            break;
+        const QFileInfo file(path);
+        const QString   folder = QFileInfo(m_cameraDir).canonicalFilePath();
+        const bool      inside = !folder.isEmpty() && file.canonicalPath() == folder && file.isFile();
+        const bool      right  = (kind == QLatin1String("video") ? videos : images).contains(file.suffix().toLower());
+        if (!inside || !right) {
+            qCWarning(lcIntents) << "capture" << id << "refused" << path;
+            finish(id, {}, false);
+            return;
         }
-    }
-    if (!waiting)
-        m_cameraPoll->stop();
+        finish(id, {file.canonicalFilePath()}, true);
+    });
+    qCInfo(lcIntents) << "capture" << kind << id;
 }
 
 void SystemIntents::drop(const QString &id) {

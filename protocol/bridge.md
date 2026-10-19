@@ -423,19 +423,20 @@ days at start.
 |---|---|
 | `url` | Keel `org.marathonos.browser` `browser.open {url, newTab}` |
 | `tel` | `Navigation1.LaunchAppWithRoute("phone", "/call", {number})`: the dialler with the number filled in, not a call. No number: `LaunchApp("phone")`. |
-| `sms` | `LaunchAppWithRoute("messages", "conversation", {number})`. Messages' route has no body, so `body` is dropped. |
+| `sms` | `LaunchAppWithRoute("messages", "conversation", {number, body})`: the thread, with `body` (or the URI's `?body=`) as its draft. No number but a body: `LaunchAppWithRoute("messages", "compose", {body})`, a new message to pick the recipient for. Neither: `LaunchApp("messages")`. |
 | `mailto` | Keel `org.marathonos.email` `mail.compose {to, cc, subject, body}` |
-| `geo` | Keel `org.marathonos.maps` `map.show {lat, lon, name}` for coordinates (or a `q=lat,lon(name)`); `LaunchApp("maps")` for a text query |
+| `geo` | Keel `org.marathonos.maps` `map.show {lat, lon, name}` for coordinates (or a `q=lat,lon(name)`); `search.show {query}` for a text query (Maps' search page with the results); `LaunchApp("maps")` for neither |
 | `settings` | `LaunchAppWithRoute("settings", page)`: Wi-Fi, Bluetooth, sound, display, date and time, storage, battery, security, keyboard, accounts, about, notifications and the app manager pages; `notifications/waydroid.<pkg>` and `appmanager/waydroid.<pkg>` for one app. Others (location): `LaunchApp("settings")`. |
 | `pick` `open` / `save` | `org.freedesktop.portal.FileChooser` `OpenFile` / `SaveFile`, with a MIME filter unless the app accepts `*/*` |
-| `pick` `capture` | Keel `org.marathonos.camera` `camera.open {mode}`; the first new photo or video in `~/Pictures/Marathon` whose size holds for a second answers it (10 minutes at most) |
+| `pick` `capture` | Keel `org.marathonos.camera` `camera.capture {mode}` (`photo` or `video`), which answers once the person has shot, with `{path, mode}`, and minimises the camera (the call waits up to 10 minutes). The file must be in `~/Pictures/Marathon` and of the kind asked for, or the pick fails. `Cancelled` (the person left the camera), `NotAvailable` or `Timeout` fail it too. A `pick_cancel` drops the request; the camera stays for the person. |
 
 deckardd's checks (`tests/test_intents.cpp`): `uri` at most 4,096 characters
 and of the kind's scheme; a URL needs a host and at most 2,048 characters;
 numbers keep only digits, `+*#,;pw` and at most 64 of them (anything else and
 the app opens without one); addresses have no spaces, commas, `<>"`, at most
-254 characters and 20 of each; subject and body are cut to 1,000 and 100,000
-characters; settings actions come from a fixed table; `id` must match
+254 characters and 20 of each; a mail's subject and body are cut to 1,000 and
+100,000 characters, a text message's body to 10,000 and a map search to 256;
+settings actions come from a fixed table; `id` must match
 `^[0-9a-f]{16}$`; at most 4 picks wait at once; file names are reduced to a
 base name without control characters, `/` or `\`.
 

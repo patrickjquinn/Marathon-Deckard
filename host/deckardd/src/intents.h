@@ -4,14 +4,12 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QObject>
-#include <QSet>
 #include <QStringList>
 
 #include <functional>
 #include <optional>
 
 class QDBusMessage;
-class QTimer;
 
 // Android intents that Marathon apps answer (protocol/bridge.md, system
 // channel): links, numbers, addresses, places and settings pages from
@@ -58,16 +56,13 @@ class SystemIntents : public QObject {
         QString     kind;
         QString     portalPath;
         QString     saveTarget; // the host file a "save" writes to
-        QSet<QString> cameraBefore;
-        QHash<QString, qint64> growing; // new camera file → size at the last look
-        qint64      deadline = 0;
     };
 
     void open(const QJsonObject &message);
     void pick(const QJsonObject &message);
     void pickDone(const QString &id);
     void finish(const QString &id, const QStringList &hostFiles, bool ok);
-    void pollCamera();
+    void capture(const QString &id, const QString &kind);
     void drop(const QString &id);
     void sweep();
     void callLogged(const QDBusMessage &call);
@@ -78,6 +73,5 @@ class SystemIntents : public QObject {
     QDBusConnection         m_bus;
     QHash<QString, Pending> m_pending;
     QHash<QString, QString> m_saved; // id → host target, kept for later writes
-    QTimer                 *m_cameraPoll = nullptr;
     QString                 m_focusPkg; // Android app Marathon has in front
 };
