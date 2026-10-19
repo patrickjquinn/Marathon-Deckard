@@ -148,15 +148,17 @@ Built and disassembled on the host (not installed):
 3eee8  bl   configureRpcThreadpool
 ```
 
-Delivery: `image/overlay/vendor/lib64/hw/hwcomposer.waydroid.so`; the vendor
-mount's lowerdir is `/var/lib/waydroid/overlay/vendor` first. Because a
-Waydroid vendor update would otherwise be shadowed by a stale binary,
-`host/packaging/deckard-overlay-sync` should install it only for this vendor
-image (`vendor_datetime = 1790486210` in `/var/lib/waydroid/waydroid.cfg`; it
-runs before the image is mounted, so it can't hash the file in place) and
-remove it otherwise. Verification on the
-device: no `cannot be shrunk` tombstone over 20 session starts (12 of 22
-aborted before), and `Waydroid hwcomposer services are ready` in logcat on
+Shipped (da3d580) as `image/overlay/vendor/lib64/hw/hwcomposer.waydroid.so`;
+the vendor mount's lowerdir is `/var/lib/waydroid/overlay/vendor` first.
+`image/tools/patch-hwcomposer.sh` rebuilds it from the stock file and checks
+both hashes. So that a Waydroid vendor update is never shadowed by a stale
+binary, `host/packaging/deckard-overlay-sync` (fa83c24) keeps it only while
+`/var/lib/waydroid/waydroid.cfg` says `vendor_datetime = 1790486210` and
+removes it otherwise, including when `waydroid.cfg` is missing (it runs
+before the image is mounted, so it can't hash the file in place). Host test:
+`host/packaging/tests/test-deckard-overlay-sync.sh` (ctest `overlay_sync`).
+Device check: no `cannot be shrunk` tombstone over 20 session starts (12 of
+22 aborted before), and `Waydroid hwcomposer services are ready` in logcat on
 each.
 
 Upstream patch for `hwcomposer/hwcomposer.cpp`: drop the
@@ -272,17 +274,23 @@ the scale. After a data reset `persist.waydroid.width/height` are gone with
 
 The boot watchdog (deckardd `BootWatchdog`, 546da15) already takes
 `debuggerd -b` of the composer, so the next real stall will show main's frames.
-Two more lines in `deckard-boot-evidence` would place it even without
+`deckard-boot-evidence` now also prints two things that place it even without
 symbols:
 
 - `logcat -d -v threadtime -s hwcomposer HidlServiceManagement ServiceManagement`
-  in the container. `WAYLAND_DISPLAY: …` comes right after
+  in the container (last 200 lines). `WAYLAND_DISPLAY: …` comes right after
   `wl_display_connect`, `wayland display 0x…` right after `create_display`,
-  `Waited one second for vendor.waydroid.task…` from the getService wait, and
-  `Waydroid hwcomposer services are ready` from the binder thread.
-- `ss -xp` on the shell's side of the composer's socket (host namespace) next
-  to the container's, with Recv-Q/Send-Q: data queued at the composer means it
-  stopped reading; nothing queued while main waits means the reply never came.
+  `Waited one second for vendor.waydroid.task…` from the getService wait,
+  `Registered …IComposer/default` from main, and `Waydroid hwcomposer services
+  are ready` from the binder thread.
+- Both ends of the composer's Wayland socket, with Recv-Q/Send-Q. The shell's
+  end is not in the host's namespace: a Unix connection's accepted socket is
+  created in the connecting socket's network namespace, so it shows in the
+  container's `ss -xp` as the socket on `/run/user/1000/marathon-wayland-0`
+  owned by marathon-shell. ss shows no peer inode on this kernel, so the pair is
+  matched by that path (the composer is the container's only Wayland client).
+  Bytes queued at the composer mean it stopped reading; nothing queued at
+  either end while main waits means no reply was sent.
 
 Until then the watchdog's single restart after 60 s turns a 6-minute hang into
 about 70 s; both observed hangs cleared on one restart.
