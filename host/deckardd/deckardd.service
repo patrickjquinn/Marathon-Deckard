@@ -1,8 +1,8 @@
 [Unit]
-Description=Android notifications and media in Marathon (Deckard bridge)
+Description=Android apps in Marathon (Deckard bridge)
 ConditionUser=!root
-PartOf=marathon-waydroid.service
-After=marathon-waydroid.service
+PartOf=graphical-session.target
+After=graphical-session.target
 
 [Service]
 ExecStart=/usr/bin/deckardd
@@ -10,4 +10,4 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=marathon-waydroid.service
+WantedBy=graphical-session.target
