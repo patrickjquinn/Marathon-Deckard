@@ -17,6 +17,7 @@ add_library(deckardcore STATIC
     src/intents.cpp
     src/mpris.cpp
     src/notifications.cpp
+    src/packages.cpp
     src/palette.cpp
     src/sessionfollower.cpp
     src/validate.cpp
@@ -55,4 +56,7 @@ if(BUILD_TESTING)
     add_executable(test_sessionfollower tests/test_sessionfollower.cpp)
     target_link_libraries(test_sessionfollower PRIVATE deckardcore Qt6::Test)
     add_test(NAME sessionfollower COMMAND test_sessionfollower)
+    add_executable(test_packages tests/test_packages.cpp)
+    target_link_libraries(test_packages PRIVATE deckardcore Qt6::Test)
+    add_test(NAME packages COMMAND test_packages)
 endif()

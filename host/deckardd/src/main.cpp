@@ -5,11 +5,13 @@
 #include "intents.h"
 #include "mpris.h"
 #include "notifications.h"
+#include "packages.h"
 #include "palette.h"
 #include "sessionfollower.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
+#include <QDBusConnectionInterface>
 #include <QDBusError>
 #include <QDBusMessage>
 #include <QDir>
@@ -59,16 +61,51 @@ int main(int argc, char *argv[]) {
         QDBusConnection::sessionBus().send(call);
     });
 
+    // /org/marathonos/Deckard: each feature adds its own interface.
+    QObject  dbusRoot;
+    Packages packages(
+        &dbusRoot,
+        [&bridge](const QJsonObject &message) {
+            if (!bridge.isConnected())
+                return false;
+            bridge.send(message);
+            return true;
+        },
+        [&bus](const QDBusMessage &call) {
+            // Sandboxed apps carry a Marathon app id; only Settings and the Store may change apps.
+            const auto pid = bus.interface()->servicePid(call.service());
+            if (!pid.isValid())
+                return false;
+            QDBusMessage ask = QDBusMessage::createMethodCall(
+                QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+                QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("AppIdForPid"));
+            ask << pid.value();
+            const QDBusMessage answer = bus.call(ask, QDBus::Block, 3000);
+            if (answer.type() != QDBusMessage::ReplyMessage || answer.arguments().isEmpty())
+                return false;
+            const QString appId = answer.arguments().constFirst().toString();
+            return appId.isEmpty() || appId == QLatin1String("settings") || appId == QLatin1String("store");
+        },
+        data + QStringLiteral("/deckard/install"));
+    if (!bus.registerObject(QStringLiteral("/org/marathonos/Deckard"), &dbusRoot,
+                            QDBusConnection::ExportAdaptors))
+        qWarning("cannot export /org/marathonos/Deckard");
+
     QObject::connect(&bridge, &Bridge::received, &app,
                      [&](const QString &type, const QJsonObject &message) {
                          if (type.startsWith(QLatin1String("media")))
                              mpris.handle(type, message);
+                         else if (type.endsWith(QLatin1String("_result")) ||
+                                  type == QLatin1String("install_progress") ||
+                                  type == QLatin1String("package_changed"))
+                             packages.handle(type, message);
                          else
                              notifications.handle(type, message);
                      });
     QObject::connect(&bridge, &Bridge::connectedChanged, &app, [&](bool connected) {
         if (!connected) {
             mpris.clear();
+            packages.bridgeLost();
             return;
         }
         bridge.send({{QStringLiteral("t"), QStringLiteral("hello")}, {QStringLiteral("v"), 1}});

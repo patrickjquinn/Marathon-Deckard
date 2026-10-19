@@ -47,6 +47,7 @@ public class BridgeService extends NotificationListenerService implements Link.L
     private static BridgeService sInstance;
     private Link mLink;
     private Media mMedia;
+    private Installer mInstaller;
 
     @Override
     public void onListenerConnected() {
@@ -54,6 +55,7 @@ public class BridgeService extends NotificationListenerService implements Link.L
         sInstance = this;
         mLink = new Link(mMain, this);
         mMedia = new Media(this, mMain, mLink, new ComponentName(this, BridgeService.class));
+        mInstaller = new Installer(this, mMain, mLink);
     }
 
     @Override
@@ -61,6 +63,7 @@ public class BridgeService extends NotificationListenerService implements Link.L
         Log.i(Link.TAG, "listener disconnected");
         sInstance = null;
         mMedia.stop();
+        mInstaller.stop();
         mLink.stop();
         mForwarded.clear();
         requestRebind(new ComponentName(this, BridgeService.class));
@@ -297,6 +300,11 @@ public class BridgeService extends NotificationListenerService implements Link.L
             return;
         if (type.equals("media_cmd")) {
             mMedia.command(m);
+            return;
+        }
+        if (type.equals("inspect") || type.equals("install") || type.equals("uninstall")
+                || type.equals("packages")) {
+            mInstaller.handle(type, m);
             return;
         }
         if (type.equals("audio")) {
