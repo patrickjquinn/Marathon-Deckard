@@ -1,0 +1,6 @@
+# DeckardSystem answers links, numbers, places, settings pages, pickers and
+# the camera for Android apps by handing them to Marathon (docs/slim.md).
+# While the stock browser is still in the image, links need it to be the
+# default browser, or Android asks which one to use.
+on property:sys.boot_completed=1
+    exec_background - root root -- /system/bin/cmd role add-role-holder android.app.role.BROWSER org.marathonos.deckard.system
