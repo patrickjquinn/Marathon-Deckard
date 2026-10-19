@@ -27,6 +27,7 @@ add_library(deckardcore STATIC
     src/runtime.cpp
     src/sessionfollower.cpp
     src/settingsapi.cpp
+    src/share.cpp
     src/validate.cpp
 )
 target_include_directories(deckardcore PUBLIC src)
@@ -63,6 +64,9 @@ if(BUILD_TESTING)
     add_executable(test_bootwatchdog tests/test_bootwatchdog.cpp)
     target_link_libraries(test_bootwatchdog PRIVATE deckardcore Qt6::Test)
     add_test(NAME bootwatchdog COMMAND test_bootwatchdog)
+    add_executable(test_share tests/test_share.cpp)
+    target_link_libraries(test_share PRIVATE deckardcore Qt6::Test)
+    add_test(NAME share COMMAND test_share)
     add_executable(test_reclaimer tests/test_reclaimer.cpp)
     target_link_libraries(test_reclaimer PRIVATE deckardcore Qt6::Test)
     add_test(NAME reclaimer COMMAND test_reclaimer)

@@ -15,6 +15,7 @@
 #include "runtime.h"
 #include "sessionfollower.h"
 #include "settingsapi.h"
+#include "share.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
@@ -170,6 +171,26 @@ int main(int argc, char *argv[]) {
     QObject::connect(&systemBridge, &Bridge::received, &packages, [&](const QString &type, const QJsonObject &message) {
         if (type == QLatin1String("install_result"))
             packages.handle(type, message);
+    });
+    // Shares with Android apps; only the shell asks for targets and hands one a request.
+    Sharing sharing(
+        &dbusRoot, bus,
+        [&systemBridge](const QJsonObject &message) {
+            if (!systemBridge.isConnected())
+                return false;
+            systemBridge.send(message);
+            return true;
+        },
+        [&bus](const QDBusMessage &call) {
+            const auto caller = bus.interface()->servicePid(call.service());
+            const auto shell  = bus.interface()->servicePid(QStringLiteral("org.marathonos.Shell"));
+            return caller.isValid() && shell.isValid() && caller.value() == shell.value();
+        },
+        data + QStringLiteral("/deckard/xfer"));
+    QObject::connect(&systemBridge, &Bridge::received, &sharing, &Sharing::handle);
+    QObject::connect(&systemBridge, &Bridge::connectedChanged, &sharing, [&](bool connected) {
+        if (!connected)
+            sharing.systemLost();
     });
     if (!systemBridge.listen())
         return 1;
