@@ -10,6 +10,7 @@ include(GNUInstallDirs)
 
 add_library(deckardcore STATIC
     src/audio.cpp
+    src/bootwatchdog.cpp
     src/bridge.cpp
     src/callers.cpp
     src/doze.cpp
@@ -59,6 +60,9 @@ if(BUILD_TESTING)
     target_compile_definitions(test_palette PRIVATE
         DECKARD_PALETTE_XML="${CMAKE_CURRENT_SOURCE_DIR}/../../image/vendor_deckard/overlay/DeckardPalette/res/values/colors.xml")
     add_test(NAME palette COMMAND test_palette)
+    add_executable(test_bootwatchdog tests/test_bootwatchdog.cpp)
+    target_link_libraries(test_bootwatchdog PRIVATE deckardcore Qt6::Test)
+    add_test(NAME bootwatchdog COMMAND test_bootwatchdog)
     add_executable(test_reclaimer tests/test_reclaimer.cpp)
     target_link_libraries(test_reclaimer PRIVATE deckardcore Qt6::Test)
     add_test(NAME reclaimer COMMAND test_reclaimer)

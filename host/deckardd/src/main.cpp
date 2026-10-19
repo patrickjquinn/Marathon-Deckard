@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "bootwatchdog.h"
 #include "bridge.h"
 #include "callers.h"
 #include "doze.h"
@@ -22,6 +23,7 @@
 #include <QDBusMessage>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QStandardPaths>
@@ -180,6 +182,13 @@ int main(int argc, char *argv[]) {
                            QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation)},
                           [&](const QString &method) { UnitWatch::call(bus, method, sessionUnit); });
     UnitWatch     unitWatch(bus, sessionUnit, &runtime);
+    BootWatchdog  bootWatchdog({data + QStringLiteral("/deckard/booted"),
+                                QFileInfo::exists(QStringLiteral("/usr/libexec/deckard-boot-evidence"))
+                                    ? QStringList{QStringLiteral("pkexec"), QStringLiteral("/usr/libexec/deckard-boot-evidence")}
+                                    : QStringList()},
+                               [&runtime] { runtime.restart(); });
+    QObject::connect(&runtime, &Runtime::changed, &bootWatchdog,
+                     [&] { bootWatchdog.setActiveSince(runtime.activeSinceMs()); });
     Reclaimer     reclaimer({cgroup}, [&systemBridge](const QJsonObject &message) { systemBridge.send(message); });
     QObject::connect(&systemBridge, &Bridge::connectedChanged, &reclaimer, &Reclaimer::setConnected);
     QObject::connect(&systemBridge, &Bridge::received, &reclaimer, &Reclaimer::handle);

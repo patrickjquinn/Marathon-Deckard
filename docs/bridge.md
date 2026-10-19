@@ -349,6 +349,25 @@ Marathon app toast and keeps transient notifications out of the Hub.
   back alarms, jobs and network over longer periods. For comparison, M0
   measured 0.11–0.30 % and 68–81 context switches/s.
 
+## A boot that never completes
+
+The first start after a reset hung for about six minutes: the composer HAL
+had connected to Marathon's Wayland server but never registered, so
+SurfaceFlinger waited for it and system_server looped in its watchdog. One
+session stop and start fixed it, as it did the transient hang at 01:42.
+
+deckardd's `BootWatchdog` follows the session unit. Android's init writes
+`/data/deckard/booted` at `sys.boot_completed` (`deckard-watch.rc`, removed
+again at `post-fs-data`). If that file is not newer than the unit's
+activation 60 s later, deckardd runs `pkexec /usr/libexec/deckard-boot-evidence`.
+Its output goes to deckardd's journal (`deckard.boot`): the container's
+freezer state, the boot properties, and for the composer HAL and
+SurfaceFlinger their state, Unix sockets (`ss -xp` in the container's network
+namespace, the Wayland link among them) and `debuggerd -b` stacks. deckardd
+then restarts the session once. If the restarted session stalls as well, it
+is only reported; a completed boot re-arms the restart. Not yet seen
+working on the device.
+
 ## Install
 
 | Piece | Where |

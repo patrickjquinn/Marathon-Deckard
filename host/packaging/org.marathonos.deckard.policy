@@ -19,4 +19,18 @@
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/deckard-reset</annotate>
   </action>
+
+  <!-- Android's boot stalled: deckardd's boot watchdog collects the stacks
+       and sockets of the processes it waits on before restarting it. Only
+       root can attach to the container. -->
+  <action id="org.marathonos.deckard.boot-evidence">
+    <description>Diagnose a stalled Android start</description>
+    <message>Authentication is required to read why Android did not start</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/deckard-boot-evidence</annotate>
+  </action>
 </policyconfig>

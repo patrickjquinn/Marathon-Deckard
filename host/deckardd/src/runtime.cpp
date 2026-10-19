@@ -54,6 +54,10 @@ QString Runtime::state() const {
     return QStringLiteral("stopped");
 }
 
+qint64 Runtime::activeSinceMs() const {
+    return m_unitState == QLatin1String("active") || m_unitState == QLatin1String("reloading") ? m_enteredMs : 0;
+}
+
 QVariantMap Runtime::snapshot() const {
     const QString s = state();
     qint64        memory = 0;

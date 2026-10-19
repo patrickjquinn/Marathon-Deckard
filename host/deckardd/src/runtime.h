@@ -35,6 +35,8 @@ class Runtime : public QObject {
     bool        startAtLogin() const;
     bool        startAtLoginIsSet() const;
     bool        hasAndroidApps() const;
+    // When the session unit became active, ms since the epoch; 0 while it isn't.
+    qint64      activeSinceMs() const;
 
     void start();
     void stop();
