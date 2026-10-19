@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- No SystemUI, so no ImageWallpaper: boot must not wait 30 s for a
+         wallpaper window (docs/slim.md). -->
+    <bool name="config_checkWallpaperAtBoot">false</bool>
+</resources>
