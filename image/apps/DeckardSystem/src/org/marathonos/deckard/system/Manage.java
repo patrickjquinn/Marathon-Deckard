@@ -59,35 +59,6 @@ final class Manage {
     private static final int FLAG_PERMISSION_SYSTEM_FIXED = 16;
     private static final int FLAG_SUPPORTS_PICTURE_IN_PICTURE = 0x400000;
 
-    private static final Map<String, String[]> GROUPS = new java.util.LinkedHashMap<>();
-    static {
-        GROUPS.put("location", new String[] {"android.permission.ACCESS_FINE_LOCATION",
-                "android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_BACKGROUND_LOCATION"});
-        GROUPS.put("camera", new String[] {"android.permission.CAMERA"});
-        GROUPS.put("microphone", new String[] {"android.permission.RECORD_AUDIO"});
-        GROUPS.put("contacts", new String[] {"android.permission.READ_CONTACTS",
-                "android.permission.WRITE_CONTACTS", "android.permission.GET_ACCOUNTS"});
-        GROUPS.put("calendar", new String[] {"android.permission.READ_CALENDAR", "android.permission.WRITE_CALENDAR"});
-        GROUPS.put("phone", new String[] {"android.permission.READ_PHONE_STATE",
-                "android.permission.READ_PHONE_NUMBERS", "android.permission.CALL_PHONE",
-                "android.permission.ANSWER_PHONE_CALLS", "android.permission.ADD_VOICEMAIL",
-                "android.permission.USE_SIP", "android.permission.ACCEPT_HANDOVER"});
-        GROUPS.put("call_log", new String[] {"android.permission.READ_CALL_LOG",
-                "android.permission.WRITE_CALL_LOG", "android.permission.PROCESS_OUTGOING_CALLS"});
-        GROUPS.put("sms", new String[] {"android.permission.SEND_SMS", "android.permission.RECEIVE_SMS",
-                "android.permission.READ_SMS", "android.permission.RECEIVE_WAP_PUSH", "android.permission.RECEIVE_MMS"});
-        GROUPS.put("storage", new String[] {"android.permission.READ_EXTERNAL_STORAGE",
-                "android.permission.WRITE_EXTERNAL_STORAGE"});
-        GROUPS.put("photos", new String[] {"android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO"});
-        GROUPS.put("music", new String[] {"android.permission.READ_MEDIA_AUDIO"});
-        GROUPS.put("nearby", new String[] {"android.permission.BLUETOOTH_SCAN",
-                "android.permission.BLUETOOTH_CONNECT", "android.permission.BLUETOOTH_ADVERTISE",
-                "android.permission.NEARBY_WIFI_DEVICES", "android.permission.UWB_RANGING"});
-        GROUPS.put("sensors", new String[] {"android.permission.BODY_SENSORS",
-                "android.permission.BODY_SENSORS_BACKGROUND"});
-        GROUPS.put("activity", new String[] {"android.permission.ACTIVITY_RECOGNITION"});
-    }
-
     // Special access granted through an app op: kind → {permission the app requests, op, op mode when refused}.
     private static final Map<String, String[]> APP_OPS = new HashMap<>();
     static {
@@ -145,7 +116,9 @@ final class Manage {
             case "info":
                 return new JSONObject().put("release", Build.VERSION.RELEASE).put("sdk", Build.VERSION.SDK_INT);
             case "app": return app(c, userApp(c, pkg));
-            case "perm": permission(c, userApp(c, pkg), m.optString("group"), m.optBoolean("granted")); return null;
+            case "perm": permission(c, userApp(c, pkg), names(m.optJSONArray("permissions")), m.optBoolean("granted")); return null;
+            case "perm_apps": return new JSONObject().put("apps", permissionApps(c, names(m.optJSONArray("permissions"))));
+            case "notif_apps": return new JSONObject().put("apps", notificationApps(c));
             case "notifications": notifications(c, userApp(c, pkg), m.optBoolean("enabled")); return null;
             case "links": links(c, userApp(c, pkg), m.optBoolean("enabled")); return null;
             case "battery": battery(userApp(c, pkg).packageName, "unrestricted".equals(m.optString("mode"))); return null;
@@ -226,21 +199,64 @@ final class Manage {
         r.put("battery", c.getSystemService(PowerManager.class).isIgnoringBatteryOptimizations(pkg)
                 ? "unrestricted" : "optimized");
 
+        // Every runtime permission the app asks for; deckardd names them as Marathon does.
         JSONArray perms = new JSONArray();
-        for (Map.Entry<String, String[]> g : GROUPS.entrySet()) {
-            boolean any = false, granted = false, fixed = ai.targetSdkVersion < Build.VERSION_CODES.M;
-            for (String p : requested(c, pi, g.getValue())) {
-                any = true;
-                granted |= pm.checkPermission(p, pkg) == PackageManager.PERMISSION_GRANTED;
-                fixed |= (flags(pm, p, pkg) & (FLAG_PERMISSION_SYSTEM_FIXED | FLAG_PERMISSION_POLICY_FIXED)) != 0;
-            }
-            if (any)
-                perms.put(new JSONObject().put("group", g.getKey()).put("granted", granted).put("fixed", fixed));
+        for (String p : requested(c, pi, pi.requestedPermissions == null ? new String[0] : pi.requestedPermissions)) {
+            perms.put(new JSONObject().put("name", p)
+                    .put("granted", pm.checkPermission(p, pkg) == PackageManager.PERMISSION_GRANTED)
+                    .put("fixed", fixed(pm, ai, p)));
         }
-        return r.put("permissions", perms);
+        return r.put("perms", perms);
     }
 
-    /** The runtime permissions of a group the app asks for. */
+    private static boolean fixed(PackageManager pm, ApplicationInfo ai, String perm) throws Exception {
+        return ai.targetSdkVersion < Build.VERSION_CODES.M
+                || (flags(pm, perm, ai.packageName) & (FLAG_PERMISSION_SYSTEM_FIXED | FLAG_PERMISSION_POLICY_FIXED)) != 0;
+    }
+
+    private static String[] names(JSONArray list) {
+        if (list == null)
+            return new String[0];
+        String[] out = new String[Math.min(list.length(), 64)];
+        for (int i = 0; i < out.length; i++)
+            out[i] = list.optString(i);
+        return out;
+    }
+
+    /** The person's apps asking for any of these runtime permissions, and whether they have one. */
+    private static JSONArray permissionApps(Context c, String[] perms) throws Exception {
+        PackageManager pm = c.getPackageManager();
+        JSONArray out = new JSONArray();
+        for (ApplicationInfo ai : userApps(c)) {
+            PackageInfo pi = pm.getPackageInfo(ai.packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS));
+            List<String> asked = requested(c, pi, perms);
+            if (asked.isEmpty())
+                continue;
+            boolean granted = false, fixed = true;
+            for (String p : asked) {
+                granted |= pm.checkPermission(p, ai.packageName) == PackageManager.PERMISSION_GRANTED;
+                fixed &= fixed(pm, ai, p);
+            }
+            out.put(new JSONObject().put("pkg", ai.packageName).put("label", pm.getApplicationLabel(ai).toString())
+                    .put("granted", granted).put("fixed", fixed));
+        }
+        return out;
+    }
+
+    private static JSONArray notificationApps(Context c) throws Exception {
+        PackageManager pm = c.getPackageManager();
+        Object nm = notificationService();
+        JSONArray out = new JSONArray();
+        for (ApplicationInfo ai : userApps(c)) {
+            boolean on = (Boolean) nm.getClass().getMethod("areNotificationsEnabledForPackage", String.class, int.class)
+                    .invoke(nm, ai.packageName, ai.uid);
+            out.put(new JSONObject().put("pkg", ai.packageName).put("label", pm.getApplicationLabel(ai).toString())
+                    .put("granted", on).put("fixed", false));
+        }
+        return out;
+    }
+
+    /** Those of perms the app asks for that are runtime permissions. */
     private static List<String> requested(Context c, PackageInfo pi, String[] group) {
         List<String> out = new ArrayList<>();
         if (pi.requestedPermissions == null)
@@ -267,9 +283,8 @@ final class Manage {
 
     // --- changes ---
 
-    private static void permission(Context c, ApplicationInfo ai, String group, boolean grant) throws Exception {
-        String[] perms = GROUPS.get(group);
-        if (perms == null)
+    private static void permission(Context c, ApplicationInfo ai, String[] perms, boolean grant) throws Exception {
+        if (perms.length == 0)
             throw new IllegalArgumentException("unknown permission");
         PackageManager pm = c.getPackageManager();
         PackageInfo pi = pm.getPackageInfo(ai.packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS));
