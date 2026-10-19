@@ -127,6 +127,9 @@ final class Manage {
             case "clear": clearData(c, userApp(c, pkg).packageName); return null;
             case "special": return new JSONObject().put("apps", special(c, m.optString("kind")));
             case "special_set": setSpecial(c, m.optString("kind"), userApp(c, pkg), m.optBoolean("granted")); return null;
+            case "gms": return GoogleServices.info(c);
+            case "gms_set": GoogleServices.set(c, m.optString("key"), m.optBoolean("enabled")); return null;
+            case "gms_open": GoogleServices.open(c, m.optString("page")); return null;
             default: throw new IllegalArgumentException("unknown request");
         }
     }

@@ -10,5 +10,6 @@ public final class SystemApp extends Application {
         HostLink.get();
         WindowFit.start();
         ToastBar.start();
+        GoogleServices.prepare(this);
     }
 }
