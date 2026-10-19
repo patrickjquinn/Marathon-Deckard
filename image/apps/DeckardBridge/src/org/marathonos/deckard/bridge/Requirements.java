@@ -67,10 +67,11 @@ final class Requirements {
         String[] names = pm.getSystemSharedLibraryNames();
         if (names != null)
             java.util.Collections.addAll(libraries, names);
+        // Play services or microG, installed and not turned off in Settings.
         boolean gms;
         try {
-            pm.getPackageInfo(GMS, PackageManager.PackageInfoFlags.of(0));
-            gms = true;
+            gms = pm.getApplicationInfo(GMS,
+                    PackageManager.ApplicationInfoFlags.of(PackageManager.MATCH_DISABLED_COMPONENTS)).enabled;
         } catch (PackageManager.NameNotFoundException e) {
             gms = false;
         }
