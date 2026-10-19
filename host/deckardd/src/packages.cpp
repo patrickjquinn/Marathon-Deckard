@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QLoggingCategory>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QTimer>
 
 #include <sys/stat.h>
@@ -23,6 +24,30 @@ namespace {
 
     QString newId() {
         return QString::number(QRandomGenerator::global()->generate64(), 16);
+    }
+
+    // Dotted names (features, libraries) from Android, at most 64.
+    QStringList names(const QJsonValue &value) {
+        QStringList out;
+        const QJsonArray list = value.toArray();
+        for (const QJsonValue &v : list) {
+            const QString name = v.toString();
+            if (name.size() <= 160 && Validate::isPackageName(name) && out.size() < 64)
+                out << name;
+        }
+        return out;
+    }
+
+    QStringList abiNames(const QJsonValue &value) {
+        static const QRegularExpression re(QStringLiteral("^[a-z0-9_-]{1,16}$"));
+        QStringList out;
+        const QJsonArray list = value.toArray();
+        for (const QJsonValue &v : list) {
+            const QString abi = v.toString();
+            if (re.match(abi).hasMatch() && out.size() < 16)
+                out << abi;
+        }
+        return out;
     }
 
     QVariantMap failure(const QString &message) {
@@ -177,6 +202,18 @@ QString Packages::UninstallPackage(const QString &pkg, const QDBusMessage &call)
     return {};
 }
 
+QVariantMap Packages::DeviceProfile(const QDBusMessage &call) {
+    QString error;
+    if (start({{QStringLiteral("t"), QStringLiteral("device")}, {QStringLiteral("id"), newId()}},
+              {call, QStringLiteral("device"), {}}, &error)
+            .isEmpty()) {
+        sendReply(call.createErrorReply(QDBusError::Failed, error));
+        return {};
+    }
+    call.setDelayedReply(true);
+    return {};
+}
+
 PackageList Packages::ListPackages(const QDBusMessage &call) {
     QString error;
     if (start({{QStringLiteral("t"), QStringLiteral("packages")}, {QStringLiteral("id"), newId()}},
@@ -204,6 +241,14 @@ void Packages::handle(const QString &type, const QJsonObject &m) {
         return;
     if (type == QLatin1String("install_progress")) {
         Q_EMIT Progress(id, qBound(0, m.value(QStringLiteral("percent")).toInt(), 100));
+        return;
+    }
+    if (type == QLatin1String("device_result")) {
+        reply(id, QVariantMap{{QStringLiteral("features"), names(m.value(QStringLiteral("features")))},
+                              {QStringLiteral("libraries"), names(m.value(QStringLiteral("libraries")))},
+                              {QStringLiteral("abis"), abiNames(m.value(QStringLiteral("abis")))},
+                              {QStringLiteral("sdk"), m.value(QStringLiteral("sdk")).toInt()},
+                              {QStringLiteral("gms"), m.value(QStringLiteral("gms")).toBool()}});
         return;
     }
     if (type == QLatin1String("packages_result")) {
@@ -259,6 +304,10 @@ void Packages::handle(const QString &type, const QJsonObject &m) {
     }
     info.insert(QStringLiteral("permissions"), permissions);
     info.insert(QStringLiteral("icon"), Validate::base64(m, QStringLiteral("icon"), 256 * 1024));
+    info.insert(QStringLiteral("features"), names(m.value(QStringLiteral("features"))));
+    info.insert(QStringLiteral("libraries"), names(m.value(QStringLiteral("libraries"))));
+    info.insert(QStringLiteral("abis"), abiNames(m.value(QStringLiteral("abis"))));
+    info.insert(QStringLiteral("gms"), m.value(QStringLiteral("gms")).toBool());
     if (m.contains(QStringLiteral("installedVersionCode"))) {
         info.insert(QStringLiteral("installedVersionCode"),
                     qint64(m.value(QStringLiteral("installedVersionCode")).toDouble()));

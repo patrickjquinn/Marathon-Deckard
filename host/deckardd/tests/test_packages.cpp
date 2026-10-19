@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -109,6 +110,47 @@ class TestPackages : public QObject {
         QVERIFY(Packages::runs(QCoreApplication::applicationPid(), QCoreApplication::applicationFilePath()));
         QVERIFY(!Packages::runs(QCoreApplication::applicationPid(), QStringLiteral("/bin/sh")));
         QVERIFY(!Packages::runs(-1, QCoreApplication::applicationFilePath()));
+    }
+
+    // What an .apk needs and what the phone has, checked on the way through.
+    void requirementsAndDeviceProfile() {
+        QTemporaryDir dir;
+        QObject  root;
+        QList<QJsonObject> sent;
+        TestablePackages packages(&root, [&](const QJsonObject &m) { sent.append(m); return true; },
+                          [](const QDBusMessage &, std::function<void()> run) { run(); },
+                          dir.filePath(QStringLiteral("i")));
+        const QString apk = dir.filePath(QStringLiteral("a.apk"));
+        QFile f(apk);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("PK\x03\x04 rest");
+        f.close();
+        packages.InspectPackage(apk, call());
+        const QString id = sent.last().value(QStringLiteral("id")).toString();
+        packages.handle(QStringLiteral("inspect_result"),
+                        {{QStringLiteral("id"), id}, {QStringLiteral("ok"), true},
+                         {QStringLiteral("pkg"), QStringLiteral("org.example.maps")},
+                         {QStringLiteral("features"), QJsonArray{QStringLiteral("android.hardware.telephony"), QStringLiteral("bad feature")}},
+                         {QStringLiteral("libraries"), QJsonArray{QStringLiteral("com.google.android.maps")}},
+                         {QStringLiteral("abis"), QJsonArray{QStringLiteral("armeabi-v7a"), QStringLiteral("../x")}},
+                         {QStringLiteral("gms"), true}});
+        const QVariantMap info = packages.replies.last().arguments().constFirst().toMap();
+        QCOMPARE(info.value(QStringLiteral("features")).toStringList(), QStringList{QStringLiteral("android.hardware.telephony")});
+        QCOMPARE(info.value(QStringLiteral("libraries")).toStringList(), QStringList{QStringLiteral("com.google.android.maps")});
+        QCOMPARE(info.value(QStringLiteral("abis")).toStringList(), QStringList{QStringLiteral("armeabi-v7a")});
+        QVERIFY(info.value(QStringLiteral("gms")).toBool());
+
+        packages.DeviceProfile(call());
+        QCOMPARE(sent.last().value(QStringLiteral("t")).toString(), QStringLiteral("device"));
+        packages.handle(QStringLiteral("device_result"),
+                        {{QStringLiteral("id"), sent.last().value(QStringLiteral("id"))},
+                         {QStringLiteral("features"), QJsonArray{QStringLiteral("android.hardware.camera.any")}},
+                         {QStringLiteral("abis"), QJsonArray{QStringLiteral("arm64-v8a")}},
+                         {QStringLiteral("sdk"), 33}});
+        const QVariantMap device = packages.replies.last().arguments().constFirst().toMap();
+        QCOMPARE(device.value(QStringLiteral("abis")).toStringList(), QStringList{QStringLiteral("arm64-v8a")});
+        QCOMPARE(device.value(QStringLiteral("sdk")).toInt(), 33);
+        QVERIFY(!device.value(QStringLiteral("gms")).toBool());
     }
 
     void androidGoneFailsJobs() {

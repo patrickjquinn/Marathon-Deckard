@@ -211,6 +211,24 @@ the Store (Callers::require) and the Store's handler (by executable,
   download 16 MB, stream-parse 66 MB) took **4.4 s at 59 MB peak RSS**; with
   the index unchanged, 0.8 s. The catalogue holds 4,713 apps in 7.2 MB.
 
+### Will it run here
+
+Before an install the Store says what an Android app needs that this phone
+may not give it. From an .apk, DeckardBridge reads the required
+`uses-feature`s (`reqFeatures`), the required `uses-library`s (its own
+`AndroidManifest.xml` through `XmlResourceParser`), Play services
+(`com.google.android.gms.version` meta-data or a `com.google.android.gms`
+library) and the native ABIs (`lib/<abi>/` in the zip); from F-Droid the
+handler keeps each version's `features` and anti-features. The phone's side
+comes from Android itself (`Packages.DeviceProfile`: its features, shared
+libraries, ABIs, SDK, whether Play services are installed), so it is right
+for each device. Only what can't run blocks the install: no code for the
+phone's processor, a newer Android than this one, a required library that
+isn't there (Android would refuse it). Everything else is a plain warning
+on the app's page: "Needs Google Play services, so it may not work", "Needs a
+phone radio", "Needs a camera", and so on. The F-Droid catalogue already
+leaves out versions without arm64 code or for a newer Android.
+
 ## Memory budget
 
 The LXC start-host hook `deckard-container-limits` set the container's

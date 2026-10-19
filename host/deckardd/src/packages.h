@@ -39,11 +39,14 @@ class Packages : public QDBusAbstractAdaptor {
   public Q_SLOTS:
     // {ok, message, pkg, label, versionName, versionCode, minSdk, targetSdk,
     //  permissions (as), icon (PNG bytes), installedVersionCode,
-    //  installedVersionName}
+    //  installedVersionName, and what it needs: features, libraries, abis
+    //  (as), gms (b)}
     QVariantMap InspectPackage(const QString &path, const QDBusMessage &call);
     // A job id; Progress and Finished follow.
     QString InstallPackage(const QString &path, const QDBusMessage &call);
     QString UninstallPackage(const QString &pkg, const QDBusMessage &call);
+    // This phone's Android: {features, libraries, abis (as), sdk, gms}.
+    QVariantMap DeviceProfile(const QDBusMessage &call);
     // {pkg, label, versionName, versionCode, system, launchable} for every package.
     PackageList ListPackages(const QDBusMessage &call);
 

@@ -67,10 +67,11 @@ The body is HTML-escaped because the Hub advertises `body-markup`.
 | `sync` | `keys` | After the initial `post`s on every connection: the keys of all active notifications. deckardd closes any notification it tracks that isn't listed. |
 | `media` | see below | A media session appeared or changed. |
 | `media_gone` | `sid` | A media session ended. |
-| `inspect_result` | `id`, `ok`, `message`, `pkg`, `label`, `versionName`, `versionCode`, `minSdk`, `targetSdk`, `permissions`, `icon`, `installedVersionCode`, `installedVersionName` | An `inspect` answered from `PackageManager.getPackageArchiveInfo`. |
+| `inspect_result` | `id`, `ok`, `message`, `pkg`, `label`, `versionName`, `versionCode`, `minSdk`, `targetSdk`, `permissions`, `icon`, `installedVersionCode`, `installedVersionName`, and what it needs: `features` (required `uses-feature`), `libraries` (required `uses-library`, from its manifest), `gms` (Play services' `com.google.android.gms.version` meta-data or library), `abis` (the `lib/<abi>/` folders) | An `inspect` answered from `PackageManager.getPackageArchiveInfo`. |
 | `install_progress` | `id`, `percent` | Copying the APK into the PackageInstaller session. |
 | `install_result` | `id`, `ok`, `pkg`, `message` | An `install` finished (`PackageInstaller.EXTRA_STATUS`). Removals go to DeckardSystem (`uninstall` on `system.sock`). |
 | `packages_result` | `id`, `packages: [{pkg, label, versionName, versionCode, system, launchable}]` | Every installed package; `launchable` is whether it has a launcher activity. |
+| `device_result` | `id`, `features`, `libraries`, `abis`, `sdk`, `gms` | This phone's Android, for `device` (host to Android, `id`): `getSystemAvailableFeatures`, `getSystemSharedLibraryNames`, `Build.SUPPORTED_ABIS`, the SDK level and whether `com.google.android.gms` is installed. `Packages.DeviceProfile() → a{sv}` answers with it; the Store compares each app's needs with it (compatibility). |
 | `package_changed` | `pkg`, `change` | `installed`, `updated` or `removed`, from ACTION_PACKAGE_ADDED/REMOVED (a replace is one `updated`). |
 | `toast` | `pkg`, `label`, `text` | An app showed a toast (from the bridge's accessibility service: `TYPE_NOTIFICATION_STATE_CHANGED` with class `android.widget.Toast`). deckardd posts a silent banner (`urgency` 0, `transient`, `suppress-sound`, `x-marathon-toast`, `expire_timeout` 3500, summary = the text, `app_name` = the label) and closes it after 4 s. At most one per package per 500 ms; text up to 512 characters. |
 

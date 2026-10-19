@@ -317,7 +317,7 @@ public class BridgeService extends NotificationListenerService implements Link.L
             mMedia.command(m);
             return;
         }
-        if (type.equals("inspect") || type.equals("install") || type.equals("packages")) {
+        if (type.equals("inspect") || type.equals("install") || type.equals("packages") || type.equals("device")) {
             mInstaller.handle(type, m);
             return;
         }

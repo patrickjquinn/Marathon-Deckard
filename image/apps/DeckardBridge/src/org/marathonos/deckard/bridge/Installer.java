@@ -97,6 +97,9 @@ final class Installer {
                 case "inspect": reply(inspect(id, m.optString("path"))); break;
                 case "install": install(id, m.optString("path")); break;
                 case "packages": reply(packages(id)); break;
+                case "device":
+                    reply(Requirements.device(mContext.getPackageManager()).put("t", "device_result").put("id", id));
+                    break;
                 default: break;
             }
         } catch (JSONException e) {
@@ -122,7 +125,8 @@ final class Installer {
         File f = apk(path);
         PackageManager pm = mContext.getPackageManager();
         PackageInfo info = f == null ? null : pm.getPackageArchiveInfo(f.getPath(),
-                PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS));
+                PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS
+                        | PackageManager.GET_CONFIGURATIONS | PackageManager.GET_META_DATA));
         if (info == null || info.applicationInfo == null)
             return r.put("ok", false).put("message", "not an Android app");
         info.applicationInfo.sourceDir = f.getPath();
@@ -139,6 +143,7 @@ final class Installer {
                 perms.put(p);
         }
         r.put("permissions", perms);
+        Requirements.of(pm, info, f, r);
         String icon = Png.encode(pm.getApplicationIcon(info.applicationInfo), MAX_ICON);
         if (icon != null)
             r.put("icon", icon);
