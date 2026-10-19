@@ -1,19 +1,12 @@
 # No Android chrome in Marathon: Android's home, launcher and pickers stay out
-# of sight, every app task fills its Marathon window, and Android is dark.
+# of sight, every app task fills its Marathon window (DeckardSystem's WindowFit), and
+# Android is dark.
 
 on init
     # Waydroid's hwcomposer maps no window for DeckardHome (Launcher3 is built in).
     setprop waydroid.blacklist_apps org.marathonos.deckard.home
 
-service deckard-wm /system/bin/app_process64 /system/bin org.marathonos.deckard.wm.Main
-    class main
-    user system
-    group system
-    setenv CLASSPATH /system/framework/deckard-wm.jar
-    disabled
-
 on property:sys.boot_completed=1
-    start deckard-wm
     exec_background - root root -- /system/bin/cmd uimode night yes
     exec_background - root root -- /system/bin/settings put global policy_control immersive.full=*
     exec_background - root root -- /system/bin/settings put secure screensaver_enabled 0
