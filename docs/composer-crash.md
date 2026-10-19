@@ -157,9 +157,29 @@ binary, `host/packaging/deckard-overlay-sync` (fa83c24) keeps it only while
 removes it otherwise, including when `waydroid.cfg` is missing (it runs
 before the image is mounted, so it can't hash the file in place). Host test:
 `host/packaging/tests/test-deckard-overlay-sync.sh` (ctest `overlay_sync`).
-Device check: no `cannot be shrunk` tombstone over 20 session starts (12 of
-22 aborted before), and `Waydroid hwcomposer services are ready` in logcat on
-each.
+**On the device (2026-10-19, 04:27–04:38, under the session lock):** the
+repo's deckard-overlay-sync, run against a copy of the live overlay state
+plus the patched file, changed exactly one file in
+`/var/lib/waydroid/overlay` (the composer; whiteouts, props and the other
+overlay files compared equal before and after). Then 20 restarts of
+`marathon-waydroid.service`:
+
+| | Before (01:42–03:44, 22 boots) | Patched (20 starts) |
+|---|---|---|
+| Boots with a composer abort | 12 | 0 |
+| Composer cores | 19 | 0 |
+| `cannot be shrunk` tombstones | (7 kept) | 0 |
+| Any coredump, any process | | 0 |
+| `Waydroid hwcomposer services are ready` | | 20 of 20 |
+| `/vendor/lib64/hw/hwcomposer.waydroid.so` in Android | stock | `42bef881…` every start |
+| Restart to `sys.boot_completed=1` | | 11–13 s (12 s in 16 of 20) |
+| Boot-watchdog stalls, composer/SurfaceFlinger/zygote restarts | | 0 |
+
+The "before" boots were not timed the same way, so the table makes no boot
+time comparison; each abort cost about 5 s (init restarts the composer,
+SurfaceFlinger and zygote). The patched file stays installed. The deployed
+`/usr/libexec/deckard-overlay-sync` predates fa83c24 and will remove it at
+the next `waydroid-container.service` start, until the aport is updated.
 
 Upstream patch for `hwcomposer/hwcomposer.cpp`: drop the
 `configureRpcThreadpool(1, true)` line from `hwc_binder_thread` (the composer
