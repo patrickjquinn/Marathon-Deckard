@@ -113,6 +113,8 @@ final class HostLink {
     private void onMessage(JSONObject m) {
         if ("picked".equals(m.optString("t")))
             finish(m.optString("id"), m);
+        else if ("manage".equals(m.optString("t")))
+            Manage.handle(m);
     }
 
     private void onDisconnected() {
