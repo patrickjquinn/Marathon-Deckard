@@ -147,6 +147,18 @@ Still to verify once window and focus tracking hold for a whole test:
 on-screen typing (commits, corrections, Enter as the editor's action) in
 Jelly's address bar and a web form, Contacts, Clock's label and Files search.
 
+Diagnosis after the final verification (shell e7b5f3f1). The keyboard
+writes to `QGuiApplication::focusObject()`. On the device that was neither
+the Waydroid surface item nor an item whose seat focus pointed at Android:
+hardware keys went to Marathon's type-to-search, so Qt's focus was on the
+shell root, and RemoteTextInput's target rule (item app id, else the seat's
+keyboard focus) found no window. A host test against a real text-input-less
+xdg toplevel (`Shell_RemoteTextInputWayland`) shows hints and commits do reach
+RemoteTextInput whenever either focus is on the window. Fix (Marathon-Shell
+79239397): the shell tells RemoteTextInput which app is in the app window,
+and while Qt's focus is on no app window and no shell text field, the editor
+of the app in front is the target. To verify on the device after deploy.
+
 Blockers found while testing (not keyboard code):
 
 - The shell froze the Waydroid container while an Android app was in front:
