@@ -155,6 +155,9 @@ class KeelApps : public QObject {
     QStringList packages() const;
     QJsonObject manifest(const QString &pkg) const;
 
+  private Q_SLOTS:
+    void onForeground(const QString &appId);
+
   private:
     friend class KeelProvider;
 
@@ -198,6 +201,8 @@ class KeelApps : public QObject {
     void    connectedChanged(bool system, bool connected);
     void    refreshShortcuts(const QString &pkg);
     void    notSecure(const QString &pkg, Done done);
+    void    checkSecure(const QString &pkg, bool retry);
+    void    reportSecure(const QString &pkg, bool secure);
     void    shell(const QString &action, const QJsonObject &args, ShellDone done);
     void    unlocked(const QString &pkg, bool inFront, Done done);
     void    launchThenShow(const QString &pkg, const QJsonObject &launch, bool system, Done done);
@@ -219,4 +224,5 @@ class KeelApps : public QObject {
     int                        m_connections = 0;
     QHash<QString, Entry>      m_apps;
     QHash<qint64, Request>     m_requests;
+    QHash<QString, bool>       m_secure; // what the shell was told, by package
 };

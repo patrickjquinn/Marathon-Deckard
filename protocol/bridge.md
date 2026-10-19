@@ -272,11 +272,19 @@ lines (at most 4,000 characters), when the app is in front and not secure;
 otherwise `{}`.
 keel-mcp reads it only for a request Pilot says the person started.
 
+**Secure windows and the shell.** On the shell's
+`Navigation1.ForegroundAppChanged(appId)` for a `waydroid.*` app, and after
+every `secure` answer, deckardd tells the shell
+`Navigation1.SetAppWindowSecure(appId, secure)` when that changes. The shell
+then keeps the app's windows off its card and out of screenshots. A window
+still starting is not in the dump yet, so a failed check is retried once
+after 2 s.
+
 **Bringing the window forward.** An activity that Android starts for an
 action maps a window nobody launched from Marathon, and the shell files
 such a window as a card. Before the `launch` (or `keel` `start`), deckardd
-calls `org.marathonos.Shell` `Navigation1.ExpectAppWindow(appId) -> b`, a
-proposed shell call. When it answers true, the shell shows the app's window
+calls `org.marathonos.Shell` `Navigation1.ExpectAppWindow(appId) -> b`
+(shell 24c813f2). When it answers true, the shell shows the app's window
 now, and a new window of the app (an activity in a new task) takes the front
 as a launch would. When the call fails (a shell without it), deckardd falls
 back. It polls the shell's `apps.running` every 250 ms, for up to 15 s,

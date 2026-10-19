@@ -80,13 +80,20 @@ class FakeNavigation : public QObject {
     Q_CLASSINFO("D-Bus Interface", "org.marathonos.Shell.Navigation1")
 
   public:
-    QStringList expected;
+    QStringList                expected;
+    QList<QPair<QString, bool>> secure;
 
   public Q_SLOTS:
     bool ExpectAppWindow(const QString &appId) {
         expected << appId;
         return true;
     }
+    void SetAppWindowSecure(const QString &appId, bool isSecure) {
+        secure << qMakePair(appId, isSecure);
+    }
+
+  Q_SIGNALS:
+    void ForegroundAppChanged(const QString &appId);
 };
 
 class TestKeelApps : public QObject {
@@ -391,7 +398,7 @@ class TestKeelApps : public QObject {
         // A shell that expects the window shows it itself.
         FakeNavigation navigation;
         QVERIFY(shellBus.registerObject(QStringLiteral("/org/marathonos/Shell/Navigation"), &navigation,
-                                        QDBusConnection::ExportAllSlots));
+                                        QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllSignals));
         QVERIFY(shellBus.registerService(QStringLiteral("org.marathonos.Shell")));
         fakeShell.launched.clear();
         auto search = invoke(name, QStringLiteral("app.search"), QStringLiteral("{\"query\":\"anna\"}"), {});
@@ -438,6 +445,20 @@ class TestKeelApps : public QObject {
         const QJsonObject result = QJsonDocument::fromJson(json(read->reply()).toUtf8()).object();
         QCOMPARE(result.value(QStringLiteral("screen")).toString(), QStringLiteral("[7.2] button \"Send\"\n"));
         QCOMPARE(result.value(QStringLiteral("snapshot")).toInt(), 7);
+        // The shell heard what DeckardSystem said, each change once.
+        QTRY_COMPARE(navigation.secure.size(), 2);
+        QCOMPARE(navigation.secure.at(0), qMakePair(name, true));
+        QCOMPARE(navigation.secure.at(1), qMakePair(name, false));
+
+        // An Android app coming to the front is checked for the shell.
+        Q_EMIT navigation.ForegroundAppChanged(name);
+        QTRY_COMPARE(system.size(), 1);
+        QCOMPARE(system.at(0).value(QStringLiteral("op")).toString(), QStringLiteral("secure"));
+        answer(system.takeFirst(), {{QStringLiteral("ok"), true}, {QStringLiteral("secure"), true}}, true);
+        QTRY_COMPARE(navigation.secure.size(), 3);
+        Q_EMIT navigation.ForegroundAppChanged(QStringLiteral("browser"));
+        QTest::qWait(100);
+        QVERIFY(system.isEmpty());
 
         // A tap: Pilot only, on an id of the latest read.
         reply = call(name, QStringLiteral("Invoke"),

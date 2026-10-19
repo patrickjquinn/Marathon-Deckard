@@ -595,6 +595,9 @@ KeelApps::KeelApps(Send send, Send system, Connect connect, QDBusConnection shel
     , m_trusted(std::move(trusted))
     , m_statePath(statePath) {
     load();
+    m_shell.connect(QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+                    QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("ForegroundAppChanged"), this,
+                    SLOT(onForeground(QString)));
 }
 
 KeelApps::~KeelApps() {
@@ -677,16 +680,53 @@ void KeelApps::notSecure(const QString &pkg, Done done) {
     request({{QStringLiteral("t"), QStringLiteral("keel")},
              {QStringLiteral("op"), QStringLiteral("secure")},
              {QStringLiteral("pkg"), pkg}},
-            [label, done = std::move(done)](bool ok, const QJsonObject &reply) {
+            [this, pkg, label, done = std::move(done)](bool ok, const QJsonObject &reply) {
                 if (!ok || !reply.value(QStringLiteral("ok")).toBool())
                     return done(QStringLiteral("NotAvailable"),
                                 QStringLiteral("Android cannot say whether the screen is protected"));
-                if (reply.value(QStringLiteral("secure")).toBool(true))
+                const bool secure = reply.value(QStringLiteral("secure")).toBool(true);
+                reportSecure(pkg, secure);
+                if (secure)
                     return done(QStringLiteral("NotAvailable"),
                                 label + QStringLiteral(" protects this screen from being read"));
                 done({}, {});
             },
             true);
+}
+
+// The shell keeps a secure app's windows off its card and out of
+// screenshots; deckardd tells it when an Android app comes to the front.
+void KeelApps::onForeground(const QString &id) {
+    if (id.startsWith(QLatin1String("waydroid.")) && m_apps.contains(id.mid(9)))
+        checkSecure(id.mid(9), true);
+}
+
+void KeelApps::checkSecure(const QString &pkg, bool retry) {
+    if (!m_systemConnected)
+        return;
+    request({{QStringLiteral("t"), QStringLiteral("keel")},
+             {QStringLiteral("op"), QStringLiteral("secure")},
+             {QStringLiteral("pkg"), pkg}},
+            [this, pkg, retry](bool ok, const QJsonObject &reply) {
+                if (ok && reply.value(QStringLiteral("ok")).toBool())
+                    return reportSecure(pkg, reply.value(QStringLiteral("secure")).toBool());
+                // A window that is still starting is not in the dump yet.
+                if (retry)
+                    QTimer::singleShot(2000, this, [this, pkg] { checkSecure(pkg, false); });
+            },
+            true);
+}
+
+void KeelApps::reportSecure(const QString &pkg, bool secure) {
+    if (m_secure.value(pkg, false) == secure)
+        return;
+    m_secure.insert(pkg, secure);
+    QDBusMessage call = QDBusMessage::createMethodCall(
+        QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+        QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("SetAppWindowSecure"));
+    call << appId(pkg) << secure;
+    m_shell.call(call, QDBus::NoBlock);
+    qCInfo(lcKeel) << appId(pkg) << (secure ? "is secure" : "is not secure");
 }
 
 QStringList KeelApps::packages() const {
