@@ -52,6 +52,22 @@ class TestIntents : public QObject {
     QProcess m_bus;
 
   private Q_SLOTS:
+    // DeckardSystem hears which Android app Marathon shows, and that none
+    // is shown, so it can put Android's focus back when Android moves it.
+    void focusFollowsMarathon() {
+        QList<QJsonObject> sent;
+        QTemporaryDir      dir;
+        SystemIntents      intents([&](const QJsonObject &m) { sent << m; }, dir.filePath(QStringLiteral("x")),
+                                   dir.path(), QDBusConnection(QStringLiteral("none")));
+        QVERIFY(QMetaObject::invokeMethod(&intents, "onForegroundApp", Q_ARG(QString, QStringLiteral("waydroid.org.example.files"))));
+        QVERIFY(QMetaObject::invokeMethod(&intents, "onForegroundApp", Q_ARG(QString, QStringLiteral("browser"))));
+        QVERIFY(QMetaObject::invokeMethod(&intents, "onForegroundApp", Q_ARG(QString, QStringLiteral("notes"))));
+        QCOMPARE(sent.size(), 2);
+        QCOMPARE(sent[0].value(QStringLiteral("pkg")).toString(), QStringLiteral("org.example.files"));
+        QCOMPARE(sent[1].value(QStringLiteral("t")).toString(), QStringLiteral("focus"));
+        QCOMPARE(sent[1].value(QStringLiteral("pkg")).toString(), QString());
+    }
+
     void initTestCase() {
         const QString daemon = QStandardPaths::findExecutable(QStringLiteral("dbus-daemon"));
         if (daemon.isEmpty())

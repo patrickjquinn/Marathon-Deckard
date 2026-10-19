@@ -31,6 +31,7 @@ final class WindowFit {
     private static final int ACTIVITY_TYPE_STANDARD = 1;
     private static final long SETTLE_MS = 30;
     private static final long RETRY_MS = 2000;
+    private static final long RECLAIM_MS = 1000;
 
     private static Object atm;
     private static Method getAllRootTaskInfos;
@@ -92,7 +93,10 @@ final class WindowFit {
             @Override public void onTaskDisplayChanged(int taskId, int displayId) { schedule(); }
             @Override public void onTaskFocusChanged(int taskId, boolean focused) {
                 Log.i(TAG, "task " + taskId + (focused ? " focused" : " unfocused"));
-                if (focused) handler.post(() -> raise(taskId));
+                if (!focused) return;
+                handler.post(() -> raise(taskId));
+                handler.removeCallbacks(RECLAIM);
+                handler.postDelayed(RECLAIM, RECLAIM_MS);
             }
         };
         Class<?> listenerType = Class.forName("android.app.ITaskStackListener");
@@ -222,7 +226,9 @@ final class WindowFit {
     }
 
     private static String pendingFocus;
+    private static String marathonFront = "";
     private static final Runnable FOCUS = WindowFit::applyFocus;
+    private static final Runnable RECLAIM = WindowFit::reclaim;
 
     /**
      * Marathon brought waydroid.<pkg> to the front. Android normally learns
@@ -230,10 +236,24 @@ final class WindowFit {
      * doesn't. Debounced, and a no-op when Android already agrees.
      */
     static void focus(String pkg) {
-        if (handler == null || pkg == null || pkg.isEmpty()) return;
+        if (handler == null || pkg == null) return;
+        marathonFront = pkg;
+        if (pkg.isEmpty()) return;
         pendingFocus = pkg;
         handler.removeCallbacks(FOCUS);
         handler.postDelayed(FOCUS, 150);
+    }
+
+    /**
+     * Android moved its focus on its own (an app started an activity, or
+     * `waydroid app launch`) while Marathon still shows another Android app:
+     * a second later, unless Marathon showed the new one meanwhile, the
+     * focus goes back, or every touch lands in the hidden task.
+     */
+    private static void reclaim() {
+        if (marathonFront.isEmpty()) return;
+        pendingFocus = marathonFront;
+        applyFocus();
     }
 
     private static void applyFocus() {

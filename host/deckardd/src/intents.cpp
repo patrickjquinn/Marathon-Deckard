@@ -321,16 +321,18 @@ SystemIntents::SystemIntents(Send send, const QString &xferDir, const QString &c
 // correct Android when that enter never came.
 void SystemIntents::onForegroundApp(const QString &appId) {
     const QString prefix = QStringLiteral("waydroid.");
-    const QString pkg    = appId.startsWith(prefix) ? appId.mid(prefix.size()) : QString();
+    QString       pkg    = appId.startsWith(prefix) ? appId.mid(prefix.size()) : QString();
+    if (!Validate::isPackageName(pkg))
+        pkg.clear();
     if (pkg == m_focusPkg)
         return;
-    m_focusPkg = Validate::isPackageName(pkg) ? pkg : QString();
+    m_focusPkg = pkg;
     resendFocus();
 }
 
+// An empty pkg: no Android app in front.
 void SystemIntents::resendFocus() {
-    if (!m_focusPkg.isEmpty())
-        m_send({{QStringLiteral("t"), QStringLiteral("focus")}, {QStringLiteral("pkg"), m_focusPkg}});
+    m_send({{QStringLiteral("t"), QStringLiteral("focus")}, {QStringLiteral("pkg"), m_focusPkg}});
 }
 
 void SystemIntents::handle(const QString &type, const QJsonObject &message) {
