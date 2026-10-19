@@ -552,6 +552,23 @@ Waydroid-specific tuning advice found was only general ("keep few apps
 installed", [Sailfish forum](https://forum.sailfishos.org/t/installed-waydroid/16979);
 memory pressure on a Librem 5, [Purism forum](https://forums.puri.sm/t/waydroid-under-memory-pressure/30316)).
 
+### Measured (19 October, bench.sh; none won, all undone)
+
+| Round | Host cost MiB | Anon | PSS | Boot | Idle CPU | Markor / Feeder cold ms | Scroll jank, p99 |
+|---|---|---|---|---|---|---|---|
+| R0 baseline (947e0d6) | 315 | 213 | 595 MB | 10.9 s | 0.11 % | 369 / 300 | 0.3 %, 11 ms |
+| R1 DeckardHome in software | 317 | 214 | 596 MB | 10.8 s | 0.10 % | 360 / 321 | 0 %, 8 ms |
+| R2 always-running apps AOT `speed` | 291 | 213 | 600 MB | 10.9 s | 0.10 % | 345 / 309 | 0 %, 5 ms |
+| R3 app compaction (6 processes, `am compact full`) | | 228 → 195 | 636 → 603 MB | | | | |
+| R4 no zygote GL preload | 310 | 217 | 598 MB | 71.6 s (outlier) | 0.10 % | 344 / 315 | 0 %, 8 ms |
+| R5 two SurfaceFlinger frame buffers | 303 | 213 | 596 MB | 10.8 s | 0.10 % | 347 / 300 | 0 %, 6 ms |
+
+Host cost (MemAvailable stopped vs running) varies ±30 MiB between
+identical runs, so only anon and PSS separate the rounds. R3 moved 34 MiB
+to the host's zram but gained the host only 17 MiB of MemAvailable, at
+the price of page faults later. R6 (smaller logd buffers) wasn't run:
+logd's four rings are 256 KiB each, about 1 MiB in all.
+
 ## What is left, and what would need the image
 
 At idle the final container runs system_server (~186 MB PSS, 44 MiB anon),

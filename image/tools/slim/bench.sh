@@ -15,9 +15,12 @@ ac() {
 }
 tap() { MARATHON_TOUCH_WIDTH=720 MARATHON_TOUCH_HEIGHT=720 marathon-touchctl "$@"; }
 
-while [ -f "$lock" ]; do sleep 20; done
-echo "slim bench $(date +%s)" > "$lock"
-trap 'rm -f "$lock"' EXIT
+# A lock already held by this agent ("slim ...") covers a series of rounds.
+if ! grep -q '^slim ' "$lock" 2>/dev/null; then
+	while [ -f "$lock" ]; do sleep 20; done
+	echo "slim bench $(date +%s)" > "$lock"
+	trap 'rm -f "$lock"' EXIT
+fi
 
 u 'systemctl --user stop marathon-waydroid.service'
 for i in $(seq 60); do
