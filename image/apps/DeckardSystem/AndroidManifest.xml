@@ -92,6 +92,34 @@
                 <action android:name="android.settings.CHANNEL_NOTIFICATION_SETTINGS" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- Special access goes to Marathon Settings' pages, for the app
+                 when the request names one (package: data). -->
+            <intent-filter android:priority="2">
+                <action android:name="android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION" />
+                <action android:name="android.settings.MANAGE_UNKNOWN_APP_SOURCES" />
+                <action android:name="android.settings.action.MANAGE_OVERLAY_PERMISSION" />
+                <action android:name="android.settings.action.MANAGE_WRITE_SETTINGS" />
+                <action android:name="android.settings.USAGE_ACCESS_SETTINGS" />
+                <action android:name="android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS" />
+                <action android:name="android.settings.NOTIFICATION_LISTENER_DETAIL_SETTINGS" />
+                <action android:name="android.settings.NOTIFICATION_POLICY_ACCESS_SETTINGS" />
+                <action android:name="android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS" />
+                <action android:name="android.settings.REQUEST_SCHEDULE_EXACT_ALARM" />
+                <action android:name="android.settings.PICTURE_IN_PICTURE_SETTINGS" />
+                <action android:name="android.settings.ACCESSIBILITY_SETTINGS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter android:priority="2">
+                <action android:name="android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION" />
+                <action android:name="android.settings.MANAGE_UNKNOWN_APP_SOURCES" />
+                <action android:name="android.settings.action.MANAGE_OVERLAY_PERMISSION" />
+                <action android:name="android.settings.action.MANAGE_WRITE_SETTINGS" />
+                <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+                <action android:name="android.settings.REQUEST_SCHEDULE_EXACT_ALARM" />
+                <action android:name="android.settings.PICTURE_IN_PICTURE_SETTINGS" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="package" />
+            </intent-filter>
         </activity>
 
         <activity
