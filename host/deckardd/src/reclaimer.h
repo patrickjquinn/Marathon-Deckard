@@ -23,9 +23,10 @@ class Reclaimer : public QObject {
         QString cgroup;
         QString systemPressure = QStringLiteral("/proc/pressure/memory");
     };
-    // Unprivileged PSI triggers need a window that is a multiple of 2 s.
-    static constexpr const char *kContainerTrigger = "some 200000 2000000";
-    static constexpr const char *kSystemTrigger    = "some 400000 2000000";
+    // 10 s windows, the longest unprivileged triggers allow: a 2 s window
+    // fired on every Android boot with 10 GB free.
+    static constexpr const char *kContainerTrigger = "some 1000000 10000000";
+    static constexpr const char *kSystemTrigger    = "some 2000000 10000000";
     static constexpr int         kCount            = 2;
     static constexpr int         kGapMs            = 2000;
     static constexpr int         kIdleGapMs        = 10000;

@@ -3,8 +3,7 @@
 # device. memory.high makes the kernel reclaim from Android first and raises
 # the memory pressure deckardd answers by ending cached Android apps;
 # memory.max keeps an Android out-of-memory inside the container, so it can
-# never take Marathon's shell or foreground app with it. The session's user
-# gets the container's memory.pressure, where deckardd sets its trigger.
+# never take Marathon's shell or foreground app with it.
 set -eu
 cg=/sys/fs/cgroup/lxc.payload.${LXC_NAME:-waydroid}
 [ -d "$cg" ] || exit 0
@@ -15,5 +14,3 @@ max=$((mb * 40 / 100))
 [ "$max" -ge $((high + 512)) ] || max=$((high + 512))
 echo "${high}M" > "$cg/memory.high"
 echo "${max}M" > "$cg/memory.max"
-uid=$(sed -n 's/^user_id *= *\([0-9][0-9]*\)$/\1/p' /var/lib/waydroid/session.cfg 2>/dev/null || true)
-[ -z "$uid" ] || chown "$uid" "$cg/memory.pressure" || true
