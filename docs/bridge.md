@@ -168,6 +168,76 @@ stays the boot default.
   - Apps already running pick up the new colours through the configuration
     change; apps with their own palettes don't change.
 
+## Installing Android apps the Marathon way
+
+Android's installer never shows. deckardd's `org.marathonos.Deckard1.Packages`
+(protocol/bridge.md) stages the APK in `/data/deckard/install/`, and
+DeckardBridge, which holds INSTALL_PACKAGES and DELETE_PACKAGES through its
+privapp file, installs it through a PackageInstaller session. Only Settings,
+the Store (Callers::require) and the Store's handler (by executable,
+`/usr/bin/marathon-store-handler`) may install or remove apps.
+
+- **From F-Droid in the Store** (HackberryPi, shell b0e7a4db, deckard ec1f9a6,
+  2026-10-19):
+  - Search for "bouncy" or "sleep timer" listed F-Droid apps beside Flathub's,
+    with F-Droid icons.
+  - Page (com.page.bizzle, 21 KB) showed "Android app · from F-Droid",
+    version, "It asks for no special permissions" and its description.
+  - Get → Open in about 1 s. `installerPackageName=org.marathonos.deckard.bridge`,
+    and Waydroid wrote `waydroid.com.page.bizzle.desktop`, which the shell's
+    registry listed (`apps.list`). Open started the app in its Marathon
+    window.
+  - Sleep Timer installed the same way but has no launcher activity, so it
+    gets no grid entry. The Store still offers Open for such an app; that
+    still needs fixing.
+- **From a file:** `deckard-open-apk ~/Downloads/red-screen.apk` opened the
+  Store's install page with the app's icon, "Red Screen", "Android app · from a
+  file", "Version 1.2" and "It can: Draw over other apps". Install → Open,
+  with "Red Screen installed" as the Store's notice.
+  - Opening the file again said "Update app, Version 1.2, replacing 1.2". The
+    button was wrong there (Open, from the earlier job); fixed in Marathon-Shell
+    94032a45.
+  - The update ran through the handler (`lastUpdateTime` 02:47:15 → 02:48:21).
+  - Uninstalling removed the package and its desktop entry.
+- **F-Droid catalogue on the device:** a full sync (verify entry.jar,
+  download 16 MB, stream-parse 66 MB) took **4.4 s at 59 MB peak RSS**; with
+  the index unchanged, 0.8 s. The catalogue holds 4,713 apps in 7.2 MB.
+
+## Memory budget
+
+The LXC start-host hook `deckard-container-limits` set the container's
+`memory.high` to 4.80 GiB (5,034,213,376) and `memory.max` to 6.25 GiB on the
+16 GB HackberryPi; before it, both were `max`. After boot the container used
+1.04 GB (with the slim agent's S6).
+
+Waydroid regenerates `/var/lib/waydroid/lxc/waydroid/config` from
+`/usr/lib/waydroid/data/configs/config_base` on `waydroid init` and
+`waydroid upgrade` (`tools/helpers/lxc.py` `set_lxc_config`), so the hook only
+lasts if it is in `config_base`, which is where pipeline patch 0045 puts it.
+On this device it was appended to the live config by hand; the original is
+`/var/tmp/lxc-config.pre-deckard-hook`.
+
+Squeezing it:
+
+| memory.high | Result after 15–20 s |
+|---|---|
+| current + 120 MB | nothing reclaimed; 7 apps started, usage 1.09 GB |
+| 900 MB | page cache reclaimed to 933 MB, `high` events 9, PSI 15 ms |
+| 700 MB | anon pushed to swap (anon 12 MB, file 459 MB, 556 MB total), `high` events 74, container PSI some 0.68 % |
+
+**Android's lmkd never killed anything:** it logs `/proc/zoneinfo parse
+error` / `Failed to get free memory!` every few milliseconds. LineageOS 20's
+lmkd can't parse the 6.12 kernel's zoneinfo, in both its minfree and its PSI
+paths, so it is effectively off. What protects Marathon is therefore the
+kernel:
+- reclaim and swap under `memory.high`;
+- at `memory.max`, the cgroup OOM killer, which only considers processes in
+  the container and prefers the highest `oom_score_adj`. That means cached
+  Android apps (900+) first and system_server (−800) and SurfaceFlinger
+  (−1000) last.
+
+Fixing lmkd needs a rebuilt lmkd (zoneinfo parser), not a setting.
+
 ## Back
 
 The pill's back gesture is a Wayland key, and that works: no bridge
