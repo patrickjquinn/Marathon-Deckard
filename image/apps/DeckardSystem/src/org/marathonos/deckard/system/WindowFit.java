@@ -40,6 +40,7 @@ final class WindowFit {
     private static Method wctSetWindowingMode;
     private static Method wctSetBounds;
     private static Method wctReorder;
+    private static Method setFocusedTask;
     private static Object displayManager;
     private static Method getDisplayInfo;
     private static Handler handler;
@@ -70,6 +71,7 @@ final class WindowFit {
         wctSetBounds = wctClass.getMethod("setBounds", token, Rect.class);
         wctReorder = wctClass.getMethod("reorder", token, boolean.class);
         applyTransaction = windowOrganizer.getClass().getMethod("applyTransaction", wctClass);
+        setFocusedTask = atm.getClass().getMethod("setFocusedTask", int.class);
 
         Class<?> dmg = Class.forName("android.hardware.display.DisplayManagerGlobal");
         displayManager = dmg.getMethod("getInstance").invoke(null);
@@ -219,6 +221,43 @@ final class WindowFit {
         }
     }
 
+    private static String pendingFocus;
+    private static final Runnable FOCUS = WindowFit::applyFocus;
+
+    /**
+     * Marathon brought waydroid.<pkg> to the front. Android normally learns
+     * that from the hwcomposer's keyboard enter; this covers the times it
+     * doesn't. Debounced, and a no-op when Android already agrees.
+     */
+    static void focus(String pkg) {
+        if (handler == null || pkg == null || pkg.isEmpty()) return;
+        pendingFocus = pkg;
+        handler.removeCallbacks(FOCUS);
+        handler.postDelayed(FOCUS, 150);
+    }
+
+    private static void applyFocus() {
+        String pkg = pendingFocus;
+        try {
+            List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
+            for (Object root : roots) {
+                if (intField(root, "displayId") != DISPLAY || !isVisible(root)) continue;
+                Object windowConfig = windowConfiguration(root);
+                int type = (int) windowConfig.getClass().getMethod("getActivityType").invoke(windowConfig);
+                if (type != ACTIVITY_TYPE_STANDARD && type != ACTIVITY_TYPE_UNDEFINED) continue;
+                ComponentName base = (ComponentName) root.getClass().getField("baseActivity").get(root);
+                if (base == null || !pkg.equals(base.getPackageName())) continue;
+                if (isFocused(root)) return;
+                int taskId = intField(root, "taskId");
+                setFocusedTask.invoke(atm, taskId);
+                Log.i(TAG, "focused task " + taskId + " for " + pkg);
+                return;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "focus failed", t);
+        }
+    }
+
     private static boolean holds(Object root, int taskId) throws Exception {
         if (intField(root, "taskId") == taskId) return true;
         int[] children = (int[]) root.getClass().getField("childTaskIds").get(root);
@@ -232,6 +271,14 @@ final class WindowFit {
         Field f = taskInfo.getClass().getField("configuration");
         Object config = f.get(taskInfo);
         return config.getClass().getField("windowConfiguration").get(config);
+    }
+
+    private static boolean isFocused(Object taskInfo) {
+        try {
+            return taskInfo.getClass().getField("isFocused").getBoolean(taskInfo);
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
     }
 
     private static boolean isVisible(Object taskInfo) throws Exception {

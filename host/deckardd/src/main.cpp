@@ -143,7 +143,9 @@ int main(int argc, char *argv[]) {
                           bus);
     QObject::connect(&systemBridge, &Bridge::received, &intents, &SystemIntents::handle);
     QObject::connect(&systemBridge, &Bridge::connectedChanged, &intents, [&](bool connected) {
-        if (!connected)
+        if (connected)
+            intents.resendFocus();
+        else
             intents.cancelAll();
     });
     if (!systemBridge.listen())

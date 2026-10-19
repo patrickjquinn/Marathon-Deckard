@@ -46,9 +46,11 @@ class SystemIntents : public QObject {
 
     void handle(const QString &type, const QJsonObject &message);
     void cancelAll();
+    void resendFocus();
 
   private Q_SLOTS:
     void onPortalResponse(const QDBusMessage &message);
+    void onForegroundApp(const QString &appId);
 
   private:
     struct Pending {
@@ -77,4 +79,5 @@ class SystemIntents : public QObject {
     QHash<QString, Pending> m_pending;
     QHash<QString, QString> m_saved; // id → host target, kept for later writes
     QTimer                 *m_cameraPoll = nullptr;
+    QString                 m_focusPkg; // Android app Marathon has in front
 };

@@ -275,6 +275,26 @@ SystemIntents::SystemIntents(Send send, const QString &xferDir, const QString &c
     connect(m_cameraPoll, &QTimer::timeout, this, &SystemIntents::pollCamera);
     QDir().mkpath(m_xfer);
     sweep();
+    m_bus.connect(QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+                  QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("ForegroundAppChanged"),
+                  this, SLOT(onForegroundApp(QString)));
+}
+
+// Android's focus normally follows the hwcomposer's keyboard enter; this
+// tells DeckardSystem which Android app Marathon has in front, so it can
+// correct Android when that enter never came.
+void SystemIntents::onForegroundApp(const QString &appId) {
+    const QString prefix = QStringLiteral("waydroid.");
+    const QString pkg    = appId.startsWith(prefix) ? appId.mid(prefix.size()) : QString();
+    if (pkg == m_focusPkg)
+        return;
+    m_focusPkg = Validate::isPackageName(pkg) ? pkg : QString();
+    resendFocus();
+}
+
+void SystemIntents::resendFocus() {
+    if (!m_focusPkg.isEmpty())
+        m_send({{QStringLiteral("t"), QStringLiteral("focus")}, {QStringLiteral("pkg"), m_focusPkg}});
 }
 
 void SystemIntents::handle(const QString &type, const QJsonObject &message) {
