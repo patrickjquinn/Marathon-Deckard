@@ -1,0 +1,3 @@
+# microG Services and Companion as privileged apps (docs/microg.md).
+on property:sys.boot_completed=1
+    exec_background - root root -- /system/bin/deckard-microg

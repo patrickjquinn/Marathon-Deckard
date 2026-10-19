@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<!-- microG's defaults (its SettingsProvider reads /system/etc/microg.xml):
+     device registration and push on; SafetyNet when an app asks. -->
+<map>
+    <boolean name="checkin_enable_service" value="true" />
+    <boolean name="gcm_enable_mcs_service" value="true" />
+    <boolean name="safetynet_enabled" value="true" />
+    <boolean name="droidguard_enabled" value="true" />
+</map>

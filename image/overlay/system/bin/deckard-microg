@@ -1,0 +1,23 @@
+#!/system/bin/sh
+# microG at boot (docs/microg.md): the runtime permissions it needs, and
+# none of its own location sources or system providers. Its launcher entry
+# stays: Waydroid gives it a NoDisplay desktop entry (com.google.android.gms
+# is one of its system apps), which Marathon needs to show microG's windows.
+# Location comes from Marathon through DeckardBridge's network provider;
+# Android's own fused provider runs in system_server, so microG's main
+# process only runs while an app uses it. microG's settings open from
+# Marathon Settings.
+gms=com.google.android.gms
+[ -d /system/priv-app/GmsCore ] || exit 0
+for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION GET_ACCOUNTS POST_NOTIFICATIONS; do
+	pm grant $gms android.permission.$p
+done
+for p in GET_ACCOUNTS POST_NOTIFICATIONS; do
+	pm grant com.android.vending android.permission.$p
+done
+for c in org.microg.gms.location.network.NetworkLocationService \
+	org.microg.gms.location.provider.NetworkLocationProviderService \
+	org.microg.gms.location.provider.FusedLocationProviderService \
+	org.microg.gms.location.provider.GeocodeProviderService; do
+	pm disable $gms/$c >/dev/null
+done

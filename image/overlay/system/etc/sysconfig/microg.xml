@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Push keeps its connection in Android's Doze, so microG needs no
+     foreground-service notification (docs/microg.md). -->
+<config>
+    <allow-in-power-save package="com.google.android.gms"/>
+    <allow-in-data-usage-save package="com.google.android.gms"/>
+</config>
