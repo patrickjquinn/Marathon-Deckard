@@ -332,6 +332,13 @@ through `appops`/`cmd` as Android's system uid) before Settings can go:
   Not switched: to evaluate and report to the coordinator first.
 - The 30-minute default for empty processes and the boot broadcasts that
   start them, at the source (S8 shortens the wait instead).
+- lmkd's `/proc/zoneinfo` parser: LineageOS 20's lmkd fails on every
+  pressure event under the 6.12 kernel (`/proc/zoneinfo parse error`,
+  `Failed to get free memory!`, every 10 ms while memory is short) and never
+  kills. The image runs it without pressure monitors (`image/waydroid.prop`)
+  so it only sets each app's `oom_score_adj`, and deckardd's reclaimer ends
+  cached apps instead (bridge.md). A rebuilt lmkd that parses this kernel's
+  zoneinfo could take that job back.
 
 ## Stages for phase 2
 

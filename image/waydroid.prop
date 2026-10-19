@@ -3,3 +3,8 @@
 ro.product.cpu.abilist=arm64-v8a
 ro.product.cpu.abilist64=arm64-v8a
 ro.product.cpu.abilist32=
+# lmkd without pressure monitors: it still sets each app's oom_score_adj for
+# ActivityManager, while deckardd's reclaimer does the killing (docs/bridge.md).
+ro.lmk.use_new_strategy=true
+ro.lmk.psi_partial_stall_ms=0
+ro.lmk.psi_complete_stall_ms=0
