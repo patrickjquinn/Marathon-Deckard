@@ -1,7 +1,9 @@
 #include "manage.h"
+#include "permissionmap.h"
 #include "validate.h"
 
 #include <QDateTime>
+#include <QHash>
 #include <QJsonArray>
 #include <QLoggingCategory>
 #include <QRegularExpression>
@@ -12,16 +14,6 @@ Q_LOGGING_CATEGORY(lcManage, "deckard.manage")
 
 namespace ManageCheck {
 
-    const QStringList &groups() {
-        static const QStringList kGroups = {
-            QStringLiteral("location"), QStringLiteral("camera"),   QStringLiteral("microphone"),
-            QStringLiteral("contacts"), QStringLiteral("calendar"), QStringLiteral("phone"),
-            QStringLiteral("call_log"), QStringLiteral("sms"),      QStringLiteral("storage"),
-            QStringLiteral("photos"),   QStringLiteral("music"),    QStringLiteral("nearby"),
-            QStringLiteral("sensors"),  QStringLiteral("activity")};
-        return kGroups;
-    }
-
     const QStringList &specialKinds() {
         static const QStringList kKinds = {
             QStringLiteral("all_files"),     QStringLiteral("install_apps"),
@@ -31,10 +23,6 @@ namespace ManageCheck {
             QStringLiteral("pip"),           QStringLiteral("battery"),
             QStringLiteral("accessibility"), QStringLiteral("device_admin")};
         return kKinds;
-    }
-
-    bool isGroup(const QString &group) {
-        return groups().contains(group);
     }
 
     bool isSpecialKind(const QString &kind) {
@@ -65,19 +53,27 @@ namespace ManageCheck {
         if (label.trimmed().isEmpty())
             label = pkg;
 
-        QVariantList  permissions;
-        QSet<QString> seen;
-        const QJsonArray perms = r.value(QStringLiteral("permissions")).toArray();
+        // Android's grants per permission, as Marathon names them: granted if
+        // any is, fixed only if all are.
+        QHash<QString, QPair<bool, bool>> state;
+        const QJsonArray perms = r.value(QStringLiteral("perms")).toArray();
         for (const QJsonValue &v : perms) {
-            const QJsonObject p     = v.toObject();
-            const QString     group = p.value(QStringLiteral("group")).toString();
-            if (!isGroup(group) || seen.contains(group))
+            const QJsonObject p    = v.toObject();
+            const QString     name = PermissionMap::marathon(p.value(QStringLiteral("name")).toString());
+            if (name.isEmpty() || name == QLatin1String("notifications"))
                 continue;
-            seen.insert(group);
-            permissions.append(QVariantMap{
-                {QStringLiteral("group"), group},
-                {QStringLiteral("granted"), p.value(QStringLiteral("granted")).toBool()},
-                {QStringLiteral("fixed"), p.value(QStringLiteral("fixed")).toBool()}});
+            auto it = state.find(name);
+            if (it == state.end())
+                it = state.insert(name, {false, true});
+            it->first  = it->first || p.value(QStringLiteral("granted")).toBool();
+            it->second = it->second && p.value(QStringLiteral("fixed")).toBool();
+        }
+        QVariantList permissions;
+        for (const QString &name : PermissionMap::names()) {
+            if (state.contains(name))
+                permissions.append(QVariantMap{{QStringLiteral("name"), name},
+                                               {QStringLiteral("granted"), state.value(name).first},
+                                               {QStringLiteral("fixed"), state.value(name).second}});
         }
 
         QStringList      domains;
@@ -122,6 +118,27 @@ namespace ManageCheck {
             out.append(QVariantMap{{QStringLiteral("pkg"), pkg},
                                    {QStringLiteral("label"), label},
                                    {QStringLiteral("granted"), a.value(QStringLiteral("granted")).toBool()}});
+        }
+        return out;
+    }
+
+    QVariantList permissionApps(const QJsonObject &r) {
+        QVariantList     out;
+        QSet<QString>    seen;
+        const QJsonArray apps = r.value(QStringLiteral("apps")).toArray();
+        for (const QJsonValue &v : apps) {
+            const QJsonObject a   = v.toObject();
+            const QString     pkg = a.value(QStringLiteral("pkg")).toString();
+            if (!Validate::isPackageName(pkg) || seen.contains(pkg) || out.size() >= 500)
+                continue;
+            seen.insert(pkg);
+            QString label = Validate::label(a, QStringLiteral("label"));
+            if (label.trimmed().isEmpty())
+                label = pkg;
+            out.append(QVariantMap{{QStringLiteral("pkg"), pkg},
+                                   {QStringLiteral("label"), label},
+                                   {QStringLiteral("granted"), a.value(QStringLiteral("granted")).toBool()},
+                                   {QStringLiteral("fixed"), a.value(QStringLiteral("fixed")).toBool()}});
         }
         return out;
     }

@@ -36,7 +36,8 @@ class SettingsApi : public QDBusAbstractAdaptor {
 
     QString     AppIcon(const QString &pkg);
     QVariantMap GetApp(const QString &pkg, const QDBusMessage &message);
-    void SetPermission(const QString &pkg, const QString &group, bool granted, const QDBusMessage &message);
+    void SetPermission(const QString &pkg, const QString &permission, bool granted, const QDBusMessage &message);
+    QList<QVariantMap> GetPermissionApps(const QString &permission, const QDBusMessage &message);
     void SetNotifications(const QString &pkg, bool enabled, const QDBusMessage &message);
     void SetOpenLinks(const QString &pkg, bool enabled, const QDBusMessage &message);
     void SetBattery(const QString &pkg, const QString &mode, const QDBusMessage &message);

@@ -14,14 +14,14 @@ class QTimer;
 // (protocol/bridge.md, management), as Validate does for the bridge.
 namespace ManageCheck {
 
-    const QStringList &groups();
     const QStringList &specialKinds();
-    bool               isGroup(const QString &group);
     bool               isSpecialKind(const QString &kind);
     bool               isBatteryMode(const QString &mode);
 
     QVariantMap  app(const QJsonObject &reply);
     QVariantList special(const QJsonObject &reply);
+    // perm_apps or notif_apps: {pkg, label, granted, fixed}.
+    QVariantList permissionApps(const QJsonObject &reply);
     QVariantMap  info(const QJsonObject &reply);
 
 } // namespace ManageCheck

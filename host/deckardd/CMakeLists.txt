@@ -23,6 +23,7 @@ add_library(deckardcore STATIC
     src/notifications.cpp
     src/packages.cpp
     src/palette.cpp
+    src/permissionmap.cpp
     src/reclaimer.cpp
     src/runtime.cpp
     src/sessionfollower.cpp

@@ -1,5 +1,6 @@
 #include "callers.h"
 #include "manage.h"
+#include "permissionmap.h"
 #include "runtime.h"
 #include "settingsapi.h"
 
@@ -189,18 +190,37 @@ class TestSettingsApi : public QObject {
         QCOMPARE(error, QStringLiteral("Resetting Android isn't available"));
     }
 
+    // One table, both ways.
+    void permissionMap() {
+        QVERIFY(PermissionMap::isName(QStringLiteral("camera")));
+        QVERIFY(!PermissionMap::isName(QStringLiteral("system")));
+        QCOMPARE(PermissionMap::marathon(QStringLiteral("android.permission.READ_MEDIA_VIDEO")), QStringLiteral("storage"));
+        QCOMPARE(PermissionMap::marathon(QStringLiteral("android.permission.NEARBY_WIFI_DEVICES")), QStringLiteral("bluetooth"));
+        QVERIFY(PermissionMap::marathon(QStringLiteral("android.permission.INSTALL_PACKAGES")).isEmpty());
+        for (const QString &name : PermissionMap::names())
+            for (const QString &p : PermissionMap::android(name))
+                QCOMPARE(PermissionMap::marathon(p), name);
+        QCOMPARE(PermissionMap::toJson().size(), PermissionMap::names().size());
+    }
+
     void cleansReplies() {
-        QJsonArray perms{QJsonObject{{QStringLiteral("group"), QStringLiteral("camera")}, {QStringLiteral("granted"), true}},
-                         QJsonObject{{QStringLiteral("group"), QStringLiteral("camera")}, {QStringLiteral("granted"), false}},
-                         QJsonObject{{QStringLiteral("group"), QStringLiteral("root")}, {QStringLiteral("granted"), true}},
-                         QJsonObject{{QStringLiteral("group"), QStringLiteral("location")}, {QStringLiteral("fixed"), true}}};
+        // Android's grants, named as Marathon names them.
+        auto perm = [](const char *name, bool granted, bool fixed) {
+            return QJsonObject{{QStringLiteral("name"), QStringLiteral("android.permission.") + QLatin1String(name)},
+                               {QStringLiteral("granted"), granted},
+                               {QStringLiteral("fixed"), fixed}};
+        };
+        QJsonArray perms{perm("READ_MEDIA_IMAGES", false, false), perm("CAMERA", true, false),
+                         perm("READ_MEDIA_AUDIO", true, false), perm("ACCESS_FINE_LOCATION", false, true),
+                         perm("ACCESS_COARSE_LOCATION", false, true), perm("POST_NOTIFICATIONS", true, false),
+                         perm("INSTALL_PACKAGES", true, false), QJsonObject{{QStringLiteral("name"), 5}}};
         QVariantMap app = ManageCheck::app({{QStringLiteral("pkg"), QStringLiteral("org.fdroid.fdroid")},
                                             {QStringLiteral("label"), QString(300, QLatin1Char('x'))},
                                             {QStringLiteral("dataBytes"), -5},
                                             {QStringLiteral("appBytes"), 1e300},
                                             {QStringLiteral("battery"), QStringLiteral("rm -rf")},
                                             {QStringLiteral("domains"), QJsonArray{QStringLiteral("f-droid.org"), QStringLiteral("a b"), QStringLiteral("*.f-droid.org")}},
-                                            {QStringLiteral("permissions"), perms}});
+                                            {QStringLiteral("perms"), perms}});
         QCOMPARE(app.value(QStringLiteral("label")).toString().size(), 128);
         QCOMPARE(app.value(QStringLiteral("dataBytes")).toLongLong(), 0);
         QCOMPARE(app.value(QStringLiteral("appBytes")).toLongLong(), qint64(1) << 50);
@@ -208,10 +228,15 @@ class TestSettingsApi : public QObject {
         QCOMPARE(app.value(QStringLiteral("domains")).toStringList(),
                  (QStringList{QStringLiteral("f-droid.org"), QStringLiteral("*.f-droid.org")}));
         const QVariantList p = app.value(QStringLiteral("permissions")).toList();
-        QCOMPARE(p.size(), 2);
-        QCOMPARE(p[0].toMap().value(QStringLiteral("group")).toString(), QStringLiteral("camera"));
-        QVERIFY(p[0].toMap().value(QStringLiteral("granted")).toBool());
-        QVERIFY(p[1].toMap().value(QStringLiteral("fixed")).toBool());
+        QCOMPARE(p.size(), 3);
+        QCOMPARE(p[0].toMap().value(QStringLiteral("name")).toString(), QStringLiteral("location"));
+        QVERIFY(!p[0].toMap().value(QStringLiteral("granted")).toBool());
+        QVERIFY(p[0].toMap().value(QStringLiteral("fixed")).toBool());
+        QCOMPARE(p[1].toMap().value(QStringLiteral("name")).toString(), QStringLiteral("camera"));
+        QVERIFY(p[1].toMap().value(QStringLiteral("granted")).toBool());
+        QCOMPARE(p[2].toMap().value(QStringLiteral("name")).toString(), QStringLiteral("storage"));
+        QVERIFY(p[2].toMap().value(QStringLiteral("granted")).toBool());
+        QVERIFY(!p[2].toMap().value(QStringLiteral("fixed")).toBool());
         QVERIFY(ManageCheck::app({{QStringLiteral("pkg"), QStringLiteral("../../etc")}}).isEmpty());
 
         const QVariantList special = ManageCheck::special(
@@ -278,8 +303,13 @@ class TestSettingsApi : public QObject {
                 r.insert(QStringLiteral("pkg"), m.value(QStringLiteral("pkg")));
                 r.insert(QStringLiteral("label"), QStringLiteral("F-Droid"));
                 r.insert(QStringLiteral("dataBytes"), 4096);
-                r.insert(QStringLiteral("permissions"),
-                         QJsonArray{QJsonObject{{QStringLiteral("group"), QStringLiteral("nearby")}, {QStringLiteral("granted"), true}}});
+                r.insert(QStringLiteral("perms"),
+                         QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("android.permission.BLUETOOTH_SCAN")},
+                                                {QStringLiteral("granted"), true}}});
+            } else if (op == QLatin1String("perm_apps") || op == QLatin1String("notif_apps")) {
+                r.insert(QStringLiteral("apps"), QJsonArray{QJsonObject{{QStringLiteral("pkg"), QStringLiteral("org.fdroid.fdroid")},
+                                                                        {QStringLiteral("label"), QStringLiteral("F-Droid")},
+                                                                        {QStringLiteral("granted"), true}}});
             } else if (op == QLatin1String("special")) {
                 r.insert(QStringLiteral("apps"), QJsonArray{QJsonObject{{QStringLiteral("pkg"), QStringLiteral("org.fdroid.fdroid")},
                                                                         {QStringLiteral("label"), QStringLiteral("F-Droid")},
@@ -355,13 +385,29 @@ class TestSettingsApi : public QObject {
         QCOMPARE(sent.last().value(QStringLiteral("op")).toString(), QStringLiteral("app"));
         QCOMPARE(appChanged.size(), 0);
 
-        r = call(QStringLiteral("SetPermission"), {QStringLiteral("org.fdroid.fdroid"), QStringLiteral("nearby"), false});
+        // Marathon's names in, Android's permissions out.
+        r = call(QStringLiteral("SetPermission"), {QStringLiteral("org.fdroid.fdroid"), QStringLiteral("bluetooth"), false});
         QCOMPARE(r.type(), QDBusMessage::ReplyMessage);
         QCOMPARE(sent.last().value(QStringLiteral("op")).toString(), QStringLiteral("perm"));
-        QCOMPARE(sent.last().value(QStringLiteral("group")).toString(), QStringLiteral("nearby"));
+        QVERIFY(sent.last().value(QStringLiteral("permissions")).toArray().contains(QStringLiteral("android.permission.BLUETOOTH_SCAN")));
         QCOMPARE(sent.last().value(QStringLiteral("granted")).toBool(), false);
         QCOMPARE(appChanged.size(), 1);
         QCOMPARE(appChanged[0][0].toString(), QStringLiteral("org.fdroid.fdroid"));
+        r = call(QStringLiteral("SetPermission"), {QStringLiteral("org.fdroid.fdroid"), QStringLiteral("notifications"), true});
+        QCOMPARE(sent.last().value(QStringLiteral("op")).toString(), QStringLiteral("notifications"));
+        QCOMPARE(sent.last().value(QStringLiteral("enabled")).toBool(), true);
+        r = call(QStringLiteral("SetPermission"), {QStringLiteral("org.fdroid.fdroid"), QStringLiteral("nearby"), true});
+        QCOMPARE(r.errorName(), QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"));
+
+        r = call(QStringLiteral("GetPermissionApps"), {QStringLiteral("camera")});
+        QCOMPARE(r.type(), QDBusMessage::ReplyMessage);
+        QCOMPARE(r.signature(), QStringLiteral("aa{sv}"));
+        QCOMPARE(sent.last().value(QStringLiteral("op")).toString(), QStringLiteral("perm_apps"));
+        QCOMPARE(sent.last().value(QStringLiteral("permissions")).toArray(), QJsonArray{QStringLiteral("android.permission.CAMERA")});
+        r = call(QStringLiteral("GetPermissionApps"), {QStringLiteral("notifications")});
+        QCOMPARE(sent.last().value(QStringLiteral("op")).toString(), QStringLiteral("notif_apps"));
+        QCOMPARE(call(QStringLiteral("GetPermissionApps"), {QStringLiteral("system")}).errorName(),
+                 QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"));
 
         r = call(QStringLiteral("GetSpecialAccess"), {QStringLiteral("install_apps")});
         QCOMPARE(r.type(), QDBusMessage::ReplyMessage);
@@ -371,7 +417,7 @@ class TestSettingsApi : public QObject {
         r = call(QStringLiteral("ClearData"), {QStringLiteral("org.fdroid.fdroid")});
         QCOMPARE(r.errorName(), QStringLiteral("org.marathonos.Deckard1.Error.Failed"));
         QCOMPARE(r.errorMessage(), QStringLiteral("no such app"));
-        QCOMPARE(appChanged.size(), 1);
+        QCOMPARE(appChanged.size(), 2);
 
         manage.setConnected(false);
         r = call(QStringLiteral("ForceStop"), {QStringLiteral("org.fdroid.fdroid")});

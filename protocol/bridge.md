@@ -531,8 +531,9 @@ failure in Android is `org.marathonos.Deckard1.Error.Failed` with its message.
 | `Start()`, `Stop()`, `Restart()` | `StartUnit`/`StopUnit`/`RestartUnit` of `marathon-waydroid.service` |
 | `SetStartAtLogin(b)` | Kept in `~/.local/state/deckard/settings.json`. Unset, it is on when Waydroid has a desktop entry without `NoDisplay=true` (an app the person installed). deckardd starts the session once per login when it is on. |
 | `AppIcon(s pkg) → s` | A `data:image/png` URI of `<waydroid data>/icons/<pkg>.png` or deckardd's notification icon, decoded and re-encoded at most 192 px; `""` if none |
-| `GetApp(s pkg) → a{sv}` | `pkg`, `label`, `versionName`, `versionCode`, `appBytes`, `dataBytes` (with cache), `cacheBytes`, `notifications`, `links`, `domains` (as), `battery` (`unrestricted`/`optimized`), `permissions` (av of `{group, granted, fixed}`) |
-| `SetPermission(s pkg, s group, b granted)` | Grants or revokes the group's runtime permissions the app asks for, marked user-set (the app may ask again) |
+| `GetApp(s pkg) → a{sv}` | `pkg`, `label`, `versionName`, `versionCode`, `appBytes`, `dataBytes` (with cache), `cacheBytes`, `notifications`, `links`, `domains` (as), `battery` (`unrestricted`/`optimized`), `permissions` (av of `{name, granted, fixed}`, `name` a Marathon permission; granted if any of its Android permissions is, fixed only if all are) |
+| `SetPermission(s pkg, s permission, b granted)` | `permission` a Marathon permission name: grants or revokes its Android runtime permissions that the app asks for, marked user-set (the app may ask again); `notifications` sets Android's notification switch |
+| `GetPermissionApps(s permission) → aa{sv}` | The person's apps that ask for it: `{pkg, label, granted, fixed}` (Settings' App permissions) |
 | `SetNotifications(s pkg, b)` | Android's per-app setting |
 | `SetOpenLinks(s pkg, b)` | Opening the app's verified links in it |
 | `SetBattery(s pkg, s mode)` | `unrestricted` adds it to the idle allowlist |
@@ -544,10 +545,26 @@ failure in Android is `org.marathonos.Deckard1.Error.Failed` with its message.
 Signals: `RuntimeChanged(a{sv})` with `GetRuntime`'s map, `AppChanged(s pkg)`
 after a change to an app succeeded.
 
-Permission groups: `location`, `camera`, `microphone`, `contacts`,
-`calendar`, `phone`, `call_log`, `sms`, `storage` (before Android 13's media
-permissions), `photos` (images and video), `music`, `nearby` (Bluetooth,
-Wi-Fi, UWB), `sensors`, `activity`. Notifications are their own switch.
+Permissions use Marathon's names (Marathon-Shell
+`schemas/marathon-permissions-v1.json`, whose labels and descriptions Settings
+and the permission prompts show). `host/deckardd/src/permissionmap.cpp` is the
+one table from those names to Android's runtime permissions:
+
+| Marathon | Android (`android.permission.`) |
+|---|---|
+| `location` | `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION` |
+| `camera` | `CAMERA` |
+| `microphone` | `RECORD_AUDIO` |
+| `contacts` | `READ_CONTACTS`, `WRITE_CONTACTS`, `GET_ACCOUNTS` |
+| `calendar` | `READ_CALENDAR`, `WRITE_CALENDAR` |
+| `storage` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_AUDIO` |
+| `notifications` | `POST_NOTIFICATIONS` (set through Android's notification switch) |
+| `telephony` | `READ_PHONE_STATE`, `READ_PHONE_NUMBERS`, `CALL_PHONE`, `ANSWER_PHONE_CALLS`, `ADD_VOICEMAIL`, `USE_SIP`, `ACCEPT_HANDOVER`, `READ_CALL_LOG`, `WRITE_CALL_LOG`, `PROCESS_OUTGOING_CALLS` |
+| `sms` | `SEND_SMS`, `RECEIVE_SMS`, `READ_SMS`, `RECEIVE_WAP_PUSH`, `RECEIVE_MMS` |
+| `bluetooth` | `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE`, `NEARBY_WIFI_DEVICES`, `UWB_RANGING` |
+| `sensors` | `BODY_SENSORS`, `BODY_SENSORS_BACKGROUND`, `ACTIVITY_RECOGNITION` |
+
+Android permissions outside the table are not shown.
 
 Special access:
 
@@ -577,8 +594,8 @@ runs as Android's system uid, so Android's own checks admit them
 
 | `t` | Fields | |
 |---|---|---|
-| `manage` (host to Android) | `id`, `op`, then per op | `info`; `app`, `stop`, `cache`, `clear` with `pkg`; `perm` with `pkg`, `group`, `granted`; `notifications`, `links` with `pkg`, `enabled`; `battery` with `pkg`, `mode`; `special` with `kind`; `special_set` with `kind`, `pkg`, `granted` |
-| `managed` (Android to host) | `id`, `ok`, `error` or the answer | `info`: `release`, `sdk`. `app`: `GetApp`'s fields. `special`: `apps`. |
+| `manage` (host to Android) | `id`, `op`, then per op | `info`; `app`, `stop`, `cache`, `clear` with `pkg`; `perm` with `pkg`, `permissions` (Android names), `granted`; `perm_apps` with `permissions`; `notif_apps`; `notifications`, `links` with `pkg`, `enabled`; `battery` with `pkg`, `mode`; `special` with `kind`; `special_set` with `kind`, `pkg`, `granted` |
+| `managed` (Android to host) | `id`, `ok`, `error` or the answer | `info`: `release`, `sdk`. `app`: `GetApp`'s fields, with `perms` (`{name, granted, fixed}` for each runtime permission the app asks for, by Android name) in place of `permissions`. `special`, `perm_apps`, `notif_apps`: `apps`. |
 
 DeckardSystem refuses every per-app op on packages with `FLAG_SYSTEM`, so
 only apps the person installed are changed. deckardd answers a request with
