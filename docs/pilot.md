@@ -65,8 +65,11 @@ new connection, so the name gets a new owner and keel-mcp describes it again.
   subscribes to no events. It is enabled only when deckardd asks for a read
   or an action, and disabled two minutes after the last one, so no app
   builds an accessibility tree for it the rest of the time.
-- **Not covered: `FLAG_SECURE`.** Accessibility does not report it, so a
-  secure window (a banking app) is read like any other when it is in front.
+- **Never a secure window.** Accessibility does not report `FLAG_SECURE`,
+  so DeckardSystem checks the window manager's dump (the system uid holds
+  `DUMP`) before every read. A secure window of the app (a banking app, a
+  password manager) is refused. So is any read DeckardSystem cannot vouch
+  for: it is not connected, or it finds no window of the app.
 
 ## Decisions
 
@@ -76,13 +79,17 @@ new connection, so the name gets a new owner and keel-mcp describes it again.
   ("Open F-Droid", "New message (Signal)"), because Pilot names a domain
   without a desktop entry from its id alone (`app_name` falls back to the
   last segment of the id).
-- **Android starts the activity, then the shell shows it.** An Android
-  window that nobody launched from Marathon is filed as a card (b05f45a9,
-  c05a728d). deckardd sends `launch`, waits for `apps.running` to list the
-  app, and calls the shell's `app.launch`, which shows the window the
-  shell already has. Calling `app.launch` first would start
-  `waydroid app launch`'s launcher intent alongside the action's, and with
-  `NEW_TASK` the launcher activity can land on top of a deep link.
+- **Android starts the activity; the shell expects its window.** An
+  Android window that nobody launched from Marathon is filed as a card
+  (b05f45a9, c05a728d). Before `launch`, deckardd calls
+  `Navigation1.ExpectAppWindow(appId)`, a call proposed to the shell. With
+  it, the shell shows the app at once, and a window of a new task (an
+  activity started with its own affinity, or a document) takes the front
+  as a launch would. Without it, deckardd waits for `apps.running` to list
+  the app and calls `app.launch`, which shows the window the shell already
+  has, but not one of a new task. Launching through the shell first would
+  start `waydroid app launch`'s launcher intent alongside the action's, and
+  with `NEW_TASK` the launcher activity can land on top of a deep link.
 - **Links come from the app's own manifest.** Android has no public API
   for another app's intent filters. Actions reads the compiled
   `AndroidManifest.xml` through `AssetManager.openXmlResourceParser`, using
@@ -95,55 +102,60 @@ new connection, so the name gets a new owner and keel-mcp describes it again.
   Google's assistant ("search for X in Y"), with `ACTION_SEARCH` as the
   fallback.
 
-## Shortcuts: what the bridge may see
+## Shortcuts come from DeckardSystem
 
 `LauncherApps.getShortcuts` and `startShortcut` need the caller to be a
 shortcut host: the default launcher, the assistant, or a holder of
 `ACCESS_SHORTCUTS`. In this image's `framework-res.apk` that permission's
 protection level is `0x6000002`, that is `signature|role|recents`, not
 `privileged`. DeckardBridge is signed with Deckard's key, so it is not a
-host. The only host on the device is DeckardHome, as the HOME role holder.
-
-- **Today:** shortcuts come from each app's `android.app.shortcuts` XML. These
-  are the manifest shortcuts, for example a messenger's "New message".
-  Actions starts the shortcut's intents itself, so a shortcut whose target
-  activity is not exported cannot start. Dynamic shortcuts (recent chats,
-  "Navigate home") are not seen.
-- **Full shortcuts:** the manifest asks for `ACCESS_SHORTCUTS`, and Actions
-  uses `LauncherApps` (manifest and dynamic, `onShortcutsChanged`) whenever
-  `hasShortcutHostPermission()` is true. Two ways to get there:
-  1. Sign DeckardBridge with the platform key, as DeckardSystem is
-     (`PLATFORM_KEY=... image/tools/build-apk.sh`). This changes the key of
-     an installed system app, which Android accepts for system-partition
-     packages, but it has to be checked on the device and agreed with the
-     bridge's owner.
-  2. Ask DeckardSystem (`android.uid.system`) for the shortcuts over the
-     system channel.
+host. DeckardSystem runs as `android.uid.system`, which holds every
+permission. So DeckardSystem's `AppActions` answers deckardd's shortcut
+queries and starts shortcuts, over the system channel. It returns the
+manifest and the dynamic shortcuts, so recent chats and "Navigate home"
+come too. `startShortcut` starts a shortcut as the app that published it,
+so non-exported targets work as they do from a launcher.
+`onShortcutsChanged` tells deckardd to ask again. DeckardBridge is not
+re-signed.
 
 ## Pilot's on-screen context
 
 pilotd's `ShowSheetFor(pid)` finds the app over which Pilot was opened from
-the window's process. Marathon's patch 0003 asks the shell
-(`Navigation1.AppIdForPid`) only for a `marathon-app-runner`. For an Android
-window the process is Waydroid's, so Pilot does not know which app is on
-screen and does not read its context. Each Android provider already serves
-`GetContext` (the `screen.read` text, at most 4,000 characters), and its
-manifest declares `context`. Once pilotd or the shell maps an Android
-window to `waydroid.<pkg>`, Pilot's existing context read works as it does
-for Marathon apps. That is a Pilot change and is not made here. Until
-then, Pilot can call `screen.read` like any other tool when the person asks
-about the screen.
+the window's process. Marathon's patch 0003 (`packaging/packages/shoal-pilotd`
+in Marathon-Shell) asks the shell `Navigation1.AppIdForPid` for a
+`marathon-app-runner`. An Android window belongs to Waydroid's process, so
+for any other process the patch now asks `Navigation1.GetForegroundApp()`
+(being added to the shell). When the answer is a `waydroid.<pkg>` id, Pilot
+takes it as the app on screen and names it from Waydroid's desktop entry
+(`$XDG_DATA_HOME/applications/waydroid.<pkg>.desktop`). Pilot then reads
+`keel://waydroid.<pkg>/context`, which deckardd serves (`GetContext`: the
+screen text, at most 4,000 characters, or nothing for a secure window), and
+puts that app's tools first, as it does for Marathon apps.
 
 ## Verified
 
-- On the host (2026-10-19): `test_keelapps` (cleaning, manifests, link
-  rules, rendering, and a round trip on a private `dbus-daemon` with a fake
-  shell and a fake bridge: Describe, app.show, a shortcut through
-  launch → apps.running → app.launch, a refused share, screen.read, the
-  confirm path of ui.tap, GetContext, the lock, losing Android, the owner
-  change on a new manifest, the restart from `apps.json`, refusing an
-  untrusted caller).
+- On the host (2026-10-19): `test_keelapps`, which covers cleaning,
+  manifests, link rules and rendering. It also runs a round trip on a
+  private `dbus-daemon` with a fake shell, a fake bridge and a fake
+  DeckardSystem:
+  - shortcuts from DeckardSystem, with a new owner for the new list
+  - Describe and app.show
+  - a shortcut started by DeckardSystem, then apps.running → app.launch
+  - a refused share
+  - a search with a shell that expects the window
+  - a secure window refused, then screen.read
+  - the confirm path of ui.tap, and GetContext
+  - no read without DeckardSystem, and keel_changed
+  - the lock, and losing Android
+  - the restart from `apps.json`, and refusing an untrusted caller
 - In the Alpine build (`deckard` aport against this repo's HEAD): all 9
   ctest suites pass, test_keelapps included.
-- DeckardBridge builds with `build-apk.sh` (javac, d8, aapt).
+- DeckardBridge and DeckardSystem build with `build-apk.sh` (javac, d8,
+  aapt; DeckardSystem with the platform key). On the host JVM, the
+  secure-window parser matched a secure window, a plain one and one
+  without a surface. It also refused a package-name prefix. The sample is
+  Android 13's `dumpsys window windows` format, still to be checked against
+  the device's.
+- pilotd: `the_shell_names_the_android_app_in_front` and the existing
+  Marathon adapter tests pass (`cargo test -p shoal-pilotd --test marathon`).
 - On the device: pending.
