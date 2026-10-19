@@ -1,0 +1,235 @@
+#!/usr/bin/python3
+"""LXC mount hook for Waydroid's container: Android's shared storage folders
+are the session user's own folders. /data/media/0/Documents, Download,
+Pictures, Music, Movies and DCIM get the user's Documents, Downloads,
+Pictures, Music, Videos (the XDG user dirs) and ~/DCIM bind-mounted over
+them, in the container's mount namespace only. Android/data and
+Android/obb stay inside Android.
+
+Runs as root before the container's pivot_root, with the user's home and
+Waydroid data both user-writable, so every path is opened one component at
+a time without following links and mounted through /proc/self/fd: a link
+planted in either tree can't steer a mount. What an Android folder held
+before it was shared moves into the user's folder (owner the user, group
+media_rw with read and write for Android's MediaProvider); deckardd gives
+the user's folders the ACLs that let MediaProvider write there.
+"""
+import ctypes
+import os
+import pwd
+import re
+import stat
+import sys
+
+# Android's name, the XDG key, and the folder when user-dirs.dirs names none.
+FOLDERS = [
+    ("Documents", "XDG_DOCUMENTS_DIR", "Documents"),
+    ("Download", "XDG_DOWNLOAD_DIR", "Downloads"),
+    ("Pictures", "XDG_PICTURES_DIR", "Pictures"),
+    ("Music", "XDG_MUSIC_DIR", "Music"),
+    ("Movies", "XDG_VIDEOS_DIR", "Videos"),
+    ("DCIM", None, "DCIM"),
+]
+MEDIA_RW = 1023
+MS_BIND = 4096
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def log(message):
+    print("deckard-shared-folders: " + message, file=sys.stderr)
+
+
+def session_data(config_dir):
+    """Waydroid's session config binds the user's Android data at /data."""
+    with open(os.path.join(config_dir, "config_session")) as f:
+        for line in f:
+            fields = line.split("=", 1)[-1].split()
+            if line.startswith("lxc.mount.entry") and len(fields) >= 4 and fields[1] == "data":
+                return fields[0]
+    return None
+
+
+def is_name(name):
+    return bool(name) and "/" not in name and name not in (".", "..") and "\0" not in name
+
+
+def open_dir(parent, name, create=None, chown=os.chown):
+    """A directory directly in parent, never through a link; created with
+    (uid, gid, mode) when missing and create is given."""
+    try:
+        return os.open(name, DIR_FLAGS, dir_fd=parent)
+    except FileNotFoundError:
+        if create is None:
+            raise
+    uid, gid, mode = create
+    os.mkdir(name, mode, dir_fd=parent)
+    fd = os.open(name, DIR_FLAGS, dir_fd=parent)
+    chown(fd, uid, gid)
+    os.chmod(fd, mode)
+    return fd
+
+
+def user_dirs(home):
+    """XDG_*_DIR="$HOME/<name>" from the user's user-dirs.dirs, one level only."""
+    found = {}
+    try:
+        config = open_dir(home, ".config")
+        try:
+            fd = os.open("user-dirs.dirs", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=config)
+        finally:
+            os.close(config)
+        with os.fdopen(fd) as f:
+            text = f.read(16384)
+    except OSError:
+        return found
+    for key, name in re.findall(r'^(XDG_[A-Z]+_DIR)="\$HOME/([^"/]+)"\s*$', text, re.M):
+        if is_name(name):
+            found[key] = name
+    return found
+
+
+def migrate(android, host, uid, chown=os.chown):
+    """Moves what an Android folder held into the user's folder."""
+    moved = 0
+    for name in os.listdir(android):
+        try:
+            os.stat(name, dir_fd=host, follow_symlinks=False)
+            log("kept %s in Android: the shared folder has one too" % name)
+            continue
+        except FileNotFoundError:
+            pass
+        try:
+            os.rename(name, name, src_dir_fd=android, dst_dir_fd=host)
+        except OSError as e:
+            log("could not move %s: %s" % (name, e))
+            continue
+        moved += 1
+        st = os.stat(name, dir_fd=host, follow_symlinks=False)
+        if stat.S_ISLNK(st.st_mode):
+            continue
+        fix(host, name, uid, chown)
+    return moved
+
+
+def fix(parent, name, uid, chown):
+    st = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    chown(name, uid, MEDIA_RW, dir_fd=parent, follow_symlinks=False)
+    if stat.S_ISDIR(st.st_mode):
+        os.chmod(name, stat.S_IMODE(st.st_mode) | 0o770, dir_fd=parent)
+        fd = os.open(name, DIR_FLAGS, dir_fd=parent)
+        try:
+            for child in os.listdir(fd):
+                if not stat.S_ISLNK(os.stat(child, dir_fd=fd, follow_symlinks=False).st_mode):
+                    fix(fd, child, uid, chown)
+        finally:
+            os.close(fd)
+    elif stat.S_ISREG(st.st_mode):
+        os.chmod(name, stat.S_IMODE(st.st_mode) | 0o660, dir_fd=parent)
+
+
+def libc_bind(source, target):
+    libc = ctypes.CDLL(None, use_errno=True)
+    src = ("/proc/self/fd/%d" % source).encode()
+    dst = ("/proc/self/fd/%d" % target).encode()
+    if libc.mount(src, dst, None, MS_BIND, None) != 0:
+        raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+
+
+def walk(base, relative):
+    """The directory at relative under base, one component at a time."""
+    fd = os.dup(base)
+    for name in relative.strip("/").split("/"):
+        if not name:
+            continue
+        if not is_name(name):
+            os.close(fd)
+            raise OSError("bad path component: %r" % name)
+        try:
+            next_fd = open_dir(fd, name)
+        finally:
+            os.close(fd)
+        fd = next_fd
+    return fd
+
+
+def share(rootfs, home_path, data_path, uid, gid, bind=libc_bind, chown=os.chown):
+    """Shares each folder; returns the Android names shared. Folders are
+    created and emptied through the user's data as the host sees it (a
+    rename can't cross into the container's /data bind), and mounted over
+    through the container's /data."""
+    shared = []
+    if not data_path.startswith(home_path.rstrip("/") + "/"):
+        log("the Android data %s is not in the user's home" % data_path)
+        return shared
+    home = os.open(home_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root = os.open(rootfs, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    fds = [home, root]
+    try:
+        if os.fstat(home).st_uid != uid:
+            log("%s is not the user's home" % home_path)
+            return shared
+        try:
+            data = walk(home, data_path[len(home_path.rstrip("/")):])
+            fds.append(data)
+            media = open_dir(data, "media", (MEDIA_RW, MEDIA_RW, 0o770), chown)
+            fds.append(media)
+            user0 = open_dir(media, "0", (MEDIA_RW, MEDIA_RW, 0o770), chown)
+            fds.append(user0)
+            mounted0 = walk(root, "data/media/0")
+            fds.append(mounted0)
+        except OSError as e:
+            log("no Android storage to share into: %s" % e)
+            return shared
+        names = user_dirs(home)
+        for android_name, key, default in FOLDERS:
+            name = names.get(key, default) if key else default
+            try:
+                host = open_dir(home, name, (uid, gid, 0o755), chown)
+                fds.append(host)
+                if os.fstat(host).st_uid != uid:
+                    log("~/%s is not the user's; not shared" % name)
+                    continue
+                android = open_dir(user0, android_name, (MEDIA_RW, MEDIA_RW, 0o770), chown)
+                fds.append(android)
+                if os.listdir(android):
+                    log("moved %d items from Android's %s to ~/%s" % (migrate(android, host, uid, chown), android_name, name))
+                target = open_dir(mounted0, android_name)
+                fds.append(target)
+                if os.fstat(target).st_ino != os.fstat(android).st_ino:
+                    log("%s: the container's /data is not the user's data" % android_name)
+                    continue
+                bind(host, target)
+                shared.append(android_name)
+            except OSError as e:
+                log("%s not shared: %s" % (android_name, e))
+    finally:
+        for fd in fds:
+            os.close(fd)
+    return shared
+
+
+def main():
+    rootfs = os.environ.get("LXC_ROOTFS_MOUNT")
+    config = os.environ.get("LXC_CONFIG_FILE")
+    if not rootfs or not config:
+        log("not run by LXC")
+        return 0
+    data = session_data(os.path.dirname(config))
+    if not data:
+        log("no session data bind")
+        return 0
+    uid = os.stat(data).st_uid
+    if uid == 0:
+        return 0
+    user = pwd.getpwuid(uid)
+    shared = share(rootfs, user.pw_dir, data, uid, user.pw_gid)
+    log("shared " + ", ".join(shared))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:  # never keep Android from starting
+        log("failed: %s" % e)
+        sys.exit(0)
