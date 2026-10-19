@@ -149,18 +149,54 @@ and `android_vendor_waydroid` (`base-patches-33/frameworks/base`):
 
 ## Font
 
-Marathon's UI face is Source Sans 3 (it stands in for Sail Sans Pro;
-`portalsettings.cpp`), shipped by marathon-shell in
-`/usr/share/fonts/source-sans-3`. `gen-fonts-xml.py` rewrites the image's
-`/system/etc/fonts.xml` so the `sans-serif` family (Android's default, and
-what `sans-serif-medium` etc. alias) is Source Sans 3: 100–200 ExtraLight,
-300 Light, 400 Regular, 500–600 Semibold (there is no Medium; Material's
-titles and buttons ask for 500), 700–900 Bold, italic 300 and 400. The host's
-`deckard-fonts-sync` (an `ExecStartPre` of `waydroid-container.service`)
-copies the fonts and that `fonts.xml` into the overlay, and removes both if
-any font file is missing, because an empty default family stops Android
-booting. The fonts come from the host, as the design asks; nothing is copied
-into git.
+Android uses Marathon's font set: the faces the host renders with, from
+the host's `/usr/share/fonts`, copied in at container start.
+
+| Android family (and aliases) | Marathon face | Host file |
+|---|---|---|
+| `sans-serif` (thin, light, medium, black, arial, helvetica, tahoma, verdana, google-sans*, roboto*), `sans-serif-condensed` (light, medium), `sans-serif-smallcaps`, `casual`, `cursive`, `source-sans-pro` | Source Sans 3, Silica's UI face (it stands in for Sail Sans Pro) | `source-sans-3/SourceSans3-*.ttf`; 500 is Semibold (no Medium), 800–900 Bold |
+| `monospace` (sans-serif-monospace, monaco), `serif-monospace` (courier) | JetBrains Mono, the Terminal's face | `marathon/JetBrainsMono-Medium.ttf` |
+| `serif` (times, georgia, …) | Noto Serif, fontconfig's serif | `noto/NotoSerif-*.ttf` (same names as Android's, so the host copies replace them) |
+| fallback | Noto Sans, Noto Sans Symbols, Symbols 2, Math | `noto/` |
+| Arabic, Hebrew, Armenian, Georgian | DejaVu Sans (fontconfig's pick on the host) | `dejavu/DejaVuSans{,-Bold}.ttf` |
+| emoji | Noto Color Emoji (`font-noto-emoji`, now in marathon-base-config) | `noto/NotoColorEmoji.ttf`, same name as Android's |
+| CJK, Indic, Thai, other scripts | none on the host: Android keeps its Noto | — |
+
+- `Typeface.DEFAULT`/`DEFAULT_BOLD` is the first family (`sans-serif`),
+  `Typeface.SERIF` is `serif` and `Typeface.MONOSPACE` is `monospace`.
+  Material Components and AppCompat ask for `sans-serif` and
+  `sans-serif-medium` by name (aliases). Apps that bundle their own fonts
+  keep them.
+- `gen-fonts-xml.py` rewrites the image's `fonts.xml`
+  (`fonts-lineage-20.xml`) and writes three lists:
+  - `host-fonts.txt`: the 21 host files it needs.
+  - `android-fonts.txt`: Android files it still names.
+  - `hidden-fonts.txt`: 38 Android files nothing names any more, 18.6 MB:
+    Roboto, the legacy CBDT emoji, Lato and Rubik (with
+    `fonts_customization.xml` emptied), Naskh Arabic, Noto Hebrew and
+    Armenian, Droid Sans Mono, Cutive Mono, Coming Soon, Dancing Script,
+    Carrois Gothic SC, Source Sans Pro, and the symbol subsets. Files
+    Android's `fonts.xml` never named (AndroidClock, RobotoStatic, Droid
+    Sans) stay: code may open them by path.
+- `deckard-fonts-sync` (an `ExecStartPre` of `waydroid-container.service`):
+  - Copies the host fonts in.
+  - Copies any host font with the same file name as an Android font over
+    Android's. So adding `font-noto-cjk` switches Android's CJK to the
+    host's with no other change.
+  - Hides the unused Android files with overlayfs whiteouts.
+  - If one of the 21 host files is missing, it leaves Android's own
+    `fonts.xml` and fonts, because an empty family stops Android booting.
+- Disk: no saving. `system.img` is a read-only image and the whiteouts only
+  hide; the host copies add about 9 MB (19 MB with the emoji) under
+  `/var/lib/waydroid/overlay`.
+- More scripts for Marathon and Android: `optional/marathon-base-config-more-scripts.diff`
+  (not applied) adds font-noto-cjk (88.8 MiB), -arabic (18.0), -hebrew (2.0),
+  -devanagari (26.3), -bengali (17.7), -tamil (10.5) and -thai (4.8), about
+  168 MiB. CJK then reaches Android by file name. Alpine's Indic, Thai,
+  Arabic and Hebrew files are static weights under other names than
+  Android's variable `-VF` files, so `gen-fonts-xml.py` would need a
+  per-script mapping for them; fontconfig would then pick Noto Sans Arabic
+  and Hebrew over DejaVu on the host too.
 
 ## Density
 

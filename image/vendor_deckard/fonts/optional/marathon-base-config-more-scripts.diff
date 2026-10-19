@@ -1,0 +1,37 @@
+diff --git a/packaging/packages/marathon-base-config/APKBUILD b/packaging/packages/marathon-base-config/APKBUILD
+index 94bf8280..0813ab30 100644
+--- a/packaging/packages/marathon-base-config/APKBUILD
++++ b/packaging/packages/marathon-base-config/APKBUILD
+@@ -2,7 +2,7 @@
+ # Maintainer: Patrick Quinn <patrick@jquinn.com>
+ pkgname=marathon-base-config
+ pkgver=1.0.0
+-pkgrel=52
++pkgrel=53
+ pkgdesc="Marathon OS base system configuration and tuning"
+ url="https://github.com/patrickjquinn/Marathon-Shell"
+ arch="all"
+@@ -38,6 +38,13 @@ depends="
+ 	tmux
+ 	font-noto
+ 	font-noto-emoji
++	font-noto-cjk
++	font-noto-arabic
++	font-noto-hebrew
++	font-noto-devanagari
++	font-noto-bengali
++	font-noto-tamil
++	font-noto-thai
+ 	ttf-dejavu
+         greetd
+ 	gpg
+@@ -49,6 +56,9 @@ depends="
+ # (placeholder only), so its power-saver would change nothing.
+ # font-noto-emoji: colour emoji for Marathon (fontconfig's "emoji") and, as
+ # the same NotoColorEmoji.ttf, for Android apps (deckard-fonts-sync).
++# font-noto-cjk ... -thai: text in those scripts for Marathon; Android gets
++# the host's CJK (same file names), the others need gen-fonts-xml.py's
++# mapping in Marathon-Deckard.
+ # gpg: systemd-pull runs it to check an OTA feed's SHA256SUMS.gpg against
+ # /usr/lib/systemd/import-pubring.pgp; without it every update is refused.
+ # Comments must live outside the depends="..."
