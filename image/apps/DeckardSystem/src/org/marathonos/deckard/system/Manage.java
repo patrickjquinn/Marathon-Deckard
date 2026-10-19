@@ -59,7 +59,7 @@ final class Manage {
     private static final int FLAG_PERMISSION_SYSTEM_FIXED = 16;
     private static final int FLAG_SUPPORTS_PICTURE_IN_PICTURE = 0x400000;
 
-    private static final Map<String, String[]> GROUPS = new HashMap<>();
+    private static final Map<String, String[]> GROUPS = new java.util.LinkedHashMap<>();
     static {
         GROUPS.put("location", new String[] {"android.permission.ACCESS_FINE_LOCATION",
                 "android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_BACKGROUND_LOCATION"});
