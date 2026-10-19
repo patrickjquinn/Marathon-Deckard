@@ -9,5 +9,6 @@ public final class SystemApp extends Application {
         super.onCreate();
         HostLink.get();
         WindowFit.start();
+        ToastBar.start();
     }
 }

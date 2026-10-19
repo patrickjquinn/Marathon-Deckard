@@ -338,6 +338,22 @@ Marathon app toast and keeps transient notifications out of the Hub.
   screen, with no Hub row and no badge. 10 ms from `Toast.show()` to the Hub's
   `Notify` call.
 
+Slim stage S3 removed SystemUI, and with it `ToastPresenter`: text toasts of
+apps targeting Android 11 or later go from `NotificationManagerService` to
+`IStatusBar.showToast`, which SystemUI implemented, so none were drawn and
+ToastWatcher saw nothing (verification-2026-10-19.md, F3). DeckardSystem
+now registers its own `IStatusBar` with `StatusBarManagerService`
+(`ToastBar`, through reflection on the hidden AIDL classes; it reads the
+`showToast` transaction code from `IStatusBar$Stub`). It answers only
+`showToast`, handing the package and text to DeckardBridge
+(`Handoff.call("toast")`), which sends them on as ToastWatcher's toasts; the
+other calls are oneway notices for a status bar and are dropped, as they were
+with no `IStatusBar` at all. What changes with one registered:
+`requestAddTile` used to answer "no status bar service" at once and now gets
+no answer, so an app asking to add a quick settings tile waits; Android's
+quick settings don't exist here. Apps targeting older versions still draw
+their toasts themselves, and ToastWatcher still reports those.
+
 ## Android's freezer and Doze
 
 - **Android's cached-app freezer can't run in this container.**
