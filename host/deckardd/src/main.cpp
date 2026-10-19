@@ -6,10 +6,12 @@
 #include "mpris.h"
 #include "notifications.h"
 #include "palette.h"
+#include "sessionfollower.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
 #include <QDBusError>
+#include <QDBusMessage>
 #include <QDir>
 #include <QLoggingCategory>
 #include <QStandardPaths>
@@ -49,6 +51,13 @@ int main(int argc, char *argv[]) {
     AudioSync     audio(&bridge);
     AmbiencePalette palette(data + QStringLiteral("/deckard/palette"));
     DozeSync      doze(data + QStringLiteral("/deckard/doze"));
+    SessionFollower follower([] {
+        QDBusMessage call = QDBusMessage::createMethodCall(
+            QStringLiteral("org.freedesktop.systemd1"), QStringLiteral("/org/freedesktop/systemd1"),
+            QStringLiteral("org.freedesktop.systemd1.Manager"), QStringLiteral("TryRestartUnit"));
+        call << QStringLiteral("marathon-waydroid.service") << QStringLiteral("replace");
+        QDBusConnection::sessionBus().send(call);
+    });
 
     QObject::connect(&bridge, &Bridge::received, &app,
                      [&](const QString &type, const QJsonObject &message) {
