@@ -508,6 +508,50 @@ Rolled back:
   and `ModuleInfoProvider` throws "Call to getInstalledModules before
   metadata loaded" when there is no metadata package.
 
+## What low-end Android builds do, and what applies here
+
+Researched 19 October 2026 for the next round (sources at the end of this
+section). Each line says whether it can be done without rebuilding the
+image, and the plan for it.
+
+| Practice | Source | Here |
+|---|---|---|
+| `ro.config.low_ram=true` (Android Go) | AOSP `go_defaults_common.mk` | No: A13's `ActivityTaskManager.supportsMultiWindow()` turns multi-window off on low-RAM devices. Its pieces are taken one by one below. |
+| Go's feature list (`go_handheld_core_hardware.xml`): no app widgets, voice recognisers, PiP, secondary displays, managed users, controls | AOSP frameworks/native | Done in S6 except app widgets (apps call AppWidgetManager), PiP and secondary displays. |
+| Go recents limits (`config_maxNumVisibleRecentTasks_lowRam`) | `RecentTasks.loadParametersFromResources` | No gain: no launcher shows recents. |
+| `config_avoidGfxAccel` / `isHighEndGfx()` | A13 `ThreadedRenderer.initForSystemProcess` | Only system_server drops hardware rendering in A13 (persistent apps no longer do), and it draws nothing at idle. Instead: DeckardHome, the one idle window, rendered in software (`android:hardwareAccelerated="false"`). To measure. |
+| `dalvik.vm.heapgrowthlimit=128m`, `heapsize=256m` (Go) | `go_defaults_common.prop` | Caps per-app heaps, not idle use; apps here may need more. Not taken. Smaller idle heaps were S7: noise. |
+| `pm.dexopt.shared=quicken`, speed-profile system_server, boot image profile, `PRODUCT_MINIMIZE_JAVA_DEBUG_INFO` | Go defaults | Build-time (boot image, preopt). At run time, `cmd package compile` can AOT the always-running apps, trading JIT's dirty pages for clean, shared ones. To measure. |
+| `dalvik.vm.jit.codecachesize=0` (old 512 MB devices), `jitinitialsize`/`jitmaxsize`/`jitthreshold` | AOSP low-RAM page, ART "Configure ART" | Disabling the JIT costs app speed; covered by the compile experiment. |
+| `dalvik.vm.madvise-random=true` (Go 512) | `go_defaults_512.prop` | Page cache only; the host isn't short of it. Not taken. |
+| lmkd `ro.lmk.*` (critical upgrade, pressure levels, PSI stall thresholds, thrashing limits) | lmkd README, Go defaults | The bridge agent's reclaimer owns killing; `waydroid.prop` already sets lmkd to PSI-less. Not touched. |
+| App compaction (`activity_manager use_compaction`, `am compact`) and the cached apps freezer (`use_freezer`) | A13 `CachedAppOptimizer` (compaction off by default), AOSP "Cached apps freezer" | Compaction pages persistent and cached processes out to the host's zram; to measure. The freezer can't run in this container (bridge.md). |
+| `max_cached_processes`, `max_phantom_processes` | AOSP "Cached apps freezer" | `max_cached_processes 2` shipped (947e0d6). |
+| hwui texture and shader caches | A13 `CacheManager.cpp` | Sized from the display (720×628: about 21 MB of GPU resources per app at most, half when backgrounded); no properties left in A13. Nothing to do. |
+| SurfaceFlinger shader-cache priming, frame-buffer count (`ro.surface_flinger.max_frame_buffer_acquired_buffers`) | SurfaceFlinger properties | Priming off shipped (−35 MiB). Two frame buffers instead of three: to measure. |
+| Zygote preloads (`preloaded-classes`, GL preload `ro.zygote.disable_gl_preload`) | ZygoteInit | Removing `preloaded-classes` made it worse (E4). GL preload off: to measure. |
+| logd buffer sizes (`persist.logd.size`), perfetto/traced, incidentd, statsd | init rc files | traced, incidentd, storaged stopped (947e0d6). Smaller log buffers: to measure. statsd stays (system_server reports into it). |
+| Container CPU weight, cpusets, uclamp | host cgroups | The shell's lifecycle owns the container cgroup (freeze, `memory.high`); no change from this side. |
+
+Sources:
+[AOSP go_defaults_common.mk](https://android.googlesource.com/platform/build/+/refs/tags/android-13.0.0_r83/target/product/go_defaults_common.mk),
+[go_defaults_common.prop](https://android.googlesource.com/platform/build/+/refs/tags/android-13.0.0_r83/target/board/go_defaults_common.prop),
+[go_defaults_512.prop](https://android.googlesource.com/platform/build/+/refs/tags/android-13.0.0_r83/target/board/go_defaults_512.prop),
+[go_handheld_core_hardware.xml](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-13.0.0_r83/data/etc/go_handheld_core_hardware.xml),
+[ActivityTaskManager.supportsMultiWindow](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-13.0.0_r83/core/java/android/app/ActivityTaskManager.java),
+[ThreadedRenderer.initForSystemProcess](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-13.0.0_r83/core/java/android/view/ThreadedRenderer.java),
+[RecentTasks](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-13.0.0_r83/services/core/java/com/android/server/wm/RecentTasks.java),
+[CachedAppOptimizer](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-13.0.0_r83/services/core/java/com/android/server/am/CachedAppOptimizer.java),
+[hwui CacheManager](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-13.0.0_r83/libs/hwui/renderthread/CacheManager.cpp),
+[Configure ART](https://source.android.com/docs/core/runtime/configure),
+[Cached apps freezer](https://source.android.com/docs/core/perf/cached-apps-freezer),
+[lmkd README](https://android.googlesource.com/platform/system/memory/lmkd/+/ffce101/README.md),
+[old AOSP low-RAM page, mirrored](https://essential-books.onrender.com/essential/android/low-ram-configuration-f85c92460b5c4c128d0fb84b7a9cc509.html),
+[HTC Flounder svelte product (low_ram + JIT cache 0)](https://android.googlesource.com/device/htc/flounder/+/1ef2d9f/product_svelte.mk).
+Waydroid-specific tuning advice found was only general ("keep few apps
+installed", [Sailfish forum](https://forum.sailfishos.org/t/installed-waydroid/16979);
+memory pressure on a Librem 5, [Purism forum](https://forums.puri.sm/t/waydroid-under-memory-pressure/30316)).
+
 ## What is left, and what would need the image
 
 At idle the final container runs system_server (~186 MB PSS, 44 MiB anon),
