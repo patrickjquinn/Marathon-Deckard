@@ -390,10 +390,15 @@ nothing that runs as an Android app uid.
 
 Files cross through `/data/deckard/xfer/<id>/<name>`
 (`~/.local/share/waydroid/data/deckard/xfer/…`), owned by uid 1000 on both
-sides. DeckardSystem serves them to the asking app through its
-DocumentsProvider `org.marathonos.deckard.system.files` (document id
-`<id>/<name>`) with a URI grant. deckardd removes transfers older than 30
-days at start.
+sides. Apps read them through DeckardBridge's DocumentsProvider
+`Handoff` (`org.marathonos.deckard.bridge.files`, document id `<id>/<name>`).
+Android takes no URI grant from the system uid, so DeckardSystem doesn't
+grant: it opens the files up for DeckardBridge's uid (they keep the modes of
+their originals) and asks `Handoff` (`call("grant")`, from the system uid
+only) to grant the app read access, plus write for a save and persistable for
+`ACTION_OPEN_DOCUMENT`/`CREATE_DOCUMENT`. A save's file is closed through
+`Handoff`, which sends `pick_done` on the bridge channel. deckardd removes
+transfers older than 30 days at start.
 
 ### Android to host
 
@@ -466,7 +471,7 @@ System channel:
 |---|---|---|---|
 | `share_targets` | host to Android | `id`, `mime` | DeckardSystem queries `ACTION_SEND` and `ACTION_SEND_MULTIPLE` activities (exported, default category). |
 | `share_targets_result` | Android to host | `id`, `targets` (`[{pkg, activity, label, icon, multiple}]`, `icon` base64 PNG) | deckardd checks each: package and class names, Android label rules, the icon decoded and re-encoded. |
-| `share` | host to Android | `id`, `target`, `mime`, `title`, `text`, `files` (names in `xfer/<id>/`) | DeckardSystem starts `target` with `ACTION_SEND` (`EXTRA_TEXT`, `EXTRA_SUBJECT` from `title`, `EXTRA_STREAM`) or, for several files, `ACTION_SEND_MULTIPLE`, the streams being `Files` document URIs (`content://org.marathonos.deckard.system.files/document/<id>%2F<name>`) with `FLAG_GRANT_READ_URI_PERMISSION` and in the `ClipData`. |
+| `share` | host to Android | `id`, `target`, `mime`, `title`, `text`, `files` (names in `xfer/<id>/`) | DeckardSystem starts `target` with `ACTION_SEND` (`EXTRA_TEXT`, `EXTRA_SUBJECT` from `title`, `EXTRA_STREAM`) or, for several files, `ACTION_SEND_MULTIPLE`, the streams being `Handoff` document URIs (`content://org.marathonos.deckard.bridge.files/document/<id>%2F<name>`), granted to the target's package for reading through `Handoff` before the start, and in the `ClipData`. |
 | `shared` | Android to host | `id`, `ok`, `error` | |
 
 The shell lists these targets after the Marathon apps, only while

@@ -111,12 +111,17 @@ final class Share {
         if (!Files.isRequestId(id) || slash <= 0)
             throw new IllegalArgumentException("bad share");
         ArrayList<Uri> streams = new ArrayList<>();
+        List<String> names = new ArrayList<>();
         JSONArray files = m.optJSONArray("files");
         for (int i = 0; files != null && i < files.length(); i++) {
             String name = files.optString(i);
-            if (Files.file(id, name).isFile())
+            if (Files.file(id, name).isFile()) {
                 streams.add(Files.uri(id, name));
+                names.add(name);
+            }
         }
+        // Android takes no grant from the system uid: Handoff gives it.
+        Files.grant(context(), target.substring(0, slash), id, names, false, false);
         String text = m.optString("text");
         String title = m.optString("title");
         Intent send = new Intent(streams.size() > 1 ? Intent.ACTION_SEND_MULTIPLE : Intent.ACTION_SEND)

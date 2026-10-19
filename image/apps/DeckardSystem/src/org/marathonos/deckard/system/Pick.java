@@ -21,6 +21,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -155,7 +156,22 @@ public final class Pick extends Activity {
         }
         result.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
                 | (document ? Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION : 0));
+        if (!grant(names, false, document))
+            return;
         finishWith(RESULT_OK, result);
+    }
+
+    // The flags on a result stay, for apps that read them to take a
+    // persistable grant; the grant itself comes from Handoff.
+    private boolean grant(List<String> names, boolean write, boolean persist) {
+        try {
+            Files.grant(this, getCallingPackage(), mId, names, write, persist);
+            return true;
+        } catch (IOException | RuntimeException e) {
+            Log.w(HostLink.TAG, "grant to " + getCallingPackage(), e);
+            finishWith(RESULT_CANCELED, null);
+            return false;
+        }
     }
 
     private void answerSave(String name) {
@@ -171,6 +187,8 @@ public final class Pick extends Activity {
         Intent result = new Intent().setData(Files.uri(mId, name));
         result.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        if (!grant(Collections.singletonList(name), true, true))
+            return;
         finishWith(RESULT_OK, result);
     }
 
@@ -210,6 +228,8 @@ public final class Pick extends Activity {
                 result.putExtra("data", small);
         } else {
             result.setData(Files.uri(mId, name)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (!grant(Collections.singletonList(name), false, false))
+                return;
         }
         finishWith(RESULT_OK, result);
     }

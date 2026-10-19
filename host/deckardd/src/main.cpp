@@ -157,6 +157,11 @@ int main(int argc, char *argv[]) {
                               QStringLiteral("/Marathon"),
                           bus);
     QObject::connect(&systemBridge, &Bridge::received, &intents, &SystemIntents::handle);
+    // A file saved through DeckardBridge's Handoff provider was closed.
+    QObject::connect(&bridge, &Bridge::received, &intents, [&](const QString &type, const QJsonObject &message) {
+        if (type == QLatin1String("pick_done"))
+            intents.handle(type, message);
+    });
     QObject::connect(&systemBridge, &Bridge::connectedChanged, &intents, [&](bool connected) {
         if (connected)
             intents.resendFocus();

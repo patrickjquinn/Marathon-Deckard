@@ -53,5 +53,17 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/screen_reader" />
         </service>
+        <!-- Files handed to apps: here, since Android takes no URI grant
+             from DeckardSystem's system uid. -->
+        <provider
+            android:name=".Handoff"
+            android:authorities="org.marathonos.deckard.bridge.files"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
     </application>
 </manifest>

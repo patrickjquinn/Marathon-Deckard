@@ -109,6 +109,13 @@ public class BridgeService extends NotificationListenerService implements Link.L
     }
 
     /** From ToastWatcher, on the main thread like the listener callbacks. */
+    /** Sends on the bridge channel, when it is up. */
+    static void send(JSONObject message) {
+        BridgeService self = sInstance;
+        if (self != null && self.mLink != null)
+            self.mLink.send(message);
+    }
+
     static void toast(String pkg, String text) {
         BridgeService self = sInstance;
         if (self == null || self.mLink == null)

@@ -174,15 +174,5 @@
             </intent-filter>
         </activity>
 
-        <provider
-            android:name=".Files"
-            android:authorities="org.marathonos.deckard.system.files"
-            android:exported="true"
-            android:grantUriPermissions="true"
-            android:permission="android.permission.MANAGE_DOCUMENTS">
-            <intent-filter>
-                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
-            </intent-filter>
-        </provider>
     </application>
 </manifest>

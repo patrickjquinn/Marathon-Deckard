@@ -250,7 +250,7 @@ channel*), the way DeckardIme has `ime.sock`; DeckardBridge is untouched.
 | VIEW/SENDTO `mailto:` (+ EXTRA_EMAIL/CC/SUBJECT/TEXT) | `Forward` | Mail `mail.compose` |
 | VIEW `geo:` | `Forward` | Maps `map.show` |
 | 24 settings actions (Wi-Fi, Bluetooth, sound, display, date, storage, battery, security, input method, accounts, device info, notifications, app details, app notification and channel settings, …) | `Forward` (priority 2) | Settings page; `appmanager/waydroid.<pkg>` and `notifications/waydroid.<pkg>` for one app |
-| OPEN_DOCUMENT, GET_CONTENT, PICK image/video | `Pick` (priority 200) | the FileChooser portal; files copied into `/data/deckard/xfer/<id>/`, returned as `content://org.marathonos.deckard.system.files/document/<id>%2F<name>` with a read grant (persistable for OPEN_DOCUMENT) |
+| OPEN_DOCUMENT, GET_CONTENT, PICK image/video | `Pick` (priority 200) | the FileChooser portal; files copied into `/data/deckard/xfer/<id>/`, returned as `content://org.marathonos.deckard.bridge.files/document/<id>%2F<name>`, granted by DeckardBridge's `Handoff` (persistable for OPEN_DOCUMENT): Android takes no grant from the system uid |
 | CREATE_DOCUMENT | `Pick` | portal SaveFile; the app writes the transfer file, and every close copies it to the chosen place |
 | IMAGE_CAPTURE, VIDEO_CAPTURE | `Pick` | Camera `camera.open`; the next new file in `~/Pictures/Marathon` is written to the app's `EXTRA_OUTPUT` (or returned as a thumbnail / a content URI) |
 
