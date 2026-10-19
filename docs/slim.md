@@ -434,6 +434,22 @@ crash in the crash buffer, the intents resolved as expected.
 | S8 | 295 | 33 | 69 | 703 MB | 68 | 53 | 16.3 s | 0.06 % | 62 | all 5 OK; seven boot-woken processes gone |
 | S9 | 265 | 33 | 65 | 671 MB | 66 | 53 | 16.2 s | 0.06 % | 62 | all 5 OK; window fit converted a [124,43][596,585] task to the display, focus followed Marathon, taps reached the right task |
 
+After shipping S1–S9, more without a rebuild (each measured the same way):
+
+| Change | Anon | Shmem | Kernel | PSS total | Processes | Verdict |
+|---|---|---|---|---|---|---|
+| shipped S9 (deckard 2968950) | 265 | 33 | 65 | 671 MB | 66 | baseline for these |
+| E1 `service.sf.prime_shader_cache=0` | 230 | 29 | 65 | 633 MB | 66 | shipped: SurfaceFlinger 77 → 38 MB PSS; apps draw normally (screenshots of Markor and Feeder) |
+| E2 + `max_cached_processes` 2 | 221 | 29 | 61 | 621 MB | 64 | shipped: only windowless background processes go sooner |
+| E3 + adbd, adb_root, traced, traced_probes, incidentd, storaged, mdnsd, credstore stopped | 214 | 29 | 61 | 611 MB | 56 | shipped |
+| E4 no `preloaded-classes` (whiteout) | 241 | 29 | 65 | 639 MB | 64 | worse, and a 77 s boot: rolled back |
+| killing webview_zygote after boot | | | | | | breaks WebView: no renderer starts until Android restarts. It stays. |
+| S7 smaller dalvik heaps | −3 | | | | | noise, not shipped |
+| **shipped final (947e0d6)** | **223** | **29** | **63** | **612–625 MB** | **58** | all 5 apps OK, WebView renders, Android Settings opens |
+
+**Host MemAvailable cost** (session stopped, then started and settled 2
+minutes; M0's method): M0 706 MiB → shipped S9 391 MiB → final **246 MiB**.
+
 **Before → after (S0 → S9):** anonymous memory 466 → 265 MiB (−43 %),
 anon + shmem + kernel 655 → 363 MiB (−45 %), summed PSS 1,063 → 671 MB
 (−37 %), 92 → 66 processes, 165 → 53 packages, boot 21–36 s → 11–16 s. Idle
@@ -487,6 +503,19 @@ Rolled back:
   boot: `AppRestrictionController.onSystemReady` calls `getInstalledModules`,
   and `ModuleInfoProvider` throws "Call to getInstalledModules before
   metadata loaded" when there is no metadata package.
+
+## What is left, and what would need the image
+
+At idle the final container runs system_server (~186 MB PSS, 44 MiB anon),
+surfaceflinger (38), zygote64 (~49, mostly the shared boot image),
+MediaProvider, PermissionController (re-started by role and permission jobs
+after the boot kill, then cached), DeckardSystem with DeckardHome, the
+composer and allocator HALs, NetworkStack, the media daemons (mediaserver,
+codecs, extractor, cameraserver: needed for playback and Camera2 apps),
+audioserver, DeckardIme, DeckardBridge, ext.services, webview_zygote and the
+small HALs. Going further needs the image: system_server services that
+start unconditionally, APEX modules, lazy media daemons, and a smaller
+boot image.
 
 ## Left for Marathon
 
