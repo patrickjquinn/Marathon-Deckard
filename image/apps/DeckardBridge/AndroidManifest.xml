@@ -20,6 +20,8 @@
         android:allowBackup="false"
         android:hasCode="true">
 
+        <uses-library android:name="com.android.location.provider" android:required="false" />
+
         <service
             android:name=".BridgeService"
             android:exported="true"
@@ -52,6 +54,16 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/screen_reader" />
+        </service>
+        <!-- Android's network location: Marathon's (protocol/bridge.md).
+             Its version is above microG's own provider. -->
+        <service
+            android:name=".NetworkLocation"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.android.location.service.v3.NetworkLocationProvider" />
+            </intent-filter>
+            <meta-data android:name="serviceVersion" android:value="3" />
         </service>
         <!-- Files handed to apps: here, since Android takes no URI grant
              from DeckardSystem's system uid. -->

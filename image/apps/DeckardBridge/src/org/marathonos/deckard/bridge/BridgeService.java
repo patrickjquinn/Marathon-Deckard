@@ -94,6 +94,7 @@ public class BridgeService extends NotificationListenerService implements Link.L
         }
         mMedia.resend();
         mActions.sendAll();
+        NetworkLocation.onConnected();
     }
 
     @Override
@@ -323,6 +324,10 @@ public class BridgeService extends NotificationListenerService implements Link.L
         }
         if (type.equals("launch") || type.equals("screen_read") || type.equals("ui_act")) {
             mActions.handle(type, m);
+            return;
+        }
+        if (type.equals("location")) {
+            NetworkLocation.onLocation(m);
             return;
         }
         if (type.equals("audio")) {
