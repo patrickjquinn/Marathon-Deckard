@@ -8,3 +8,6 @@ ro.product.cpu.abilist32=
 ro.lmk.use_new_strategy=true
 ro.lmk.psi_partial_stall_ms=0
 ro.lmk.psi_complete_stall_ms=0
+# SurfaceFlinger doesn't prime RenderEngine's shader cache at boot: 35 MiB of
+# anonymous memory for composition the hwcomposer never asks it to do.
+service.sf.prime_shader_cache=0

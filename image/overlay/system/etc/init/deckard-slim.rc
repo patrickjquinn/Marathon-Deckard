@@ -4,8 +4,20 @@
 # A minute after boot, the processes that only woke for a boot broadcast
 # (Settings, PackageInstaller, KeyChain, providers) are killed; they start
 # again when something asks for them. With this much memory Android itself
-# would keep them (32 cached, 8 empty before any trim).
+# would keep them (32 cached, 8 empty before any trim), so it keeps two.
+# Android apps with a Marathon window are visible, never cached, and
+# Marathon's own lifecycle decides when they go.
+# Daemons nothing here uses: adb (Waydroid attaches with lxc; init.waydroid.rc
+# starts it at boot_completed, so it is stopped with the kill), tracing,
+# incident reports, storage stats, mDNS (netd starts mdnsd again when an app
+# asks for service discovery) and identity credentials.
 on property:sys.boot_completed=1
     exec_background - root root -- /system/bin/settings put global device_provisioned 1
     exec_background - root root -- /system/bin/settings put secure user_setup_complete 1
-    exec_background - root root -- /system/bin/sh -c "sleep 60; /system/bin/am kill-all"
+    exec_background - root root -- /system/bin/device_config put activity_manager max_cached_processes 2
+    exec_background - root root -- /system/bin/sh -c "sleep 60; /system/bin/am kill-all; setprop ctl.stop adbd; setprop ctl.stop mdnsd"
+    setprop persist.traced.enable 0
+    stop adb_root
+    stop incidentd
+    stop storaged
+    stop credstore
