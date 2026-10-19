@@ -7,4 +7,5 @@ public class TaskStackListener extends android.os.Binder {
     public void onTaskStackChanged() {}
     public void onTaskCreated(int taskId, ComponentName componentName) {}
     public void onTaskDisplayChanged(int taskId, int newDisplayId) {}
+    public void onTaskFocusChanged(int taskId, boolean focused) {}
 }

@@ -7,11 +7,14 @@ import android.hardware.display.DisplayManager;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Keeps every app task on Android's display as a freeform task that fills the
@@ -26,6 +29,7 @@ public final class Main {
     private static final int ACTIVITY_TYPE_UNDEFINED = 0;
     private static final int ACTIVITY_TYPE_STANDARD = 1;
     private static final long SETTLE_MS = 30;
+    private static final long RETRY_MS = 2000;
 
     private static Object atm;
     private static Method getAllRootTaskInfos;
@@ -34,9 +38,12 @@ public final class Main {
     private static Class<?> wctClass;
     private static Method wctSetWindowingMode;
     private static Method wctSetBounds;
+    private static Method wctReorder;
     private static Object displayManager;
     private static Method getDisplayInfo;
     private static Handler handler;
+    private static final Map<Integer, Long> fitted = new HashMap<>();
+    private static Rect lastDisplay;
 
     private static final Runnable FIT = Main::fitAll;
 
@@ -60,6 +67,7 @@ public final class Main {
         Class<?> token = Class.forName("android.window.WindowContainerToken");
         wctSetWindowingMode = wctClass.getMethod("setWindowingMode", token, int.class);
         wctSetBounds = wctClass.getMethod("setBounds", token, Rect.class);
+        wctReorder = wctClass.getMethod("reorder", token, boolean.class);
         applyTransaction = windowOrganizer.getClass().getMethod("applyTransaction", wctClass);
 
         Class<?> dmg = Class.forName("android.hardware.display.DisplayManagerGlobal");
@@ -79,6 +87,10 @@ public final class Main {
             @Override public void onTaskStackChanged() { schedule(); }
             @Override public void onTaskCreated(int taskId, ComponentName name) { schedule(); }
             @Override public void onTaskDisplayChanged(int taskId, int displayId) { schedule(); }
+            @Override public void onTaskFocusChanged(int taskId, boolean focused) {
+                Log.i(TAG, "task " + taskId + (focused ? " focused" : " unfocused"));
+                if (focused) handler.post(() -> raise(taskId));
+            }
         };
         Class<?> listenerType = Class.forName("android.app.ITaskStackListener");
         atm.getClass().getMethod("registerTaskStackListener", listenerType).invoke(atm, tasks);
@@ -121,6 +133,10 @@ public final class Main {
         try {
             Rect full = displayBounds();
             if (full == null) return;
+            if (!full.equals(lastDisplay)) {
+                fitted.clear();
+                lastDisplay = full;
+            }
             List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
             for (Object root : roots) fit(root, full);
         } catch (Throwable t) {
@@ -130,22 +146,77 @@ public final class Main {
 
     private static void fit(Object root, Rect full) throws Exception {
         if (intField(root, "displayId") != DISPLAY) return;
+        // Only tasks that hold activities: not the shell's empty split roots.
+        if (intField(root, "numActivities") == 0) return;
+        int[] children = (int[]) root.getClass().getField("childTaskIds").get(root);
+        if (children != null && children.length > 1) return;
         Object windowConfig = windowConfiguration(root);
         int type = (int) windowConfig.getClass().getMethod("getActivityType").invoke(windowConfig);
         if (type != ACTIVITY_TYPE_STANDARD && type != ACTIVITY_TYPE_UNDEFINED) return;
         int mode = (int) windowConfig.getClass().getMethod("getWindowingMode").invoke(windowConfig);
+        if (mode != WINDOWING_MODE_FREEFORM && mode != WINDOWING_MODE_FULLSCREEN) return;
 
         Rect bounds = (Rect) root.getClass().getField("bounds").get(root);
         if (mode == WINDOWING_MODE_FREEFORM && full.equals(bounds)) return;
-        if (mode != WINDOWING_MODE_FREEFORM && mode != WINDOWING_MODE_FULLSCREEN) return;
+        int taskId = intField(root, "taskId");
+        // A task that keeps other bounds must not loop us through task-stack
+        // callbacks: at most one attempt per task every RETRY_MS.
+        long now = SystemClock.uptimeMillis();
+        Long last = fitted.get(taskId);
+        if (last != null && now - last < RETRY_MS) return;
+        fitted.put(taskId, now);
 
-        // A fullscreen task hides every task below it, and Waydroid then
-        // destroys their windows, so fullscreen tasks become freeform too.
         Object token = root.getClass().getField("token").get(root);
         Object wct = wctClass.newInstance();
-        wctSetWindowingMode.invoke(wct, token, WINDOWING_MODE_FREEFORM);
+        // A fullscreen task hides every task below it, and Waydroid then
+        // destroys their windows, so fullscreen tasks become freeform too.
+        if (mode == WINDOWING_MODE_FULLSCREEN) {
+            wctSetWindowingMode.invoke(wct, token, WINDOWING_MODE_FREEFORM);
+        }
         wctSetBounds.invoke(wct, token, full);
         applyTransaction.invoke(windowOrganizer, wct);
+        Log.i(TAG, "task " + taskId + " " + bounds.toShortString() + " -> " + full.toShortString()
+                + (mode == WINDOWING_MODE_FULLSCREEN ? " (was fullscreen)" : ""));
+    }
+
+    /**
+     * Waydroid sends every touch to one touchscreen in display coordinates,
+     * so Android hits whichever task is on top of its own z-order. All app
+     * tasks share the display's bounds, so the task Marathon focused (through
+     * setFocusedTask) must also be the top one, or a tap lands in a hidden
+     * task and focus jumps there.
+     */
+    private static void raise(int taskId) {
+        try {
+            List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
+            boolean top = true;
+            for (Object root : roots) {
+                if (intField(root, "displayId") != DISPLAY) continue;
+                Object windowConfig = windowConfiguration(root);
+                int type = (int) windowConfig.getClass().getMethod("getActivityType").invoke(windowConfig);
+                if (type != ACTIVITY_TYPE_STANDARD && type != ACTIVITY_TYPE_UNDEFINED) continue;
+                if (holds(root, taskId)) {
+                    if (top) return;
+                    Object wct = wctClass.newInstance();
+                    wctReorder.invoke(wct, root.getClass().getField("token").get(root), true);
+                    applyTransaction.invoke(windowOrganizer, wct);
+                    Log.i(TAG, "raised focused task " + taskId);
+                    return;
+                }
+                top = false;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "raise failed", t);
+        }
+    }
+
+    private static boolean holds(Object root, int taskId) throws Exception {
+        if (intField(root, "taskId") == taskId) return true;
+        int[] children = (int[]) root.getClass().getField("childTaskIds").get(root);
+        if (children != null)
+            for (int c : children)
+                if (c == taskId) return true;
+        return false;
     }
 
     private static Object windowConfiguration(Object taskInfo) throws Exception {

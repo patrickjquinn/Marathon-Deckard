@@ -88,6 +88,10 @@ final class WindowFit {
             @Override public void onTaskStackChanged() { schedule(); }
             @Override public void onTaskCreated(int taskId, ComponentName name) { schedule(); }
             @Override public void onTaskDisplayChanged(int taskId, int displayId) { schedule(); }
+            @Override public void onTaskFocusChanged(int taskId, boolean focused) {
+                Log.i(TAG, "task " + taskId + (focused ? " focused" : " unfocused"));
+                if (focused) handler.post(() -> raise(taskId));
+            }
         };
         Class<?> listenerType = Class.forName("android.app.ITaskStackListener");
         atm.getClass().getMethod("registerTaskStackListener", listenerType).invoke(atm, tasks);
@@ -182,6 +186,46 @@ final class WindowFit {
         Log.i(TAG, "task " + taskId + " " + bounds.toShortString() + " -> " + full.toShortString()
                 + (mode != WINDOWING_MODE_FREEFORM ? " (was fullscreen)" : ""));
         return true;
+    }
+
+    /**
+     * Waydroid sends every touch to one touchscreen in display coordinates,
+     * so Android hits whichever task is on top of its own z-order. All app
+     * tasks share the display's bounds, so the task Marathon focused (through
+     * setFocusedTask) must also be the top one, or a tap lands in a hidden
+     * task and focus jumps there.
+     */
+    private static void raise(int taskId) {
+        try {
+            List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
+            boolean top = true;
+            for (Object root : roots) {
+                if (intField(root, "displayId") != DISPLAY) continue;
+                Object windowConfig = windowConfiguration(root);
+                int type = (int) windowConfig.getClass().getMethod("getActivityType").invoke(windowConfig);
+                if (type != ACTIVITY_TYPE_STANDARD && type != ACTIVITY_TYPE_UNDEFINED) continue;
+                if (holds(root, taskId)) {
+                    if (top) return;
+                    Object wct = wctClass.newInstance();
+                    wctReorder.invoke(wct, root.getClass().getField("token").get(root), true);
+                    applyTransaction.invoke(windowOrganizer, wct);
+                    Log.i(TAG, "raised focused task " + taskId);
+                    return;
+                }
+                top = false;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "raise failed", t);
+        }
+    }
+
+    private static boolean holds(Object root, int taskId) throws Exception {
+        if (intField(root, "taskId") == taskId) return true;
+        int[] children = (int[]) root.getClass().getField("childTaskIds").get(root);
+        if (children != null)
+            for (int c : children)
+                if (c == taskId) return true;
+        return false;
     }
 
     private static Object windowConfiguration(Object taskInfo) throws Exception {
