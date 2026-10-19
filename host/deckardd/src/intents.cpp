@@ -539,9 +539,15 @@ void SystemIntents::drop(const QString &id) {
     const auto it = m_pending.constFind(id);
     if (it == m_pending.cend())
         return;
-    if (!it->portalPath.isEmpty())
+    if (!it->portalPath.isEmpty()) {
         m_bus.disconnect(QString(), it->portalPath, QStringLiteral("org.freedesktop.portal.Request"),
                          QStringLiteral("Response"), this, SLOT(onPortalResponse(QDBusMessage)));
+        // The app gave up: take the chooser off the screen too.
+        m_bus.asyncCall(QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.portal.Desktop"),
+                                                       it->portalPath,
+                                                       QStringLiteral("org.freedesktop.portal.Request"),
+                                                       QStringLiteral("Close")));
+    }
     m_pending.erase(it);
 }
 
