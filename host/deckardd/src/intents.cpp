@@ -157,6 +157,26 @@ namespace Intents {
             {QStringLiteral("android.settings.MANAGE_APPLICATIONS_SETTINGS"), QStringLiteral("appmanager")},
             {QStringLiteral("android.settings.MANAGE_ALL_APPLICATIONS_SETTINGS"), QStringLiteral("appmanager")},
         };
+        // Special access: Marathon Settings' page for the kind, for one app when it asked.
+        static const QHash<QString, QString> access{
+            {QStringLiteral("android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION"), QStringLiteral("all_files")},
+            {QStringLiteral("android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION"), QStringLiteral("all_files")},
+            {QStringLiteral("android.settings.MANAGE_UNKNOWN_APP_SOURCES"), QStringLiteral("install_apps")},
+            {QStringLiteral("android.settings.action.MANAGE_OVERLAY_PERMISSION"), QStringLiteral("overlay")},
+            {QStringLiteral("android.settings.action.MANAGE_WRITE_SETTINGS"), QStringLiteral("write_settings")},
+            {QStringLiteral("android.settings.USAGE_ACCESS_SETTINGS"), QStringLiteral("usage")},
+            {QStringLiteral("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"), QStringLiteral("notification_listener")},
+            {QStringLiteral("android.settings.NOTIFICATION_LISTENER_DETAIL_SETTINGS"), QStringLiteral("notification_listener")},
+            {QStringLiteral("android.settings.NOTIFICATION_POLICY_ACCESS_SETTINGS"), QStringLiteral("dnd")},
+            {QStringLiteral("android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS"), QStringLiteral("battery")},
+            {QStringLiteral("android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"), QStringLiteral("battery")},
+            {QStringLiteral("android.settings.REQUEST_SCHEDULE_EXACT_ALARM"), QStringLiteral("alarms")},
+            {QStringLiteral("android.settings.PICTURE_IN_PICTURE_SETTINGS"), QStringLiteral("pip")},
+            {QStringLiteral("android.settings.ACCESSIBILITY_SETTINGS"), QStringLiteral("accessibility")},
+        };
+        if (const QString kind = access.value(a); !kind.isEmpty())
+            return QStringLiteral("androidaccess/") + kind +
+                   (Validate::isPackageName(pkg) ? QStringLiteral("/") + pkg : QString());
         const QString page = pages.value(a);
         if (page.isEmpty())
             return {};

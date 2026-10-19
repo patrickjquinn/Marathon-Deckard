@@ -181,6 +181,17 @@ class TestIntents : public QObject {
                                         QStringLiteral("../x")),
                  QStringLiteral("notifications"));
         QVERIFY(Intents::settingsRoute(QStringLiteral("android.settings.LOCATION_SOURCE_SETTINGS"), {}).isEmpty());
+        QCOMPARE(Intents::settingsRoute(QStringLiteral("android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION"),
+                                        QStringLiteral("me.zhanghai.android.files")),
+                 QStringLiteral("androidaccess/all_files/me.zhanghai.android.files"));
+        QCOMPARE(Intents::settingsRoute(QStringLiteral("android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION"), {}),
+                 QStringLiteral("androidaccess/all_files"));
+        QCOMPARE(Intents::settingsRoute(QStringLiteral("android.settings.MANAGE_UNKNOWN_APP_SOURCES"),
+                                        QStringLiteral("../../x")),
+                 QStringLiteral("androidaccess/install_apps"));
+        QCOMPARE(Intents::settingsRoute(QStringLiteral("android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"),
+                                        QStringLiteral("org.fdroid.fdroid")),
+                 QStringLiteral("androidaccess/battery/org.fdroid.fdroid"));
         auto t = open({{QStringLiteral("kind"), QStringLiteral("settings")},
                        {QStringLiteral("action"), QStringLiteral("android.settings.SETTINGS")}});
         QVERIFY(t);
