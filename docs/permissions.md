@@ -195,6 +195,19 @@ isn't a privacy switch. So there is nothing for the prompt to defer to yet.
 - **Patch**: the patched `classes.dex` disassembles to the intended
   constructor; `classes2.dex` holds `MarathonGrantView`; apksigner verifies
   the platform signature.
-- **Not yet on the device**: whether ART accepts the reassembled dex, whether
-  PermissionController can reach DeckardSystem's provider, and real apps
-  (Catima camera, FOSS Browser location, Feeder notifications).
+## Still to check on the device
+
+1. ART accepts the reassembled `classes.dex`. Look in logcat for
+   `PermissionController` verify errors after the session restarts, and
+   check that `dumpsys package com.android.permissioncontroller` shows the
+   overlay APK.
+2. PermissionController reaches DeckardSystem's provider. Without it,
+   "Marathon can't ask" appears in logcat and Android's dialog shows
+   instead.
+3. Real apps, with screenshots: Catima's camera (only this time, deny
+   twice for "don't ask again"), FOSS Browser's location (precise switch,
+   then "all the time" through BackgroundAccess), Feeder's notifications
+   (POST_NOTIFICATIONS).
+4. Dismissing a prompt (back, Home) gives CANCELED, and the flags stay
+   unchanged.
+5. With deckardd stopped, Android's dialog and permission page are shown.
