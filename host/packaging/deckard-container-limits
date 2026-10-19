@@ -1,0 +1,16 @@
+#!/bin/sh
+# LXC start-host hook for Waydroid's container: a memory budget sized for the
+# device. memory.high makes the kernel reclaim from Android first and raises
+# the memory pressure Android's lmkd answers by killing cached Android apps;
+# memory.max keeps an Android out-of-memory inside the container, so it can
+# never take Marathon's shell or foreground app with it.
+set -eu
+cg=/sys/fs/cgroup/lxc.payload.${LXC_NAME:-waydroid}
+[ -d "$cg" ] || exit 0
+mb=$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)
+high=$((mb * 30 / 100))
+[ "$high" -ge 1536 ] || high=1536
+max=$((mb * 40 / 100))
+[ "$max" -ge $((high + 512)) ] || max=$((high + 512))
+echo "${high}M" > "$cg/memory.high"
+echo "${max}M" > "$cg/memory.max"
