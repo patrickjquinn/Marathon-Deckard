@@ -491,11 +491,13 @@ Fixed on the way:
   `device_provisioned` again, because Provision is whited out, and Android
   Settings exited at once ("Device is not provisioned"). `deckard-slim.rc`
   sets it and `user_setup_complete` at every boot.
-- **S4.** The FileChooser portal is called, but xdg-desktop-portal-gtk's
-  dialog never appears on Marathon's screen ("Unhandled parent window type").
-  Marathon needs to show that toplevel or provide its own
-  `org.freedesktop.impl.portal.FileChooser`; deckardd now closes the portal
-  request when the app gives up.
+- **S4.** The FileChooser portal was called, but xdg-desktop-portal-gtk's
+  dialog never appeared on Marathon ("Unhandled parent window type"). With
+  the shell's own file chooser portal (deployed 04:1x on 19 October) the
+  whole path works: OPEN_DOCUMENT from Android showed Marathon's chooser,
+  the picked `~/Documents` file landed in `/data/deckard/xfer/<id>/`, and
+  `content read` of DeckardSystem's document URI returned its contents.
+  deckardd also closes the portal request when the app gives up.
 
 Rolled back:
 
@@ -521,8 +523,6 @@ boot image.
 
 - **Share sheet.** Android shares stay in Android's chooser until Marathon
   has a share sheet (the shell's old one was removed in c0d1f559).
-- **File chooser.** The FileChooser portal's GTK dialog doesn't show on
-  Marathon; DeckardSystem's pickers wait on it.
 - **Camera.** A "capture and return" Keel action in Marathon Camera would
   replace deckardd's watch on `~/Pictures/Marathon`.
 - **Messages and Maps.** A message body in Messages' route, and a Keel
