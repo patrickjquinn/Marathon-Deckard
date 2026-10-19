@@ -7,6 +7,8 @@ helper=$1
 W=$(mktemp -d)
 trap 'chmod -R u+w "$W" 2> /dev/null; rm -rf "$W"' EXIT
 uid=$(id -u)
+# The helper refuses root's data: as root (an aport build), act for another uid.
+[ "$uid" != 0 ] || uid=4242
 home=$W/home
 data=$home/.local/share/waydroid/data
 mkdir -p "$W/bin" "$home/.local/share/applications" "$W/etc"
@@ -42,6 +44,7 @@ seed() {
 	touch "$home/.local/share/applications/waydroid.org.fdroid.fdroid.desktop" \
 		"$home/.local/share/applications/org.marathonos.notes.desktop"
 	: > "$W/systemctl.log"
+	[ "$(id -u)" != 0 ] || chown -R "$uid" "$home"
 }
 
 run() {
