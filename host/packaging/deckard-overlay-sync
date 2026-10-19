@@ -46,3 +46,26 @@ printf '%s\n' "$wanted" | while IFS= read -r p; do
 	printf '%s\n' "$p" >> "$wolist.new"
 done
 mv "$wolist.new" "$wolist"
+
+# Android properties that go with the overlay (/usr/share/deckard/waydroid.prop,
+# "key=value" lines): into waydroid.cfg [properties], which "waydroid init"
+# and "upgrade" keep, and waydroid_base.prop, which the next session reads.
+props=/usr/share/deckard/waydroid.prop
+plist=/var/lib/waydroid/deckard-props.list
+cfg=/var/lib/waydroid/waydroid.cfg
+base=/var/lib/waydroid/waydroid_base.prop
+newprops=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$props" 2>/dev/null || true)
+{ cat "$plist" 2>/dev/null || true; printf '%s\n' "$newprops" | sed -n 's/=.*//p'; } | sort -u | while IFS= read -r k; do
+	[ -n "$k" ] || continue
+	for f in "$cfg" "$base"; do
+		[ -f "$f" ] && sed -i "/^$k[[:space:]]*=/d" "$f"
+	done
+done
+printf '%s\n' "$newprops" | while IFS= read -r line; do
+	[ -n "$line" ] || continue
+	k=${line%%=*}
+	v=${line#*=}
+	[ -f "$cfg" ] && sed -i "/^\[properties\]/a $k = $v" "$cfg"
+	[ -f "$base" ] && printf '%s=%s\n' "$k" "$v" >> "$base"
+done
+printf '%s\n' "$newprops" | sed -n 's/=.*//p' > "$plist"
