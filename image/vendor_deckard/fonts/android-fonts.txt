@@ -1,8 +1,13 @@
 NotoColorEmoji.ttf
 NotoColorEmojiFlags.ttf
+NotoNaskhArabic-Bold.ttf
+NotoNaskhArabic-Regular.ttf
+NotoNaskhArabicUI-Bold.ttf
+NotoNaskhArabicUI-Regular.ttf
 NotoSansAdlam-VF.ttf
 NotoSansAhom-Regular.otf
 NotoSansAnatolianHieroglyphs-Regular.otf
+NotoSansArmenian-VF.ttf
 NotoSansAvestan-Regular.ttf
 NotoSansBalinese-Regular.ttf
 NotoSansBamum-Regular.ttf
@@ -44,6 +49,8 @@ NotoSansGurmukhiUI-VF.ttf
 NotoSansHanifiRohingya-Regular.otf
 NotoSansHanunoo-Regular.ttf
 NotoSansHatran-Regular.otf
+NotoSansHebrew-Bold.ttf
+NotoSansHebrew-Regular.ttf
 NotoSansImperialAramaic-Regular.ttf
 NotoSansInscriptionalPahlavi-Regular.ttf
 NotoSansInscriptionalParthian-Regular.ttf
@@ -148,6 +155,7 @@ NotoSansVai-Regular.ttf
 NotoSansWancho-Regular.otf
 NotoSansWarangCiti-Regular.otf
 NotoSansYi-Regular.ttf
+NotoSerifArmenian-VF.ttf
 NotoSerifBengali-VF.ttf
 NotoSerifCJK-Regular.ttc
 NotoSerifDevanagari-VF.ttf
@@ -156,6 +164,8 @@ NotoSerifEthiopic-VF.ttf
 NotoSerifGeorgian-VF.ttf
 NotoSerifGujarati-VF.ttf
 NotoSerifGurmukhi-VF.ttf
+NotoSerifHebrew-Bold.ttf
+NotoSerifHebrew-Regular.ttf
 NotoSerifKannada-VF.ttf
 NotoSerifKhmer-Bold.otf
 NotoSerifKhmer-Regular.otf

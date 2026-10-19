@@ -1,5 +1,3 @@
-DejaVuSans-Bold.ttf
-DejaVuSans.ttf
 JetBrainsMono-Medium.ttf
 NotoSans-Bold.ttf
 NotoSans-BoldItalic.ttf

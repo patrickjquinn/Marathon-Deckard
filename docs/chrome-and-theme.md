@@ -158,7 +158,7 @@ the host's `/usr/share/fonts`, copied in at container start.
 | `monospace` (sans-serif-monospace, monaco), `serif-monospace` (courier) | JetBrains Mono, the Terminal's face | `marathon/JetBrainsMono-Medium.ttf` |
 | `serif` (times, georgia, …) | Noto Serif, fontconfig's serif | `noto/NotoSerif-*.ttf` (same names as Android's, so the host copies replace them) |
 | fallback | Noto Sans, Noto Sans Symbols, Symbols 2, Math | `noto/` |
-| Arabic, Hebrew, Armenian, Georgian | DejaVu Sans (fontconfig's pick on the host) | `dejavu/DejaVuSans{,-Bold}.ttf` |
+| Arabic, Hebrew, Armenian, Georgian | Android's Noto. The host's pick, DejaVu Sans, also carries monochrome emoticons, and Minikin then drew 😀 from it instead of the colour emoji (measured), so it is left out | — |
 | emoji | Noto Color Emoji (`font-noto-emoji`, now in marathon-base-config) | `noto/NotoColorEmoji.ttf`, same name as Android's |
 | CJK, Indic, Thai, other scripts | none on the host: Android keeps its Noto | — |
 
@@ -169,12 +169,11 @@ the host's `/usr/share/fonts`, copied in at container start.
   keep them.
 - `gen-fonts-xml.py` rewrites the image's `fonts.xml`
   (`fonts-lineage-20.xml`) and writes three lists:
-  - `host-fonts.txt`: the 21 host files it needs.
+  - `host-fonts.txt`: the 19 host files it needs.
   - `android-fonts.txt`: Android files it still names.
-  - `hidden-fonts.txt`: 38 Android files nothing names any more, 18.6 MB:
-    Roboto, the legacy CBDT emoji, Lato and Rubik (with
-    `fonts_customization.xml` emptied), Naskh Arabic, Noto Hebrew and
-    Armenian, Droid Sans Mono, Cutive Mono, Coming Soon, Dancing Script,
+  - `hidden-fonts.txt`: 28 Android files nothing names any more: Roboto,
+    the legacy CBDT emoji, Lato and Rubik (with `fonts_customization.xml`
+    emptied), Droid Sans Mono, Cutive Mono, Coming Soon, Dancing Script,
     Carrois Gothic SC, Source Sans Pro, and the symbol subsets. Files
     Android's `fonts.xml` never named (AndroidClock, RobotoStatic, Droid
     Sans) stay: code may open them by path.
@@ -184,11 +183,40 @@ the host's `/usr/share/fonts`, copied in at container start.
     Android's. So adding `font-noto-cjk` switches Android's CJK to the
     host's with no other change.
   - Hides the unused Android files with overlayfs whiteouts.
-  - If one of the 21 host files is missing, it leaves Android's own
+  - If one of the 19 host files is missing, it leaves Android's own
     `fonts.xml` and fonts, because an empty family stops Android booting.
-- Disk: no saving. `system.img` is a read-only image and the whiteouts only
-  hide; the host copies add about 9 MB (19 MB with the emoji) under
+- Host symbol fonts sit after the emoji families. Android's own symbol fonts
+  were subset to leave emoji to the colour font, and the host's full ones
+  placed earlier drew 😀 in monochrome.
+- Measured on the HackberryPi on 19 Oct, stock fonts vs Marathon's set
+  (`fonts-stock.png`, `fonts-marathon.png`; the probe app shows each family,
+  Typeface.DEFAULT/SERIF/MONOSPACE, Greek, Cyrillic, Arabic, Hebrew,
+  Devanagari, Thai, CJK, emoji, symbols):
+  - Source Sans 3 everywhere sans-serif is asked for.
+  - JetBrains Mono for MONOSPACE, with its `=>` ligature.
+  - Noto Serif for SERIF.
+  - The host's Noto Color Emoji.
+  - Android's Noto for Arabic, Hebrew, Devanagari, Thai and CJK.
+  - Settings and FOSS Browser (WebView) render in Source Sans 3 too.
+- Memory: no real win. system_server maps every font `fonts.xml` names but
+  touches little of it:
+
+  | | Fonts mapped | Mapped size | RSS |
+  |---|---|---|---|
+  | Stock | 216 | 74.2 MB | 17.3 MB |
+  | Marathon's set | 204 | 79.6 MB | 18.0 MB |
+
+  Alpine's emoji is a 10.7 MB CBDT bitmap font; Android's COLRv1 one is
+  2.8 MB. An app process maps about 14 fonts (6–7 MB RSS) either way.
+- Disk: no saving either. `system.img` is a read-only image and the
+  whiteouts only hide; the host copies add about 19 MB under
   `/var/lib/waydroid/overlay`.
+- Marathon's own emoji: the shell started before `font-noto-emoji` was
+  installed, so its font database had no colour emoji. A notification's
+  "😀🚀🇮🇪❤️" drew 😀 in DejaVu's monochrome glyph and the rest as boxes
+  (`marathon-emoji-before-shell-restart.png`). It needs a shell restart (or
+  an image with marathon-base-config r52) to check. The same screenshot shows
+  a shell bug: the notification's letter avatar "E�" splits a surrogate pair.
 - More scripts for Marathon and Android: `optional/marathon-base-config-more-scripts.diff`
   (not applied) adds font-noto-cjk (88.8 MiB), -arabic (18.0), -hebrew (2.0),
   -devanagari (26.3), -bengali (17.7), -tamil (10.5) and -thai (4.8), about

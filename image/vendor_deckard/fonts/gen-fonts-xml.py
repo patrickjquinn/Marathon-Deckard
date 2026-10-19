@@ -58,7 +58,11 @@ NAMED = {
 # ships under the same names, so the host's copies replace them.
 HOST_SERIF = ['NotoSerif-Regular.ttf', 'NotoSerif-Bold.ttf',
               'NotoSerif-Italic.ttf', 'NotoSerif-BoldItalic.ttf']
-BY_LANG = {'und-Arab': DEJAVU, 'und-Hebr': DEJAVU, 'und-Armn': DEJAVU, 'und-Geor': DEJAVU}
+# DejaVu Sans (fontconfig's pick for Arabic, Hebrew, Armenian, Georgian on
+# the host) also carries monochrome emoticons, and Minikin's fallback then
+# drew U+1F600 from it instead of the colour emoji: those scripts keep
+# Android's Noto.
+BY_LANG = {}
 EXTRA_ALIASES = [('google-sans', 'sans-serif', None), ('google-sans-text', 'sans-serif', None),
                  ('google-sans-medium', 'sans-serif', 500), ('google-sans-bold', 'sans-serif', 700),
                  ('roboto', 'sans-serif', None), ('roboto-medium', 'sans-serif', 500)]
@@ -89,11 +93,14 @@ def main():
         if 'ignore="true"' in attrs and 'NotoColorEmojiLegacy' in body:
             return ''
         if 'NotoSansSymbols-Regular-Subsetted.ttf' in body:
-            return '\n'.join([family('', NOTO_SANS),
-                              family('', [(400, 'normal', 'NotoSansSymbols-Regular.ttf')]),
-                              family('', [(400, 'normal', 'NotoSansMath-Regular.ttf')])])
+            return family('', NOTO_SANS)
         if 'NotoSansSymbols-Regular-Subsetted2.ttf' in body:
-            return family(attrs, [(400, 'normal', 'NotoSansSymbols2-Regular.ttf')])
+            # Android's symbol fonts were subset to leave emoji to the colour
+            # font; the host's full ones go after the emoji families so their
+            # monochrome emoticons never win.
+            return '\n'.join([family('', [(400, 'normal', 'NotoSansSymbols-Regular.ttf')]),
+                              family('', [(400, 'normal', 'NotoSansMath-Regular.ttf')]),
+                              family(attrs, [(400, 'normal', 'NotoSansSymbols2-Regular.ttf')])])
         return body
 
     out = fam.sub(replace, xml)
