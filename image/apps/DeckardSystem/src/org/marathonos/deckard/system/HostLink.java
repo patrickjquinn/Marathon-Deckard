@@ -123,6 +123,8 @@ final class HostLink {
             Reclaim.handle(m);
         else if ("uninstall".equals(m.optString("t")))
             Uninstall.handle(m);
+        else if ("share_targets".equals(m.optString("t")) || "share".equals(m.optString("t")))
+            Share.handle(m);
     }
 
     private void onDisconnected() {

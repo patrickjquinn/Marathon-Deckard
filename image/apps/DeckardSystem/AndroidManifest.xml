@@ -131,6 +131,21 @@
             </intent-filter>
         </activity>
 
+        <!-- Above the framework's ChooserActivity (priority 100), so shares
+             open Marathon's share sheet (protocol/bridge.md, Share). -->
+        <activity
+            android:name=".Chooser"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter android:priority="200">
+                <action android:name="android.intent.action.CHOOSER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <provider
             android:name=".Files"
             android:authorities="org.marathonos.deckard.system.files"

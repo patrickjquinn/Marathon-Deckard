@@ -370,6 +370,19 @@ Marathon app toast and keeps transient notifications out of the Hub.
   back alarms, jobs and network over longer periods. For comparison, M0
   measured 0.11–0.30 % and 68–81 context switches/s.
 
+## Sharing
+
+Android apps take part in Marathon's share sheet both ways
+(protocol/bridge.md, Share). As targets, the shell asks deckardd's
+`Deckard1.Share.ShareTargets` for the activities that take the type and
+hands the chosen one the request with `Share`; deckardd copies the files
+into `xfer/` and DeckardSystem starts the activity with `Files` URIs. As
+sources, DeckardSystem's `Chooser` sits above Android's chooser and sends
+what the app shares to deckardd, which opens the sheet with the files as
+descriptors and the app as `source`. Host tests cover deckardd's half
+(`tests/test_share.cpp`, with a fake sheet on a private bus); not yet run on
+the device, and the sheet needs the shell's half.
+
 ## A boot that never completes
 
 The first start after a reset hung for about six minutes: the composer HAL

@@ -106,6 +106,8 @@ no app open, the same way as every stage.
   targets only) until Marathon has one; IntentResolver.apk goes (S1).
   `config_customResolverActivity` (the "open with" picker) works as
   relayed, but Marathon has no app picker for Android intents either.
+  Marathon has a share sheet again now, and DeckardSystem's `Chooser`
+  answers `ACTION_CHOOSER` at priority 200 (protocol/bridge.md, Share).
 
 ## Mechanisms
 
