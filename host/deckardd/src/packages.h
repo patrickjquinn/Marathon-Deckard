@@ -44,7 +44,7 @@ class Packages : public QDBusAbstractAdaptor {
     // A job id; Progress and Finished follow.
     QString InstallPackage(const QString &path, const QDBusMessage &call);
     QString UninstallPackage(const QString &pkg, const QDBusMessage &call);
-    // {pkg, label, versionName, versionCode, system} for every package.
+    // {pkg, label, versionName, versionCode, system, launchable} for every package.
     PackageList ListPackages(const QDBusMessage &call);
 
   Q_SIGNALS:

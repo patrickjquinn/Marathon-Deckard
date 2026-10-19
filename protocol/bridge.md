@@ -70,7 +70,7 @@ The body is HTML-escaped because the Hub advertises `body-markup`.
 | `inspect_result` | `id`, `ok`, `message`, `pkg`, `label`, `versionName`, `versionCode`, `minSdk`, `targetSdk`, `permissions`, `icon`, `installedVersionCode`, `installedVersionName` | An `inspect` answered from `PackageManager.getPackageArchiveInfo`. |
 | `install_progress` | `id`, `percent` | Copying the APK into the PackageInstaller session. |
 | `install_result` | `id`, `ok`, `pkg`, `message` | An `install` or `uninstall` finished (`PackageInstaller.EXTRA_STATUS`). |
-| `packages_result` | `id`, `packages: [{pkg, label, versionName, versionCode, system}]` | Every installed package. |
+| `packages_result` | `id`, `packages: [{pkg, label, versionName, versionCode, system, launchable}]` | Every installed package; `launchable` is whether it has a launcher activity. |
 | `package_changed` | `pkg`, `change` | `installed`, `updated` or `removed`, from ACTION_PACKAGE_ADDED/REMOVED (a replace is one `updated`). |
 | `toast` | `pkg`, `label`, `text` | An app showed a toast (from the bridge's accessibility service: `TYPE_NOTIFICATION_STATE_CHANGED` with class `android.widget.Toast`). deckardd posts a silent banner (`urgency` 0, `transient`, `suppress-sound`, `x-marathon-toast`, `expire_timeout` 3500, summary = the text, `app_name` = the label) and closes it after 4 s. At most one per package per 500 ms; text up to 512 characters. |
 

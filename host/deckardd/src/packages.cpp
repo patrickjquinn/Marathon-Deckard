@@ -218,7 +218,8 @@ void Packages::handle(const QString &type, const QJsonObject &m) {
                          {QStringLiteral("label"), Validate::label(o, QStringLiteral("label"))},
                          {QStringLiteral("versionName"), Validate::text(o, QStringLiteral("versionName"), 64)},
                          {QStringLiteral("versionCode"), qint64(o.value(QStringLiteral("versionCode")).toDouble())},
-                         {QStringLiteral("system"), o.value(QStringLiteral("system")).toBool()}});
+                         {QStringLiteral("system"), o.value(QStringLiteral("system")).toBool()},
+                         {QStringLiteral("launchable"), o.value(QStringLiteral("launchable")).toBool(true)}});
             if (list.size() >= 2000)
                 break;
         }

@@ -222,6 +222,7 @@ final class Installer {
                 continue;
             list.put(new JSONObject().put("pkg", info.packageName)
                     .put("system", (info.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0)
+                    .put("launchable", pm.getLaunchIntentForPackage(info.packageName) != null)
                     .put("label", pm.getApplicationLabel(info.applicationInfo).toString())
                     .put("versionName", info.versionName == null ? "" : info.versionName)
                     .put("versionCode", info.getLongVersionCode()));
