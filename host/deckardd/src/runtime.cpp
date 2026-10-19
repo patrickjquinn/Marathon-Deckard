@@ -12,7 +12,11 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
+#include <QProcess>
+#include <QTimer>
 #include <QSaveFile>
+
+#include <memory>
 
 Q_LOGGING_CATEGORY(lcRuntime, "deckard.runtime")
 
@@ -30,7 +34,15 @@ namespace {
 Runtime::Runtime(Paths paths, UnitCall unitCall, QObject *parent)
     : QObject(parent)
     , m_paths(std::move(paths))
-    , m_unitCall(std::move(unitCall)) {}
+    , m_unitCall(std::move(unitCall)) {
+    if (m_paths.reset.isEmpty()) {
+        const QString helper = qEnvironmentVariable("DECKARD_RESET_HELPER");
+        if (!helper.isEmpty())
+            m_paths.reset = {helper};
+        else if (QFileInfo::exists(QStringLiteral("/usr/libexec/deckard-reset")))
+            m_paths.reset = {QStringLiteral("pkexec"), QStringLiteral("/usr/libexec/deckard-reset")};
+    }
+}
 
 QString Runtime::state() const {
     if (m_unitState == QLatin1String("active") || m_unitState == QLatin1String("reloading"))
@@ -114,6 +126,58 @@ void Runtime::atLogin() {
         qCInfo(lcRuntime) << "starting Android at login";
         start();
     }
+}
+
+void Runtime::reset(Done done) {
+    if (m_resetting) {
+        done(false, QStringLiteral("Android is already being reset"));
+        return;
+    }
+    if (m_paths.reset.isEmpty()) {
+        done(false, QStringLiteral("Resetting Android isn't available"));
+        return;
+    }
+    m_resetting = true;
+    if (state() == QLatin1String("stopped")) {
+        runReset(std::move(done));
+        return;
+    }
+    auto *waiter = new QObject(this);
+    auto  shared = std::make_shared<Done>(std::move(done));
+    connect(this, &Runtime::changed, waiter, [this, waiter, shared] {
+        if (state() != QLatin1String("stopped"))
+            return;
+        waiter->deleteLater();
+        runReset(*shared);
+    });
+    QTimer::singleShot(kStopTimeoutMs, waiter, [this, waiter, shared] {
+        waiter->deleteLater();
+        m_resetting = false;
+        (*shared)(false, QStringLiteral("Android didn't stop"));
+    });
+    stop();
+}
+
+void Runtime::runReset(Done done) {
+    auto *helper = new QProcess(this);
+    auto  shared = std::make_shared<Done>(std::move(done));
+    connect(helper, &QProcess::finished, this, [this, helper, shared](int code, QProcess::ExitStatus status) {
+        helper->deleteLater();
+        m_resetting = false;
+        const bool ok = status == QProcess::NormalExit && code == 0;
+        if (!ok)
+            qCWarning(lcRuntime) << "reset helper failed:" << code << helper->readAllStandardError().trimmed();
+        (*shared)(ok, ok ? QString() : QStringLiteral("Android's data couldn't be removed"));
+    });
+    connect(helper, &QProcess::errorOccurred, this, [this, helper, shared](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart)
+            return;
+        helper->deleteLater();
+        m_resetting = false;
+        (*shared)(false, QStringLiteral("Resetting Android isn't available"));
+    });
+    qCInfo(lcRuntime) << "resetting Android";
+    helper->start(m_paths.reset.first(), m_paths.reset.mid(1));
 }
 
 void Runtime::setUnit(const QString &activeState, qint64 enteredMs) {

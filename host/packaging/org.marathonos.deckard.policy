@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Marathon OS</vendor>
+  <vendor_url>https://github.com/patrickjquinn/Marathon-Deckard</vendor_url>
+
+  <!-- Reset Android from Settings: deckardd runs deckard-reset after the
+       person confirmed. Android's data has root-owned files, so only root
+       can remove it. -->
+  <action id="org.marathonos.deckard.reset">
+    <description>Reset Android</description>
+    <message>Authentication is required to remove all Android apps and their data</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/deckard-reset</annotate>
+  </action>
+</policyconfig>

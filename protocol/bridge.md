@@ -462,7 +462,7 @@ failure in Android is `org.marathonos.Deckard1.Error.Failed` with its message.
 | `ForceStop(s pkg)`, `ClearCache(s pkg)`, `ClearData(s pkg)` | |
 | `GetSpecialAccess(s kind) → aa{sv}` | The person's apps that can have it: `{pkg, label, granted}` |
 | `SetSpecialAccess(s kind, s pkg, b granted)` | |
-| `ResetAndroid()` | Uninstalls every app the person installed, with its data |
+| `ResetAndroid()` | Stops the session, then runs `pkexec /usr/libexec/deckard-reset` (polkit action `org.marathonos.deckard.reset`, allowed for the active session), which removes Android's data so the next start sets Android up again. Replies when the helper is done. |
 
 Signals: `RuntimeChanged(a{sv})` with `GetRuntime`'s map, `AppChanged(s pkg)`
 after a change to an app succeeded.
@@ -500,8 +500,8 @@ runs as Android's system uid, so Android's own checks admit them
 
 | `t` | Fields | |
 |---|---|---|
-| `manage` (host to Android) | `id`, `op`, then per op | `info`; `app`, `stop`, `cache`, `clear` with `pkg`; `perm` with `pkg`, `group`, `granted`; `notifications`, `links` with `pkg`, `enabled`; `battery` with `pkg`, `mode`; `special` with `kind`; `special_set` with `kind`, `pkg`, `granted`; `reset` |
-| `managed` (Android to host) | `id`, `ok`, `error` or the answer | `info`: `release`, `sdk`. `app`: `GetApp`'s fields. `special`: `apps`. `reset`: `removed`. |
+| `manage` (host to Android) | `id`, `op`, then per op | `info`; `app`, `stop`, `cache`, `clear` with `pkg`; `perm` with `pkg`, `group`, `granted`; `notifications`, `links` with `pkg`, `enabled`; `battery` with `pkg`, `mode`; `special` with `kind`; `special_set` with `kind`, `pkg`, `granted` |
+| `managed` (Android to host) | `id`, `ok`, `error` or the answer | `info`: `release`, `sdk`. `app`: `GetApp`'s fields. `special`: `apps`. |
 
 DeckardSystem refuses every per-app op on packages with `FLAG_SYSTEM`, so
 only apps the person installed are changed. deckardd answers a request with
@@ -509,3 +509,18 @@ an error after 30 s without a reply or when the channel drops, keeps at most
 32 waiting, and cleans each answer (`ManageCheck`, `tests/test_settingsapi.cpp`):
 labels at most 128 characters, sizes 0 to 2^50, only known groups and kinds,
 at most 50 well-formed domains and 500 apps.
+
+### Reset
+
+`host/packaging/deckard-reset`, root, through pkexec only (it takes the user
+from `PKEXEC_UID` and refuses root). It removes everything in that user's
+`~/.local/share/waydroid/data` (Android's `/data`) except `deckard/`, where
+deckardd's sockets live, and removes `deckard/xfer` and `deckard/install`
+and Waydroid's `waydroid.*.desktop` entries. Waydroid's images in
+`/var/lib/waydroid` and Deckard's overlay stay. It stops
+`waydroid-container.service` first and touches nothing if that fails, and
+starts it again only if it was running. It works from inside the data
+directory after checking it is in the user's home and owned by them, so a
+symlink can't send the removal elsewhere. Exit status: 0 done, 2 usage, 3 no
+data, 1 failure. `tests/test-deckard-reset.sh` runs it against a fake home,
+passwd and systemctl.

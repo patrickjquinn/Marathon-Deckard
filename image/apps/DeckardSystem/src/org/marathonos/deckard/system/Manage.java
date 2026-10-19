@@ -3,7 +3,6 @@ package org.marathonos.deckard.system;
 import android.app.ActivityManager;
 import android.app.AppOpsManager;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.app.admin.DevicePolicyManager;
 import android.app.usage.StorageStats;
 import android.app.usage.StorageStatsManager;
@@ -13,7 +12,6 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
-import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.content.pm.PermissionInfo;
 import android.content.pm.ResolveInfo;
@@ -47,7 +45,7 @@ import java.util.concurrent.Executors;
 /**
  * Marathon Settings' requests for Android apps (protocol/bridge.md,
  * management): details, runtime permissions, notifications, links, battery,
- * force stop, clearing, special access and reset. Runs as the system uid, so
+ * force stop, clearing and special access. Runs as the system uid, so
  * Android's own permission checks admit every call; only apps the person
  * installed are changed.
  */
@@ -156,7 +154,6 @@ final class Manage {
             case "clear": clearData(c, userApp(c, pkg).packageName); return null;
             case "special": return new JSONObject().put("apps", special(c, m.optString("kind")));
             case "special_set": setSpecial(c, m.optString("kind"), userApp(c, pkg), m.optBoolean("granted")); return null;
-            case "reset": return new JSONObject().put("removed", reset(c));
             default: throw new IllegalArgumentException("unknown request");
         }
     }
@@ -324,18 +321,6 @@ final class Manage {
                 .invoke(am, pkg, null);
         if (ok == null || !ok)
             throw new IllegalStateException("Android refused");
-    }
-
-    private static int reset(Context c) {
-        PackageInstaller installer = c.getPackageManager().getPackageInstaller();
-        int removed = 0;
-        for (ApplicationInfo ai : userApps(c)) {
-            Intent done = new Intent("org.marathonos.deckard.system.RESET").setPackage(c.getPackageName());
-            PendingIntent sender = PendingIntent.getBroadcast(c, ai.uid, done, PendingIntent.FLAG_IMMUTABLE);
-            installer.uninstall(ai.packageName, sender.getIntentSender());
-            removed++;
-        }
-        return removed;
     }
 
     // --- special access ---

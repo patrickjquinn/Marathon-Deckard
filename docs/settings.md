@@ -27,9 +27,12 @@ The first three are Keel pages of `app.show`.
   and starts it. Start at login defaults to on once Waydroid has a desktop
   entry without `NoDisplay=true`, and runs once per login
   (`$XDG_RUNTIME_DIR/deckard-login`), not on every deckardd restart.
-- Reset Android uninstalls every app the person installed, with its data.
-  A full wipe of `/data` needs root (Android writes root-owned files
-  there); it would need a root helper in `waydroid-container.service`.
+- Reset Android is a real wipe: deckardd stops the session and runs
+  `pkexec /usr/libexec/deckard-reset`, which removes Android's `/data`
+  (`~/.local/share/waydroid/data`, root-owned files included) but keeps
+  `deckard/` (deckardd's sockets), Waydroid's images and the overlay. The
+  next start sets Android up again. Android isn't started again after a
+  reset.
 - Default apps and per-app language are left out: Marathon answers links,
   calls, messages and home through DeckardSystem.
 - Only apps the person installed are listed or changed; Android's own
@@ -53,4 +56,7 @@ Everything Android-side: the hidden-API calls in `Manage.java` (grant and
 revoke, `setNotificationsEnabledForPackage`, domain verification, deviceidle,
 `forceStopPackage`, cache and data, app ops, listeners, admins), sizes from
 StorageStatsManager on Waydroid's bind-mounted `/data`, and the caller check
-against the live shell.
+against the live shell; whether polkit treats deckardd (a user service,
+outside the logind session) as the active session for
+`org.marathonos.deckard.reset`; how long Android's first boot after a reset
+takes.

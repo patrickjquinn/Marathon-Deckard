@@ -17,6 +17,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 // The shell's Navigation1, answering AppIdForPid for this test process.
 class FakeShell : public QObject {
@@ -132,6 +133,60 @@ class TestSettingsApi : public QObject {
         QVERIFY(!again.startAtLogin());
         again.atLogin();
         QCOMPARE(calls.size(), 1);
+    }
+
+    // Android stops first; only then does the helper run.
+    void resets() {
+        QTemporaryDir dir;
+        const QString marker = dir.filePath(QStringLiteral("ran"));
+        QStringList   calls;
+        Runtime      *runtimePtr = nullptr;
+        Runtime runtime({QString(), dir.filePath(QStringLiteral("settings.json")), dir.path(),
+                         {QStringLiteral("sh"), QStringLiteral("-c"),
+                          QStringLiteral("touch '%1'; exit ${RESET_EXIT:-0}").arg(marker)}},
+                        [&](const QString &m) {
+                            calls.append(m);
+                            if (m == QLatin1String("StopUnit")) {
+                                runtimePtr->setUnit(QStringLiteral("deactivating"), 0);
+                                QTimer::singleShot(200, runtimePtr, [runtimePtr] {
+                                    runtimePtr->setUnit(QStringLiteral("inactive"), 0);
+                                });
+                            }
+                        });
+        runtimePtr = &runtime;
+        runtime.setUnit(QStringLiteral("active"), 1);
+        runtime.setAndroidConnected(true);
+
+        bool    finished = false, ok = false;
+        QString error;
+        runtime.reset([&](bool o, const QString &e) { finished = true; ok = o; error = e; });
+        QCOMPARE(calls, QStringList{QStringLiteral("StopUnit")});
+        QTest::qWait(100);
+        QVERIFY(!QFile::exists(marker));
+        bool again = true;
+        runtime.reset([&](bool o, const QString &) { again = o; });
+        QVERIFY(!again);
+        QTRY_VERIFY(finished);
+        QVERIFY2(ok, qPrintable(error));
+        QVERIFY(QFile::exists(marker));
+        QCOMPARE(calls.size(), 1);
+
+        // Stopped already: straight to the helper, and its failure comes back.
+        qputenv("RESET_EXIT", "1");
+        finished = false;
+        runtime.reset([&](bool o, const QString &e) { finished = true; ok = o; error = e; });
+        QTRY_VERIFY(finished);
+        qunsetenv("RESET_EXIT");
+        QVERIFY(!ok);
+        QCOMPARE(error, QStringLiteral("Android's data couldn't be removed"));
+
+        Runtime missing({QString(), QString(), dir.path(), {dir.filePath(QStringLiteral("no-such-helper"))}},
+                        [](const QString &) {});
+        finished = false;
+        missing.reset([&](bool o, const QString &e) { finished = true; ok = o; error = e; });
+        QTRY_VERIFY(finished);
+        QVERIFY(!ok);
+        QCOMPARE(error, QStringLiteral("Resetting Android isn't available"));
     }
 
     void cleansReplies() {

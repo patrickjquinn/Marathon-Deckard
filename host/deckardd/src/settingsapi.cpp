@@ -171,5 +171,9 @@ void SettingsApi::SetSpecialAccess(const QString &kind, const QString &pkg, bool
 }
 
 void SettingsApi::ResetAndroid(const QDBusMessage &message) {
-    forward(message, QStringLiteral("reset"), {}, QString());
+    m_callers->require(message, privileged(), [this, message] {
+        m_runtime->reset([this, message](bool ok, const QString &error) {
+            m_bus.send(ok ? message.createReply() : message.createErrorReply(kFailed, error));
+        });
+    });
 }

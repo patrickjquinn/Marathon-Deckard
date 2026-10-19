@@ -67,6 +67,8 @@ if(BUILD_TESTING)
     add_executable(test_settingsapi tests/test_settingsapi.cpp)
     target_link_libraries(test_settingsapi PRIVATE deckardcore Qt6::Test)
     add_test(NAME settingsapi COMMAND test_settingsapi)
+    add_test(NAME reset_helper COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/tests/test-deckard-reset.sh
+                                          ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/deckard-reset)
     add_executable(test_keelapps tests/test_keelapps.cpp)
     target_link_libraries(test_keelapps PRIVATE deckardcore Qt6::Test)
     add_test(NAME keelapps COMMAND test_keelapps)

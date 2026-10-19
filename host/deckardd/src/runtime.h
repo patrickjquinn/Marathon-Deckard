@@ -2,6 +2,7 @@
 
 #include <QDBusConnection>
 #include <QObject>
+#include <QStringList>
 #include <QVariantMap>
 
 #include <functional>
@@ -17,9 +18,15 @@ class Runtime : public QObject {
         QString memory;       // the container cgroup's memory.current
         QString policy;       // deckardd's settings, JSON
         QString applications; // where Waydroid writes waydroid.<pkg>.desktop
+        // The root helper that removes Android's data, as a command; by default
+        // pkexec /usr/libexec/deckard-reset, or $DECKARD_RESET_HELPER.
+        QStringList reset;
     };
     // StartUnit, StopUnit or RestartUnit of the session unit.
     using UnitCall = std::function<void(const QString &method)>;
+    using Done     = std::function<void(bool ok, const QString &error)>;
+
+    static constexpr int kStopTimeoutMs = 90000;
 
     explicit Runtime(Paths paths, UnitCall unitCall, QObject *parent = nullptr);
 
@@ -34,6 +41,8 @@ class Runtime : public QObject {
     void restart();
     void setStartAtLogin(bool on);
     void atLogin();
+    // Stops Android, then runs the reset helper; the next start sets Android up again.
+    void reset(Done done);
 
   public Q_SLOTS:
     // systemd's ActiveState and ActiveEnterTimestamp (ms since the epoch).
@@ -51,6 +60,9 @@ class Runtime : public QObject {
     qint64   m_enteredMs = 0;
     bool     m_android   = false;
     QString  m_version;
+    bool     m_resetting = false;
+
+    void runReset(Done done);
 };
 
 // Follows marathon-waydroid.service through the user's systemd and feeds
