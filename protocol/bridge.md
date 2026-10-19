@@ -569,6 +569,9 @@ failure in Android is `org.marathonos.Deckard1.Error.Failed` with its message.
 | `ForceStop(s pkg)`, `ClearCache(s pkg)`, `ClearData(s pkg)` | |
 | `GetSpecialAccess(s kind) → aa{sv}` | The person's apps that can have it: `{pkg, label, granted}` |
 | `SetSpecialAccess(s kind, s pkg, b granted)` | |
+| `GetGoogleServices() → a{sv}` | microG (docs/microg.md): `installed`, `enabled`, `push` (microG's cloud messaging; false while microG is off), `accounts` (as, the Google accounts' names, at most 10) |
+| `SetGoogleServices(s key, b enabled)` | `enabled`: microG Services and Companion on or off (`setApplicationEnabledSetting`); `push`: its cloud messaging, which connects or disconnects at once |
+| `OpenGoogleServices(s page)` | `account`: microG's sign-in (`AccountManager.addAccount("com.google")`); `selfcheck`: microG's self-check. Each opens as an Android window. |
 | `ResetAndroid()` | Stops the session, then runs `pkexec /usr/libexec/deckard-reset` (polkit action `org.marathonos.deckard.reset`, allowed for the active session), which removes Android's data so the next start sets Android up again. Replies when the helper is done. |
 
 Signals: `RuntimeChanged(a{sv})` with `GetRuntime`'s map, `AppChanged(s pkg)`
@@ -623,11 +626,12 @@ runs as Android's system uid, so Android's own checks admit them
 
 | `t` | Fields | |
 |---|---|---|
-| `manage` (host to Android) | `id`, `op`, then per op | `info`; `app`, `stop`, `cache`, `clear` with `pkg`; `perm` with `pkg`, `permissions` (Android names), `granted`; `perm_apps` with `permissions`; `notif_apps`; `notifications`, `links` with `pkg`, `enabled`; `battery` with `pkg`, `mode`; `special` with `kind`; `special_set` with `kind`, `pkg`, `granted` |
-| `managed` (Android to host) | `id`, `ok`, `error` or the answer | `info`: `release`, `sdk`. `app`: `GetApp`'s fields, with `perms` (`{name, granted, fixed}` for each runtime permission the app asks for, by Android name) in place of `permissions`. `special`, `perm_apps`, `notif_apps`: `apps`. |
+| `manage` (host to Android) | `id`, `op`, then per op | `info`; `app`, `stop`, `cache`, `clear` with `pkg`; `perm` with `pkg`, `permissions` (Android names), `granted`; `perm_apps` with `permissions`; `notif_apps`; `notifications`, `links` with `pkg`, `enabled`; `battery` with `pkg`, `mode`; `special` with `kind`; `special_set` with `kind`, `pkg`, `granted`; `gms`; `gms_set` with `key`, `enabled`; `gms_open` with `page` |
+| `managed` (Android to host) | `id`, `ok`, `error` or the answer | `info`: `release`, `sdk`. `app`: `GetApp`'s fields, with `perms` (`{name, granted, fixed}` for each runtime permission the app asks for, by Android name) in place of `permissions`. `special`, `perm_apps`, `notif_apps`: `apps`. `gms`: `installed`, `enabled`, `push`, `accounts`. |
 
 DeckardSystem refuses every per-app op on packages with `FLAG_SYSTEM`, so
-only apps the person installed are changed. deckardd answers a request with
+only apps the person installed are changed; the `gms` ops act on microG
+alone (`GoogleServices.java`). deckardd answers a request with
 an error after 30 s without a reply or when the channel drops, keeps at most
 32 waiting, and cleans each answer (`ManageCheck`, `tests/test_settingsapi.cpp`):
 labels at most 128 characters, sizes 0 to 2^50, only known groups and kinds,

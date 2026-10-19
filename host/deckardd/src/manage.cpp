@@ -148,6 +148,29 @@ namespace ManageCheck {
                 {QStringLiteral("sdk"), qBound(0, r.value(QStringLiteral("sdk")).toInt(), 99)}};
     }
 
+    QVariantMap googleServices(const QJsonObject &r) {
+        QStringList     accounts;
+        const QJsonArray list = r.value(QStringLiteral("accounts")).toArray();
+        for (const QJsonValue &a : list) {
+            const QString name = Validate::text({{QStringLiteral("a"), a}}, QStringLiteral("a"), 254).trimmed();
+            if (!name.isEmpty() && !name.contains(QLatin1Char('\n')) && accounts.size() < 10)
+                accounts.append(name);
+        }
+        const bool enabled = r.value(QStringLiteral("enabled")).toBool();
+        return {{QStringLiteral("installed"), r.value(QStringLiteral("installed")).toBool()},
+                {QStringLiteral("enabled"), enabled},
+                {QStringLiteral("push"), enabled && r.value(QStringLiteral("push")).toBool()},
+                {QStringLiteral("accounts"), accounts}};
+    }
+
+    bool isGoogleSetting(const QString &key) {
+        return key == QLatin1String("enabled") || key == QLatin1String("push");
+    }
+
+    bool isGooglePage(const QString &page) {
+        return page == QLatin1String("account") || page == QLatin1String("selfcheck");
+    }
+
 } // namespace ManageCheck
 
 Manage::Manage(Send send, QObject *parent)

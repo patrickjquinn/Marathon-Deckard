@@ -207,3 +207,22 @@ void SettingsApi::ResetAndroid(const QDBusMessage &message) {
         });
     });
 }
+
+// microG (docs/microg.md): key "enabled" or "push"; page "account" (sign in)
+// or "selfcheck".
+QVariantMap SettingsApi::GetGoogleServices(const QDBusMessage &message) {
+    forward(message, QStringLiteral("gms"), {}, QString(),
+            [](const QJsonObject &reply) { return QVariant(ManageCheck::googleServices(reply)); });
+    return {};
+}
+
+void SettingsApi::SetGoogleServices(const QString &key, bool enabled, const QDBusMessage &message) {
+    if (!invalid(message, !ManageCheck::isGoogleSetting(key)))
+        forward(message, QStringLiteral("gms_set"), {{QStringLiteral("key"), key}, {QStringLiteral("enabled"), enabled}},
+                QString());
+}
+
+void SettingsApi::OpenGoogleServices(const QString &page, const QDBusMessage &message) {
+    if (!invalid(message, !ManageCheck::isGooglePage(page)))
+        forward(message, QStringLiteral("gms_open"), {{QStringLiteral("page"), page}}, QString());
+}

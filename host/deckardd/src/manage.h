@@ -23,6 +23,10 @@ namespace ManageCheck {
     // perm_apps or notif_apps: {pkg, label, granted, fixed}.
     QVariantList permissionApps(const QJsonObject &reply);
     QVariantMap  info(const QJsonObject &reply);
+    // gms: microG's {installed, enabled, push, accounts (as)}.
+    QVariantMap  googleServices(const QJsonObject &reply);
+    bool         isGoogleSetting(const QString &key);
+    bool         isGooglePage(const QString &page);
 
 } // namespace ManageCheck
 

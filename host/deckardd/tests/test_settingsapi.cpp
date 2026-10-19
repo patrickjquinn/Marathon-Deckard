@@ -245,6 +245,18 @@ class TestSettingsApi : public QObject {
                                                  QJsonObject{{QStringLiteral("pkg"), QStringLiteral("$x")}}}}});
         QCOMPARE(special.size(), 1);
         QCOMPARE(special[0].toMap().value(QStringLiteral("label")).toString(), QStringLiteral("a.b"));
+
+        // Push only counts while microG is on; at most ten accounts, one line each.
+        QJsonArray accounts{QStringLiteral("a@b.c\nd"), QStringLiteral("  "), QString(300, QLatin1Char('x'))};
+        for (int i = 0; i < 12; ++i)
+            accounts.append(QStringLiteral("n%1@gmail.com").arg(i));
+        const QVariantMap gms = ManageCheck::googleServices(
+            {{QStringLiteral("installed"), true}, {QStringLiteral("enabled"), false}, {QStringLiteral("push"), true},
+             {QStringLiteral("accounts"), accounts}});
+        QVERIFY(!gms.value(QStringLiteral("push")).toBool());
+        const QStringList names = gms.value(QStringLiteral("accounts")).toStringList();
+        QCOMPARE(names.size(), 10);
+        QCOMPARE(names.first().size(), 254);
     }
 
     void matchesAnswersById() {
@@ -314,6 +326,11 @@ class TestSettingsApi : public QObject {
                 r.insert(QStringLiteral("apps"), QJsonArray{QJsonObject{{QStringLiteral("pkg"), QStringLiteral("org.fdroid.fdroid")},
                                                                         {QStringLiteral("label"), QStringLiteral("F-Droid")},
                                                                         {QStringLiteral("granted"), true}}});
+            } else if (op == QLatin1String("gms")) {
+                r.insert(QStringLiteral("installed"), true);
+                r.insert(QStringLiteral("enabled"), true);
+                r.insert(QStringLiteral("push"), true);
+                r.insert(QStringLiteral("accounts"), QJsonArray{QStringLiteral("someone@gmail.com")});
             } else if (op == QLatin1String("clear")) {
                 r.insert(QStringLiteral("ok"), false);
                 r.insert(QStringLiteral("error"), QStringLiteral("no such app"));
@@ -350,6 +367,9 @@ class TestSettingsApi : public QObject {
                  {QStringLiteral("SetStartAtLogin"), {true}},
                  {QStringLiteral("GetApp"), {QStringLiteral("org.fdroid.fdroid")}},
                  {QStringLiteral("ClearData"), {QStringLiteral("org.fdroid.fdroid")}},
+                 {QStringLiteral("GetGoogleServices"), {}},
+                 {QStringLiteral("SetGoogleServices"), {QStringLiteral("push"), false}},
+                 {QStringLiteral("OpenGoogleServices"), {QStringLiteral("account")}},
                  {QStringLiteral("ResetAndroid"), {}}}) {
             r = call(method, args);
             QCOMPARE(r.type(), QDBusMessage::ErrorMessage);
@@ -418,6 +438,28 @@ class TestSettingsApi : public QObject {
         QCOMPARE(r.errorName(), QStringLiteral("org.marathonos.Deckard1.Error.Failed"));
         QCOMPARE(r.errorMessage(), QStringLiteral("no such app"));
         QCOMPARE(appChanged.size(), 2);
+
+        // microG: two settings and two of its pages, nothing else.
+        const int before = appChanged.size();
+        r = call(QStringLiteral("GetGoogleServices"));
+        QCOMPARE(r.type(), QDBusMessage::ReplyMessage);
+        const QVariantMap gms = map(r.arguments().value(0));
+        QVERIFY(gms.value(QStringLiteral("enabled")).toBool());
+        QCOMPARE(gms.value(QStringLiteral("accounts")).toStringList(), QStringList{QStringLiteral("someone@gmail.com")});
+        QCOMPARE(sent.last().value(QStringLiteral("op")).toString(), QStringLiteral("gms"));
+        QCOMPARE(call(QStringLiteral("SetGoogleServices"), {QStringLiteral("push"), false}).type(), QDBusMessage::ReplyMessage);
+        QCOMPARE(sent.last().value(QStringLiteral("op")).toString(), QStringLiteral("gms_set"));
+        QCOMPARE(sent.last().value(QStringLiteral("key")).toString(), QStringLiteral("push"));
+        QCOMPARE(sent.last().value(QStringLiteral("enabled")).toBool(), false);
+        QCOMPARE(call(QStringLiteral("OpenGoogleServices"), {QStringLiteral("selfcheck")}).type(), QDBusMessage::ReplyMessage);
+        QCOMPARE(sent.last().value(QStringLiteral("page")).toString(), QStringLiteral("selfcheck"));
+        const qsizetype count = sent.size();
+        QCOMPARE(call(QStringLiteral("SetGoogleServices"), {QStringLiteral("droidguard"), true}).errorName(),
+                 QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"));
+        QCOMPARE(call(QStringLiteral("OpenGoogleServices"), {QStringLiteral("settings")}).errorName(),
+                 QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"));
+        QCOMPARE(sent.size(), count);
+        QCOMPARE(appChanged.size(), before);
 
         manage.setConnected(false);
         r = call(QStringLiteral("ForceStop"), {QStringLiteral("org.fdroid.fdroid")});

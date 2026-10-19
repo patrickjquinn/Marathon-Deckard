@@ -50,6 +50,10 @@ class SettingsApi : public QDBusAbstractAdaptor {
 
     void ResetAndroid(const QDBusMessage &message);
 
+    QVariantMap GetGoogleServices(const QDBusMessage &message);
+    void        SetGoogleServices(const QString &key, bool enabled, const QDBusMessage &message);
+    void        OpenGoogleServices(const QString &page, const QDBusMessage &message);
+
   Q_SIGNALS:
     void RuntimeChanged(const QVariantMap &runtime);
     void AppChanged(const QString &pkg);
