@@ -115,6 +115,8 @@ final class HostLink {
             finish(m.optString("id"), m);
         else if ("manage".equals(m.optString("t")))
             Manage.handle(m);
+        else if ("keel".equals(m.optString("t")))
+            AppActions.handle(m);
         else if ("focus".equals(m.optString("t")))
             WindowFit.focus(m.optString("pkg"));
     }
