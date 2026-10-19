@@ -410,6 +410,37 @@ crash in the crash buffer, the intents resolved as expected.
 |---|---|---|---|---|---|---|---|---|---|---|
 | S0 | 466 | 72 | 117 | 1,063 MB | 92 | 165 | 20.7 s (36.2 s in an earlier S0 boot) | 0.07 % | 63 | all 5 OK |
 | S1 | 413 | 70 | 94 | 978 MB | 80 | 71 | 12.0 s | 0.07 % | 63 | all 5 OK |
+| S2 | 371 | 73 | 90 | 874 MB | 78 | 71 | 11.6 s | 0.07 % | 63 | all 5 OK |
+| S3 | 335 | 31 | 85 | 786 MB | 76 | 71 | 16.4 s | 0.06 % | 62 | all 5 OK; per-task windows, focus and Settings' all-files page work without SystemUI |
+| S4 | 338 | 33 | 88 | 795 MB | 78 | 65 | 11.7 s | 0.07 % | 62 | all 5 OK; links → Marathon Browser, app details → Marathon Settings, DIAL → Marathon Phone (screenshots) |
+| S5 | 321 | 33 | 80 | 764 MB | 74 | 58 | 21.2 s | 0.06 % | 62 | all 5 OK; `phone`, `isub`, `telecom` services absent |
+| S6 | 316 | 39 | 78 | 751 MB | 73 | 54 | 16.3 s | (0.24 %) | (98) | all 5 OK; CPU window overlapped a shell redeploy, to repeat |
+
+Boot times vary by several seconds run to run (the composer HAL aborts
+once at every session start, "Binder threadpool cannot be shrunk after
+starting", and Android waits for it); only differences of 10 s or more
+mean anything.
+
+Fixed on the way:
+
+- **S2.** `disabled` doesn't hold `zygote_secondary`: init.rc starts it by
+  name on `zygote-start`. With the 32-bit list empty, app_process32 aborts
+  ("Unable to determine ABI list from property ro.product.cpu.abilist32"),
+  and its `onrestart restart zygote` took system_server down in a loop. The
+  overlay's rc now gives it `/system/bin/true`, oneshot. The 64-bit zygote
+  doesn't wait for it, because its ABI list equals `ro.product.cpu.abilist`.
+  The props must never reach a device without that rc, so they moved from
+  the device seed into the deckard package (`image/waydroid.prop`, written
+  by `deckard-overlay-sync`).
+- **S3.** With no ImageWallpaper, WindowManager held `boot_completed` for its
+  30 s `BOOT TIMEOUT` waiting for a wallpaper window. `DeckardSlimRes` (a
+  separate static RRO on `android`) sets `config_checkWallpaperAtBoot`
+  false.
+- **S4.** The FileChooser portal is called, but xdg-desktop-portal-gtk's
+  dialog never appears on Marathon's screen ("Unhandled parent window type").
+  Marathon needs to show that toplevel or provide its own
+  `org.freedesktop.impl.portal.FileChooser`; deckardd now closes the portal
+  request when the app gives up.
 
 Rolled back:
 
