@@ -270,6 +270,10 @@ final class WindowFit {
                 if (isFocused(root)) return;
                 int taskId = intField(root, "taskId");
                 setFocusedTask.invoke(atm, taskId);
+                // Focus alone leaves the window order: touches go by that.
+                Object wct = wctClass.newInstance();
+                wctReorder.invoke(wct, root.getClass().getField("token").get(root), true);
+                applyTransaction.invoke(windowOrganizer, wct);
                 Log.i(TAG, "focused task " + taskId + " for " + pkg);
                 return;
             }
