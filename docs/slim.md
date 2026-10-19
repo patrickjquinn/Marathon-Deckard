@@ -399,6 +399,21 @@ settings actions.
 
 Phase 2 fills this in.
 
-| Stage | Anon + shmem + kernel | PSS total | Processes | Boot | Idle CPU | Context switches/s | Apps |
-|---|---|---|---|---|---|---|---|
-| S0 | | | | | | | |
+Measured with the five F-Droid apps installed (165 packages at S0), no app
+open, 2 minutes after `sys.boot_completed`, a 60 s CPU window. Anon, shmem
+and kernel are the container cgroup's `memory.stat` in MiB; PSS is summed
+from every container process's `smaps_rollup`; boot is session start to
+`sys.boot_completed=1`. "Apps": the five apps launched (`am start -W`), no
+crash in the crash buffer, the intents resolved as expected.
+
+| Stage | Anon | Shmem | Kernel | PSS total | Processes | Packages | Boot | Idle CPU (one core) | Context switches/s | Apps |
+|---|---|---|---|---|---|---|---|---|---|---|
+| S0 | 466 | 72 | 117 | 1,063 MB | 92 | 165 | 20.7 s (36.2 s in an earlier S0 boot) | 0.07 % | 63 | all 5 OK |
+| S1 | 413 | 70 | 94 | 978 MB | 80 | 71 | 12.0 s | 0.07 % | 63 | all 5 OK |
+
+Rolled back:
+
+- **ModuleMetadata (S1).** Without it system_server dies in a loop at
+  boot: `AppRestrictionController.onSystemReady` calls `getInstalledModules`,
+  and `ModuleInfoProvider` throws "Call to getInstalledModules before
+  metadata loaded" when there is no metadata package.
