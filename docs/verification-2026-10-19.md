@@ -287,3 +287,45 @@ Re-check cleanup: Page installed and removed; Notify Test updated in place and
 kept. Markor's `MANAGE_EXTERNAL_STORAGE` (granted for the share test) is back
 to default. The test document, picture, APK copy and this run's three
 `xfer/` folders were deleted.
+
+## Verification pass (shell 33029a76, deckard 7935771)
+
+From 17:36 to 18:26 on the HackberryPi, driven through touchd, D-Bus and
+Keel, with a screenshot and the journal or logcat for each step. The fixes
+made during the pass were deployed and re-checked on the device: shell
+ce393d17 (hot deploy), deckardd and DeckardSystem.apk from 4c8be9e, the
+Store and its handler from f6ffbec3's tree, and Marathon-Shell a10ec2b0's
+WirePlumber drop-in.
+
+| Item | Result | Evidence |
+|---|---|---|
+| 1 Marathon's prompt, Catima camera | **PASS after a fix**. CAMERA revoked and flags cleared first. Marathon's prompt showed. Deny: `granted=false, USER_SET`, `clickedButton=8`. Allow: `granted=true`. Home: `result=11`, no flag. Back set `USER_SET` like a Deny (17:41:45, `result=6`); fixed in ce393d17 (Back on Android's question cancels it). After the fix (18:13), Back left `granted=false` with no `USER_SET`, and Catima showed its no-camera screen | [final-prompts](verification-2026-10-19/final-prompts.png) tiles 1, 5 |
+| 1 deckardd stopped | **PASS**. Android's own "Allow Catima to take pictures" dialog | tile 2 |
+| 1 FOSS Browser location | **PASS**. browserleaks.com/geo with the site's Location setting on. Marathon's prompt with Precise location. Allow: FINE and COARSE `granted=true, USER_SET` | tile 3 |
+| 1 Feeder notifications | **PASS**. "Notify for new items" → Marathon's prompt; Allow → POST_NOTIFICATIONS `granted=true, USER_SET` | tile 4 |
+| 2 App permissions | **PASS**. Settings › Security › App permissions › Camera lists Catima and FOSS Browser; turning Catima off revokes `android.permission.CAMERA` (`granted=false, USER_SET`), and Catima's own page shows Camera off | [final-app-permissions](verification-2026-10-19/final-app-permissions.png) |
+| 3 F4 notification tap | **PASS**. Notify Test shows "opened from: chat". The top resumed activity is that TestActivity; no launcher start follows | [final-recheck](verification-2026-10-19/final-recheck.png) tile 1 |
+| 3 F5 Hub reply | **PASS**. The field takes "On it" and Send is enabled; the app logs `event reply reply="On it"` (17:55:03) | tile 2 |
+| 3 F9 card labels | **PASS**. Settings, Catima and Feeder cards each carry their own label and content | tile 3 |
+| 3 af89d929 taps after `waydroid app launch com.android.settings` | **FAIL, fixed**. With Files in front, Android's focus moved to Settings' hidden task and taps went there (18:01, `task 176 focused`). Fixed in Marathon-Deckard 2a2b1fd (deckardd always sends the front app, empty when it isn't Android's; WindowFit takes focus back after 1 s), 39cccc9 (the focus also raises the task) and 4c8be9e (the rebuilt APK). Re-check at 18:18 with that deckardd and APK: `mCurrentFocus` stays on Files and a tap on Alarms opens it | tile 4 |
+| 4 Gallery | **PASS**. A picture saved by Android into `/sdcard/Pictures` showed in Gallery's Photos (4 photos); deleted afterwards | [final-gallery-emoji-store](verification-2026-10-19/final-gallery-emoji-store.png) tile 1 |
+| 5 Colour emoji | **PASS**, no change needed. A Hub notification "Emoji check 😀🎉" with "Smile 😀 party 🎉 heart ❤️" draws in colour | tile 2 |
+| 6 Compatibility check | **PASS after deploying f6ffbec3**. The device's handler and Store predated it (no `android-device.json`, no features in `fdroid.json`). After deploying them and a fresh `fdroid-sync`, 413 catalogue apps list features. Fossify Messages (needs `android.hardware.telephony`) shows "Needs a phone radio" under Get. Blocks were not seen, because the catalogue already leaves out versions that can't run; only an .apk file can show them | tile 3 |
+| 7 Bluetooth chime on a shell restart | **Cause found, fixed**. WirePlumber's BlueZ monitor follows the logind seat (`monitor.bluez.seat-monitoring`, on by default). When greetd's session ends, it unregisters its A2DP endpoints (18:12:18, sender `:1.19989` → `:1.20740`), BlueZ drops the speaker, and `marathon-hackberry-speaker` reconnects it, so the speaker chimes. Marathon-Shell a10ec2b0 adds `62-marathon-bluetooth.conf`, which turns seat monitoring off for the main profile. Re-check: the speaker unblocked and reconnected, then one greetd restart (18:25:44). It stayed `Connected: yes` in every 0.5 s sample, no endpoint was unregistered, and the PipeWire device (32) and sink (69) kept their ids | journal, `bluetoothctl info`, `wpctl status` |
+
+Still open after the pass:
+
+- The deckard APKBUILD still pins b01481d; it needs 4c8be9e once
+  Marathon-Deckard is pushed. Until then the device has hand-deployed files
+  in `/usr`: deckardd, the Store handler and Store libraries, the WirePlumber
+  drop-in, and DeckardSystem.apk in the live overlay.
+- The Store's Keel `apps.show` with an `android:` id opened an empty page on
+  a cold Store; from search, the page is fine.
+- In the Alpine build container, deckardd's `share` and `keelapps` tests fail
+  because the container has no `dbus-daemon`. They are not affected by these
+  changes.
+
+Cleanup: FOSS Browser's site Location setting is back off. Catima's CAMERA is
+revoked with no flags. Feeder's notifications are allowed. The speaker is
+unblocked and connected. The device's temporary files and the deckard locks
+are removed.
