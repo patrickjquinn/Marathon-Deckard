@@ -50,13 +50,32 @@ The first three are Keel pages of `app.show`.
   looked at.
 - DeckardSystem compiles and is signed with the platform key.
 
-## Not yet verified on the device
+## On the HackberryPi (2026-10-19, deckard 35812d0)
 
-Everything Android-side: the hidden-API calls in `Manage.java` (grant and
-revoke, `setNotificationsEnabledForPackage`, domain verification, deviceidle,
-`forceStopPackage`, cache and data, app ops, listeners, admins), sizes from
-StorageStatsManager on Waydroid's bind-mounted `/data`, and the caller check
-against the live shell; whether polkit treats deckardd (a user service,
-outside the logind session) as the active session for
-`org.marathonos.deckard.reset`; how long Android's first boot after a reset
-takes.
+Driven from Settings itself (Keel `app.show`, taps), checked against
+`dumpsys package`, `pm get-app-links`, `dumpsys deviceidle`, `appops` and
+logcat:
+
+| What | Result |
+|---|---|
+| Android apps page | state, Android 13, memory (0.6 to 1.5 GB), uptime, start at login; starting shown while Android boots |
+| Apps list, icons, Installed apps rows | the six installed apps with their icons; a newly installed app appears without reopening (PackageChanged) |
+| App page | version, permission groups, notifications, links (domains), battery, sizes all match Android |
+| Camera, notifications on and off | granted/revoked, flags `USER_SET` |
+| Open supported links off and on | domains Disabled / back |
+| Battery unrestricted and back | on and off the deviceidle allowlist |
+| Clear cache, clear data (remorse), force stop | done by Android (`clearApplicationUserData`, `Force stopping … from pid` DeckardSystem) |
+| Special access, all 12 kinds | load without errors; install other apps granted (`REQUEST_INSTALL_PACKAGES: allow`); alarms shows the default grant |
+| Caller check | Settings passes; busctl from the user's shell is refused |
+| Reset Android | pkexec from deckardd (a user service) is allowed by polkit; Android's data gone except `deckard/`; container restarted; Settings shows Stopped |
+| Uninstall from Installed apps | **fails**: Packages.UninstallPackage reports "Android asked for a confirmation" (DeckardBridge has DELETE_PACKAGES granted). Bridge agent's. |
+
+After the reset, the first session start hung: the composer HAL connected
+to Wayland but never registered, SurfaceFlinger waited for it and
+system_server restarted waiting (load near 0, 6 minutes). Stopping and
+starting the session once booted Android in about 10 s. Not seen on
+normal starts; to watch on the next reset.
+
+Fixed from the run: Settings kept listing the old apps after a reset
+(Android stopped, so ListPackages can't answer); permission groups came
+in HashMap order.
