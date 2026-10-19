@@ -152,7 +152,7 @@ namespace KeelAndroid {
             *error = QStringLiteral("bad package name");
             return std::nullopt;
         }
-        a.label = Validate::text(m, QStringLiteral("label"), 128).simplified();
+        a.label = Validate::label(m, QStringLiteral("label"));
         if (a.label.isEmpty())
             a.label = a.pkg;
 
@@ -177,20 +177,26 @@ namespace KeelAndroid {
         if (search == QLatin1String("gms") || search == QLatin1String("android"))
             a.search = search;
 
-        QSet<QString> ids;
-        for (const QJsonValue &v : m.value(QStringLiteral("shortcuts")).toArray()) {
+        a.shortcuts = shortcuts(m.value(QStringLiteral("shortcuts")).toArray());
+        return a;
+    }
+
+    QList<Shortcut> shortcuts(const QJsonArray &list) {
+        QList<Shortcut> out;
+        QSet<QString>   ids;
+        for (const QJsonValue &v : list) {
             const QJsonObject o  = v.toObject();
             const QString     id = o.value(QStringLiteral("id")).toString();
             Shortcut          s{id, Validate::text(o, QStringLiteral("label"), 64).simplified(),
                        Validate::text(o, QStringLiteral("long"), 256).simplified()};
             // The id goes back to Android as it came: it must be clean already.
             if (id.isEmpty() || id.size() > 128 || Validate::text(o, QStringLiteral("id"), 128) != id ||
-                s.label.isEmpty() || ids.contains(id) || a.shortcuts.size() >= 15)
+                s.label.isEmpty() || ids.contains(id) || out.size() >= 15)
                 continue;
             ids.insert(id);
-            a.shortcuts << s;
+            out << s;
         }
-        return a;
+        return out;
     }
 
     QJsonObject toJson(const App &a) {
@@ -579,10 +585,11 @@ QString KeelProvider::GetContext() {
     return {};
 }
 
-KeelApps::KeelApps(Send send, Connect connect, QDBusConnection shell, QStringList trusted,
+KeelApps::KeelApps(Send send, Send system, Connect connect, QDBusConnection shell, QStringList trusted,
                    const QString &statePath, QObject *parent)
     : QObject(parent)
     , m_send(std::move(send))
+    , m_system(std::move(system))
     , m_connect(std::move(connect))
     , m_shell(std::move(shell))
     , m_trusted(std::move(trusted))
@@ -614,6 +621,74 @@ void KeelApps::handle(const QString &type, const QJsonObject &message) {
         onReply(message);
 }
 
+bool KeelApps::handlesSystem(const QString &type) {
+    return type == QLatin1String("keel_done") || type == QLatin1String("keel_changed");
+}
+
+void KeelApps::handleSystem(const QString &type, const QJsonObject &message) {
+    if (type == QLatin1String("keel_changed")) {
+        const QString pkg = message.value(QStringLiteral("pkg")).toString();
+        if (m_apps.contains(pkg))
+            refreshShortcuts(pkg);
+        return;
+    }
+    const qint64 id = qint64(message.value(QStringLiteral("req")).toDouble());
+    auto         it = m_requests.find(id);
+    if (it == m_requests.end() || !it->sent || !it->system)
+        return;
+    Request r = m_requests.take(id);
+    delete r.timer;
+    r.done(true, message);
+}
+
+void KeelApps::setSystemConnected(bool connected) {
+    connectedChanged(true, connected);
+    if (connected) {
+        for (const QString &pkg : m_apps.keys())
+            refreshShortcuts(pkg);
+    }
+}
+
+// Launcher shortcuts come from DeckardSystem, which as the system uid may
+// read and start every app's: DeckardBridge may not.
+void KeelApps::refreshShortcuts(const QString &pkg) {
+    if (!m_systemConnected)
+        return;
+    request({{QStringLiteral("t"), QStringLiteral("keel")},
+             {QStringLiteral("op"), QStringLiteral("shortcuts")},
+             {QStringLiteral("pkg"), pkg}},
+            [this, pkg](bool ok, const QJsonObject &reply) {
+                auto it = m_apps.find(pkg);
+                if (!ok || !reply.value(QStringLiteral("ok")).toBool() || it == m_apps.end())
+                    return;
+                App a       = it->app;
+                a.shortcuts = shortcuts(reply.value(QStringLiteral("shortcuts")).toArray());
+                publish(a);
+                save();
+            },
+            true);
+}
+
+void KeelApps::notSecure(const QString &pkg, Done done) {
+    if (!m_systemConnected)
+        return done(QStringLiteral("NotAvailable"),
+                    QStringLiteral("Android cannot say whether the screen is protected"));
+    const QString label = m_apps.value(pkg).app.label;
+    request({{QStringLiteral("t"), QStringLiteral("keel")},
+             {QStringLiteral("op"), QStringLiteral("secure")},
+             {QStringLiteral("pkg"), pkg}},
+            [label, done = std::move(done)](bool ok, const QJsonObject &reply) {
+                if (!ok || !reply.value(QStringLiteral("ok")).toBool())
+                    return done(QStringLiteral("NotAvailable"),
+                                QStringLiteral("Android cannot say whether the screen is protected"));
+                if (reply.value(QStringLiteral("secure")).toBool(true))
+                    return done(QStringLiteral("NotAvailable"),
+                                label + QStringLiteral(" protects this screen from being read"));
+                done({}, {});
+            },
+            true);
+}
+
 QStringList KeelApps::packages() const {
     QStringList out = m_apps.keys();
     out.sort();
@@ -640,8 +715,12 @@ void KeelApps::onApp(const QJsonObject &message) {
         qCWarning(lcKeel) << "app_info refused:" << error;
         return;
     }
-    publish(*a);
+    App merged = *a;
+    if (const auto it = m_apps.constFind(merged.pkg); it != m_apps.cend())
+        merged.shortcuts = it->app.shortcuts;
+    publish(merged);
     save();
+    refreshShortcuts(merged.pkg);
 }
 
 void KeelApps::onAppGone(const QString &pkg) {
@@ -737,15 +816,19 @@ void KeelApps::load() {
 }
 
 void KeelApps::setConnected(bool connected) {
-    m_connected = connected;
+    connectedChanged(false, connected);
+}
+
+void KeelApps::connectedChanged(bool system, bool connected) {
+    (system ? m_systemConnected : m_connected) = connected;
     const QList<qint64> ids = m_requests.keys();
     for (const qint64 id : ids) {
         auto it = m_requests.find(id);
-        if (it == m_requests.end())
+        if (it == m_requests.end() || it->system != system)
             continue;
         if (connected && !it->sent) {
             it->sent = true;
-            m_send(it->message);
+            (system ? m_system : m_send)(it->message);
         } else if (!connected && it->sent) {
             Request r = m_requests.take(id);
             delete r.timer;
@@ -754,25 +837,28 @@ void KeelApps::setConnected(bool connected) {
     }
 }
 
-void KeelApps::request(QJsonObject message, std::function<void(bool, const QJsonObject &)> done) {
+void KeelApps::request(QJsonObject message, std::function<void(bool, const QJsonObject &)> done,
+                       bool system) {
     const qint64 id = m_nextRequest;
     m_nextRequest   = m_nextRequest >= 2147483647 ? 1 : m_nextRequest + 1;
     message.insert(QStringLiteral("req"), double(id));
     Request r;
     r.message = message;
+    r.system  = system;
     r.done    = std::move(done);
     r.timer   = new QTimer(this);
     r.timer->setSingleShot(true);
-    connect(r.timer, &QTimer::timeout, this, [this, id] {
+    connect(r.timer, &QTimer::timeout, this, [this, id, system] {
         Request timedOut = m_requests.take(id);
         timedOut.timer->deleteLater();
-        timedOut.done(false, {{QStringLiteral("error"), m_connected ? QStringLiteral("Android did not answer")
-                                                                    : QStringLiteral("Android is not running")}});
+        const bool up = system ? m_systemConnected : m_connected;
+        timedOut.done(false, {{QStringLiteral("error"), up ? QStringLiteral("Android did not answer")
+                                                           : QStringLiteral("Android is not running")}});
     });
     r.timer->start(kBridgeTimeoutMs);
-    if (m_connected) {
+    if (system ? m_systemConnected : m_connected) {
         r.sent = true;
-        m_send(message);
+        (system ? m_system : m_send)(message);
     }
     m_requests.insert(id, r);
 }
@@ -780,7 +866,7 @@ void KeelApps::request(QJsonObject message, std::function<void(bool, const QJson
 void KeelApps::onReply(const QJsonObject &message) {
     const qint64 id = qint64(message.value(QStringLiteral("req")).toDouble());
     auto         it = m_requests.find(id);
-    if (it == m_requests.end() || !it->sent)
+    if (it == m_requests.end() || !it->sent || it->system)
         return;
     Request r = m_requests.take(id);
     delete r.timer;
@@ -844,10 +930,30 @@ void KeelApps::waitForWindow(const QString &id, int left, Done done) {
           });
 }
 
-// Android starts the activity first, in the app's task or a new one, and
-// then the shell brings that window forward: a launch through the shell
-// first would race Android's launcher intent against this one.
-void KeelApps::launchThenShow(const QString &pkg, const QJsonObject &launch, Done done) {
+// The shell's Navigation1.ExpectAppWindow(appId) (proposed): it shows the
+// app's window now and lets a new window of the app take the front for a
+// while, as for a launch from Marathon.
+void KeelApps::expectWindow(const QString &id, std::function<void(bool)> done) {
+    QDBusMessage call = QDBusMessage::createMethodCall(
+        QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+        QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("ExpectAppWindow"));
+    call << id;
+    auto *watcher = new QDBusPendingCallWatcher(m_shell.asyncCall(call, 5000), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this,
+            [done = std::move(done)](QDBusPendingCallWatcher *w) {
+                w->deleteLater();
+                const QDBusMessage reply = w->reply();
+                done(reply.type() == QDBusMessage::ReplyMessage && !reply.arguments().isEmpty() &&
+                     reply.arguments().constFirst().toBool());
+            });
+}
+
+// Android starts the activity, in the app's task or a new one. With a shell
+// that expects the window it comes forward as a launch; otherwise deckardd
+// waits for the shell to file it and asks app.launch to show it. A launch
+// through the shell first would race Android's launcher intent against
+// this one.
+void KeelApps::launchThenShow(const QString &pkg, const QJsonObject &launch, bool system, Done done) {
     const QString id   = appId(pkg);
     const auto    show = [this, id](const Done &then) {
         waitForWindow(id, kWindowWaitMs / 250, [this, id, then](const QString &code, const QString &message) {
@@ -868,18 +974,24 @@ void KeelApps::launchThenShow(const QString &pkg, const QJsonObject &launch, Don
             then({}, {});
         };
     };
-    if (m_connected) {
-        request(launch, launched([show, done](const QString &code, const QString &message) {
-                    code.isEmpty() ? show(done) : done(code, message);
-                }));
+    if (system ? m_systemConnected : m_connected) {
+        expectWindow(id, [this, launch, system, show, launched, done](bool expected) {
+            if (expected)
+                return request(launch, launched(done), system);
+            request(launch, launched([show, done](const QString &code, const QString &message) {
+                        code.isEmpty() ? show(done) : done(code, message);
+                    }),
+                    system);
+        });
         return;
     }
     // Android is not running: the shell's launch starts it.
     shell(QStringLiteral("app.launch"), {{QStringLiteral("id"), id}},
-          [this, launch, launched, done](bool ok, const QJsonObject &, const QString &code, const QString &message) {
+          [this, launch, system, launched, done](bool ok, const QJsonObject &, const QString &code,
+                                                 const QString &message) {
               if (!ok)
                   return done(code, message);
-              request(launch, launched(done));
+              request(launch, launched(done), system);
           });
 }
 
@@ -966,18 +1078,30 @@ void KeelApps::invoke(const QString &pkg, const QString &action, const QJsonObje
         launch.insert(QStringLiteral("query"), arg("query").trimmed());
         launch.insert(QStringLiteral("mode"), entry->app.search);
     } else if (entry->manifest.shortcuts.contains(action)) {
-        launch.insert(QStringLiteral("kind"), QStringLiteral("shortcut"));
-        launch.insert(QStringLiteral("id"), entry->manifest.shortcuts.value(action));
+        const QJsonObject start{{QStringLiteral("t"), QStringLiteral("keel")},
+                                {QStringLiteral("op"), QStringLiteral("start")},
+                                {QStringLiteral("pkg"), pkg},
+                                {QStringLiteral("id"), entry->manifest.shortcuts.value(action)}};
+        unlocked(pkg, false, [this, pkg, start, finish](const QString &code, const QString &message) {
+            if (!code.isEmpty())
+                return finish(code, message);
+            launchThenShow(pkg, start, true, finish);
+        });
+        return;
     } else if (action == QLatin1String("screen.read")) {
         if (external)
             return fail(QStringLiteral("NotAvailable"), QStringLiteral("screen content is not shared with a paired computer"));
         unlocked(pkg, true, [this, pkg, fail, reply](const QString &code, const QString &message) {
             if (!code.isEmpty())
                 return fail(code, message);
-            readScreen(pkg, kScreenChars,
-                       [fail, reply](const QString &code, const QString &message, const QJsonObject &result) {
-                           code.isEmpty() ? reply(result) : fail(code, message);
-                       });
+            notSecure(pkg, [this, pkg, fail, reply](const QString &code, const QString &message) {
+                if (!code.isEmpty())
+                    return fail(code, message);
+                readScreen(pkg, kScreenChars,
+                           [fail, reply](const QString &code, const QString &message, const QJsonObject &result) {
+                               code.isEmpty() ? reply(result) : fail(code, message);
+                           });
+            });
         });
         return;
     } else if (action == QLatin1String("ui.tap") || action == QLatin1String("ui.type")) {
@@ -1018,7 +1142,7 @@ void KeelApps::invoke(const QString &pkg, const QString &action, const QJsonObje
     unlocked(pkg, false, [this, pkg, launch, finish](const QString &code, const QString &message) {
         if (!code.isEmpty())
             return finish(code, message);
-        launchThenShow(pkg, launch, finish);
+        launchThenShow(pkg, launch, false, finish);
     });
 }
 
@@ -1032,14 +1156,18 @@ void KeelApps::context(const QString &pkg, bool external, const QDBusMessage &ca
     unlocked(pkg, true, [this, pkg, reply](const QString &code, const QString &) {
         if (!code.isEmpty())
             return reply({});
-        readScreen(pkg, kContextChars, [pkg, reply](const QString &code, const QString &, const QJsonObject &r) {
+        notSecure(pkg, [this, pkg, reply](const QString &code, const QString &) {
             if (!code.isEmpty())
                 return reply({});
-            reply({{QStringLiteral("app"), appId(pkg)},
-                   {QStringLiteral("purpose"),
-                    QStringLiteral("What %1 (an Android app) shows on screen now")
-                        .arg(r.value(QStringLiteral("label")).toString())},
-                   {QStringLiteral("text"), r.value(QStringLiteral("screen")).toString()}});
+            readScreen(pkg, kContextChars, [pkg, reply](const QString &code, const QString &, const QJsonObject &r) {
+                if (!code.isEmpty())
+                    return reply({});
+                reply({{QStringLiteral("app"), appId(pkg)},
+                       {QStringLiteral("purpose"),
+                        QStringLiteral("What %1 (an Android app) shows on screen now")
+                            .arg(r.value(QStringLiteral("label")).toString())},
+                       {QStringLiteral("text"), r.value(QStringLiteral("screen")).toString()}});
+            });
         });
     });
 }

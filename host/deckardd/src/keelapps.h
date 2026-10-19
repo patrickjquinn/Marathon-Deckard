@@ -4,6 +4,7 @@
 #include <QDBusContext>
 #include <QDBusMessage>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
@@ -40,6 +41,7 @@ namespace KeelAndroid {
         QList<Shortcut> shortcuts;
     };
     std::optional<App> app(const QJsonObject &message, QString *error);
+    QList<Shortcut>    shortcuts(const QJsonArray &list);
     QJsonObject        toJson(const App &app);
 
     QString appId(const QString &pkg);
@@ -135,15 +137,20 @@ class KeelApps : public QObject {
     static constexpr int kScreenChars      = 16000;
     static constexpr int kContextChars     = 4000;
 
-    // shell: where org.marathonos.shell serves its Keel Actions. trusted:
-    // executables whose calls are served (keel-mcp, pilotd), by file.
-    KeelApps(Send send, Connect connect, QDBusConnection shell, QStringList trusted,
+    // send: the bridge (DeckardBridge); system: the system channel
+    // (DeckardSystem: shortcuts, secure windows). shell: where
+    // org.marathonos.shell and org.marathonos.Shell are. trusted: executables
+    // whose calls are served (keel-mcp, pilotd), by file.
+    KeelApps(Send send, Send system, Connect connect, QDBusConnection shell, QStringList trusted,
              const QString &statePath, QObject *parent = nullptr);
     ~KeelApps() override;
 
     static bool handles(const QString &type);
     void        handle(const QString &type, const QJsonObject &message);
     void        setConnected(bool connected);
+    static bool handlesSystem(const QString &type);
+    void        handleSystem(const QString &type, const QJsonObject &message);
+    void        setSystemConnected(bool connected);
 
     QStringList packages() const;
     QJsonObject manifest(const QString &pkg) const;
@@ -160,6 +167,7 @@ class KeelApps : public QObject {
     };
     struct Request {
         QJsonObject                                     message;
+        bool                                            system = false;
         bool                                            sent = false;
         QTimer                                         *timer = nullptr;
         std::function<void(bool, const QJsonObject &)> done;
@@ -185,21 +193,28 @@ class KeelApps : public QObject {
     void    save() const;
     void    load();
 
-    void    request(QJsonObject message, std::function<void(bool, const QJsonObject &)> done);
+    void    request(QJsonObject message, std::function<void(bool, const QJsonObject &)> done,
+                    bool system = false);
+    void    connectedChanged(bool system, bool connected);
+    void    refreshShortcuts(const QString &pkg);
+    void    notSecure(const QString &pkg, Done done);
     void    shell(const QString &action, const QJsonObject &args, ShellDone done);
     void    unlocked(const QString &pkg, bool inFront, Done done);
-    void    launchThenShow(const QString &pkg, const QJsonObject &launch, Done done);
+    void    launchThenShow(const QString &pkg, const QJsonObject &launch, bool system, Done done);
     void    waitForWindow(const QString &appId, int left, Done done);
+    void    expectWindow(const QString &appId, std::function<void(bool expected)> done);
     void    readScreen(const QString &pkg, int maxChars,
                        std::function<void(const QString &code, const QString &message,
                                           const QJsonObject &result)> done);
 
     Send                       m_send;
+    Send                       m_system;
     Connect                    m_connect;
     QDBusConnection            m_shell;
     QStringList                m_trusted;
     QString                    m_statePath;
     bool                       m_connected = false;
+    bool                       m_systemConnected = false;
     qint64                     m_nextRequest = 1;
     int                        m_connections = 0;
     QHash<QString, Entry>      m_apps;

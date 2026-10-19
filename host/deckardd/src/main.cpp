@@ -55,6 +55,10 @@ int main(int argc, char *argv[]) {
 
     Bridge        bridge(data + QStringLiteral("/deckard/bridge.sock"),
                          data + QStringLiteral("/system/packages.list"));
+    // DeckardSystem runs as Android's system uid, which is also this user's.
+    Bridge        systemBridge(data + QStringLiteral("/deckard/system.sock"),
+                               data + QStringLiteral("/system/packages.list"),
+                               QByteArrayLiteral("org.marathonos.deckard.system"));
     Notifications notifications(&bridge, cache + QStringLiteral("/icons"),
                                 state + QStringLiteral("/notifications.json"));
     Mpris         mpris(&bridge, cache + QStringLiteral("/art"));
@@ -97,6 +101,7 @@ int main(int argc, char *argv[]) {
 
     // Each Android app as a Keel Actions provider for keel-mcp and Pilot.
     KeelApps keelApps([&bridge](const QJsonObject &message) { bridge.send(message); },
+                      [&systemBridge](const QJsonObject &message) { systemBridge.send(message); },
                       [](const QString &name) {
                           return QDBusConnection::connectToBus(QDBusConnection::SessionBus, name);
                       },
@@ -140,10 +145,6 @@ int main(int argc, char *argv[]) {
     if (!imeBridge.listen())
         return 1;
 
-    // DeckardSystem runs as Android's system uid, which is also this user's.
-    Bridge        systemBridge(data + QStringLiteral("/deckard/system.sock"),
-                               data + QStringLiteral("/system/packages.list"),
-                               QByteArrayLiteral("org.marathonos.deckard.system"));
     SystemIntents intents([&systemBridge](const QJsonObject &message) { systemBridge.send(message); },
                           data + QStringLiteral("/deckard/xfer"),
                           QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) +
@@ -156,6 +157,11 @@ int main(int argc, char *argv[]) {
         else
             intents.cancelAll();
     });
+    QObject::connect(&systemBridge, &Bridge::received, &keelApps, [&](const QString &type, const QJsonObject &message) {
+        if (KeelApps::handlesSystem(type))
+            keelApps.handleSystem(type, message);
+    });
+    QObject::connect(&systemBridge, &Bridge::connectedChanged, &keelApps, &KeelApps::setSystemConnected);
     if (!systemBridge.listen())
         return 1;
 

@@ -9,6 +9,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <memory>
+
 using namespace KeelAndroid;
 
 namespace {
@@ -72,6 +74,21 @@ class FakeShell : public QObject {
     }
 };
 
+// The shell's Navigation1.ExpectAppWindow, as proposed.
+class FakeNavigation : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.marathonos.Shell.Navigation1")
+
+  public:
+    QStringList expected;
+
+  public Q_SLOTS:
+    bool ExpectAppWindow(const QString &appId) {
+        expected << appId;
+        return true;
+    }
+};
+
 class TestKeelApps : public QObject {
     Q_OBJECT
 
@@ -91,6 +108,15 @@ class TestKeelApps : public QObject {
         if (!QTest::qWaitFor([&w] { return w.isFinished(); }, 20000))
             return {};
         return w.reply();
+    }
+
+    std::unique_ptr<QDBusPendingCallWatcher> invoke(const QString &name, const QString &action,
+                                                    const QString &args, const QVariantMap &options) {
+        QDBusMessage m = QDBusMessage::createMethodCall(name, QStringLiteral("/org/shipwright/Keel/Actions"),
+                                                        QStringLiteral("org.shipwright.Keel.Actions"),
+                                                        QStringLiteral("Invoke"));
+        m << action << args << options;
+        return std::make_unique<QDBusPendingCallWatcher>(bus(QStringLiteral("client")).asyncCall(m, 20000));
     }
 
     static QVariantMap pilot() {
@@ -274,14 +300,22 @@ class TestKeelApps : public QObject {
                                         QDBusConnection::ExportAllSlots));
         QVERIFY(shellBus.registerService(QStringLiteral("org.marathonos.shell")));
 
-        QTemporaryDir     dir;
-        QList<QJsonObject> sent;
+        QTemporaryDir      dir;
+        QList<QJsonObject> sent, system;
         const QString      statePath = dir.filePath(QStringLiteral("state/apps.json"));
         auto               apps      = std::make_unique<KeelApps>(
-            [&sent](const QJsonObject &m) { sent << m; },
+            [&sent](const QJsonObject &m) { sent << m; }, [&system](const QJsonObject &m) { system << m; },
             [this](const QString &name) { return bus(name); }, bus(QStringLiteral("deckard")),
             QStringList{QCoreApplication::applicationFilePath()}, statePath);
+        const auto answer = [&apps](const QJsonObject &request, QJsonObject reply, bool fromSystem) {
+            reply.insert(QStringLiteral("req"), request.value(QStringLiteral("req")));
+            if (fromSystem)
+                apps->handleSystem(QStringLiteral("keel_done"), reply);
+            else
+                apps->handle(reply.value(QStringLiteral("t")).toString(), reply);
+        };
         apps->setConnected(true);
+        apps->setSystemConnected(true);
         apps->handle(QStringLiteral("app_info"), sample());
         QCOMPARE(apps->packages(), QStringList{QStringLiteral("org.example.chat")});
 
@@ -289,13 +323,32 @@ class TestKeelApps : public QObject {
         QDBusConnectionInterface *daemon = bus(QStringLiteral("client")).interface();
         QVERIFY(daemon->isServiceRegistered(name));
 
+        // Shortcuts come from DeckardSystem, and a new list is a new owner.
+        QCOMPARE(system.size(), 1);
+        QCOMPARE(system.at(0).value(QStringLiteral("op")).toString(), QStringLiteral("shortcuts"));
+        QCOMPARE(system.at(0).value(QStringLiteral("pkg")).toString(), QStringLiteral("org.example.chat"));
+        const QString firstOwner = daemon->serviceOwner(name).value();
+        answer(system.takeFirst(),
+               {{QStringLiteral("ok"), true},
+                {QStringLiteral("shortcuts"),
+                 QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("compose")},
+                                        {QStringLiteral("label"), QStringLiteral("New message")}},
+                            QJsonObject{{QStringLiteral("id"), QStringLiteral("anna")},
+                                        {QStringLiteral("label"), QStringLiteral("Anna")},
+                                        {QStringLiteral("long"), QStringLiteral("Chat with Anna")}}}}},
+               true);
+        QTRY_VERIFY(daemon->isServiceRegistered(name));
+        QVERIFY(daemon->serviceOwner(name).value() != firstOwner);
+
         // keel-mcp's probe: Describe answers the manifest of the name asked.
         QDBusMessage reply = call(name, QStringLiteral("Describe"), {});
-        QCOMPARE(QJsonDocument::fromJson(json(reply).toUtf8()).object().value(QStringLiteral("appId")).toString(), name);
+        const QJsonObject described = QJsonDocument::fromJson(json(reply).toUtf8()).object();
+        QCOMPARE(described.value(QStringLiteral("appId")).toString(), name);
+        QVERIFY(!toolOf(described, QStringLiteral("shortcut.anna")).isEmpty());
+        QVERIFY(toolOf(described, QStringLiteral("shortcut.wipe_all")).isEmpty());
 
         // app.show without a link is the shell's launch.
-        reply = call(name, QStringLiteral("Invoke"),
-                     {QStringLiteral("app.show"), QStringLiteral("{}"), QVariantMap()});
+        reply = call(name, QStringLiteral("Invoke"), {QStringLiteral("app.show"), QStringLiteral("{}"), QVariantMap()});
         QCOMPARE(reply.type(), QDBusMessage::ReplyMessage);
         QCOMPARE(fakeShell.launched, QStringList{name});
 
@@ -308,124 +361,127 @@ class TestKeelApps : public QObject {
         reply = call(name, QStringLiteral("Invoke"), {QStringLiteral("nope.nope"), QStringLiteral("{}"), QVariantMap()});
         QCOMPARE(reply.errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.UnknownAction"));
 
-        // A shortcut: Android starts it, then the shell brings the window forward.
+        // A shortcut: DeckardSystem starts it; with a shell that does not
+        // expect windows, deckardd waits for the window and shows it.
         fakeShell.launched.clear();
-        sent.clear();
-        QDBusPendingCallWatcher shortcut(bus(QStringLiteral("client")).asyncCall(
-            [&] {
-                QDBusMessage m = QDBusMessage::createMethodCall(name, QStringLiteral("/org/shipwright/Keel/Actions"),
-                                                                QStringLiteral("org.shipwright.Keel.Actions"),
-                                                                QStringLiteral("Invoke"));
-                m << QStringLiteral("shortcut.compose") << QStringLiteral("{}") << QVariantMap();
-                return m;
-            }(),
-            20000));
-        QTRY_COMPARE(sent.size(), 1);
-        QCOMPARE(sent.at(0).value(QStringLiteral("t")).toString(), QStringLiteral("launch"));
-        QCOMPARE(sent.at(0).value(QStringLiteral("kind")).toString(), QStringLiteral("shortcut"));
-        QCOMPARE(sent.at(0).value(QStringLiteral("id")).toString(), QStringLiteral("compose"));
-        QVERIFY(!shortcut.isFinished());
+        auto shortcut = invoke(name, QStringLiteral("shortcut.anna"), QStringLiteral("{}"), {});
+        QTRY_COMPARE(system.size(), 1);
+        QCOMPARE(system.at(0).value(QStringLiteral("op")).toString(), QStringLiteral("start"));
+        QCOMPARE(system.at(0).value(QStringLiteral("id")).toString(), QStringLiteral("anna"));
+        QVERIFY(!shortcut->isFinished());
         fakeShell.running = QStringList{name};
-        apps->handle(QStringLiteral("launched"), {{QStringLiteral("t"), QStringLiteral("launched")},
-                                                  {QStringLiteral("req"), sent.at(0).value(QStringLiteral("req"))},
-                                                  {QStringLiteral("ok"), true}});
-        QTRY_VERIFY(shortcut.isFinished());
-        QCOMPARE(shortcut.reply().type(), QDBusMessage::ReplyMessage);
+        answer(system.takeFirst(), {{QStringLiteral("ok"), true}}, true);
+        QTRY_VERIFY(shortcut->isFinished());
+        QCOMPARE(shortcut->reply().type(), QDBusMessage::ReplyMessage);
         QCOMPARE(fakeShell.launched, QStringList{name});
 
         // Android refusing to start it is the call's failure.
         sent.clear();
-        QDBusPendingCallWatcher share(bus(QStringLiteral("client")).asyncCall(
-            [&] {
-                QDBusMessage m = QDBusMessage::createMethodCall(name, QStringLiteral("/org/shipwright/Keel/Actions"),
-                                                                QStringLiteral("org.shipwright.Keel.Actions"),
-                                                                QStringLiteral("Invoke"));
-                m << QStringLiteral("share.text") << QStringLiteral("{\"text\":\"hi\"}") << QVariantMap();
-                return m;
-            }(),
-            20000));
+        auto share = invoke(name, QStringLiteral("share.text"), QStringLiteral("{\"text\":\"hi\"}"), {});
         QTRY_COMPARE(sent.size(), 1);
         QCOMPARE(sent.at(0).value(QStringLiteral("kind")).toString(), QStringLiteral("send"));
         QCOMPARE(sent.at(0).value(QStringLiteral("text")).toString(), QStringLiteral("hi"));
-        apps->handle(QStringLiteral("launched"), {{QStringLiteral("req"), sent.at(0).value(QStringLiteral("req"))},
-                                                  {QStringLiteral("ok"), false},
-                                                  {QStringLiteral("error"), QStringLiteral("no activity")}});
-        QTRY_VERIFY(share.isFinished());
-        QCOMPARE(share.reply().errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.Failed"));
+        answer(sent.takeFirst(),
+               {{QStringLiteral("t"), QStringLiteral("launched")}, {QStringLiteral("ok"), false},
+                {QStringLiteral("error"), QStringLiteral("no activity")}},
+               false);
+        QTRY_VERIFY(share->isFinished());
+        QCOMPARE(share->reply().errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.Failed"));
 
-        // The screen of the app in front, its ids, and a tap on one.
+        // A shell that expects the window shows it itself.
+        FakeNavigation navigation;
+        QVERIFY(shellBus.registerObject(QStringLiteral("/org/marathonos/Shell/Navigation"), &navigation,
+                                        QDBusConnection::ExportAllSlots));
+        QVERIFY(shellBus.registerService(QStringLiteral("org.marathonos.Shell")));
+        fakeShell.launched.clear();
+        auto search = invoke(name, QStringLiteral("app.search"), QStringLiteral("{\"query\":\"anna\"}"), {});
+        QTRY_COMPARE(sent.size(), 1);
+        QCOMPARE(navigation.expected, QStringList{name});
+        QCOMPARE(sent.at(0).value(QStringLiteral("kind")).toString(), QStringLiteral("search"));
+        QCOMPARE(sent.at(0).value(QStringLiteral("mode")).toString(), QStringLiteral("gms"));
+        answer(sent.takeFirst(), {{QStringLiteral("t"), QStringLiteral("launched")}, {QStringLiteral("ok"), true}}, false);
+        QTRY_VERIFY(search->isFinished());
+        QCOMPARE(search->reply().type(), QDBusMessage::ReplyMessage);
+        QVERIFY(fakeShell.launched.isEmpty());
+
+        // The screen: only of the app in front, never of a secure window.
         fakeShell.front = QStringLiteral("browser");
         reply = call(name, QStringLiteral("Invoke"), {QStringLiteral("screen.read"), QStringLiteral("{}"), pilot()});
         QCOMPARE(reply.errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.NotAvailable"));
         fakeShell.front = name;
-        sent.clear();
-        QDBusPendingCallWatcher read(bus(QStringLiteral("client")).asyncCall(
-            [&] {
-                QDBusMessage m = QDBusMessage::createMethodCall(name, QStringLiteral("/org/shipwright/Keel/Actions"),
-                                                                QStringLiteral("org.shipwright.Keel.Actions"),
-                                                                QStringLiteral("Invoke"));
-                m << QStringLiteral("screen.read") << QStringLiteral("{}") << QVariantMap();
-                return m;
-            }(),
-            20000));
+        auto secure = invoke(name, QStringLiteral("screen.read"), QStringLiteral("{}"), {});
+        QTRY_COMPARE(system.size(), 1);
+        QCOMPARE(system.at(0).value(QStringLiteral("op")).toString(), QStringLiteral("secure"));
+        answer(system.takeFirst(), {{QStringLiteral("ok"), true}, {QStringLiteral("secure"), true}}, true);
+        QTRY_VERIFY(secure->isFinished());
+        QCOMPARE(secure->reply().errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.NotAvailable"));
+        QVERIFY(sent.isEmpty());
+
+        auto read = invoke(name, QStringLiteral("screen.read"), QStringLiteral("{}"), {});
+        QTRY_COMPARE(system.size(), 1);
+        answer(system.takeFirst(), {{QStringLiteral("ok"), true}, {QStringLiteral("secure"), false}}, true);
         QTRY_COMPARE(sent.size(), 1);
         QCOMPARE(sent.at(0).value(QStringLiteral("t")).toString(), QStringLiteral("screen_read"));
         QCOMPARE(sent.at(0).value(QStringLiteral("pkg")).toString(), QStringLiteral("org.example.chat"));
-        apps->handle(QStringLiteral("screen"),
-                     {{QStringLiteral("req"), sent.at(0).value(QStringLiteral("req"))},
-                      {QStringLiteral("ok"), true},
-                      {QStringLiteral("pkg"), QStringLiteral("org.example.chat")},
-                      {QStringLiteral("snap"), 7},
-                      {QStringLiteral("nodes"),
-                       QJsonArray{QJsonObject{{QStringLiteral("i"), 2},
-                                              {QStringLiteral("c"), QStringLiteral("android.widget.Button")},
-                                              {QStringLiteral("t"), QStringLiteral("Send")},
-                                              {QStringLiteral("f"), 1}}}}});
-        QTRY_VERIFY(read.isFinished());
-        const QJsonObject result = QJsonDocument::fromJson(json(read.reply()).toUtf8()).object();
+        answer(sent.takeFirst(),
+               {{QStringLiteral("t"), QStringLiteral("screen")},
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("pkg"), QStringLiteral("org.example.chat")},
+                {QStringLiteral("snap"), 7},
+                {QStringLiteral("nodes"),
+                 QJsonArray{QJsonObject{{QStringLiteral("i"), 2},
+                                        {QStringLiteral("c"), QStringLiteral("android.widget.Button")},
+                                        {QStringLiteral("t"), QStringLiteral("Send")},
+                                        {QStringLiteral("f"), 1}}}}},
+               false);
+        QTRY_VERIFY(read->isFinished());
+        const QJsonObject result = QJsonDocument::fromJson(json(read->reply()).toUtf8()).object();
         QCOMPARE(result.value(QStringLiteral("screen")).toString(), QStringLiteral("[7.2] button \"Send\"\n"));
         QCOMPARE(result.value(QStringLiteral("snapshot")).toInt(), 7);
 
+        // A tap: Pilot only, on an id of the latest read.
         reply = call(name, QStringLiteral("Invoke"),
                      {QStringLiteral("ui.tap"), QStringLiteral("{\"node\":\"7.2\"}"), QVariantMap()});
         QCOMPARE(reply.errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.NotAvailable"));
         reply = call(name, QStringLiteral("Invoke"), {QStringLiteral("ui.tap"), QStringLiteral("{\"node\":\"6.2\"}"), pilot()});
         QCOMPARE(reply.errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.InvalidArguments"));
-        sent.clear();
-        QDBusPendingCallWatcher tap(bus(QStringLiteral("client")).asyncCall(
-            [&] {
-                QDBusMessage m = QDBusMessage::createMethodCall(name, QStringLiteral("/org/shipwright/Keel/Actions"),
-                                                                QStringLiteral("org.shipwright.Keel.Actions"),
-                                                                QStringLiteral("Invoke"));
-                m << QStringLiteral("ui.tap") << QStringLiteral("{\"node\":\"7.2\"}") << pilot();
-                return m;
-            }(),
-            20000));
+        auto tap = invoke(name, QStringLiteral("ui.tap"), QStringLiteral("{\"node\":\"7.2\"}"), pilot());
         QTRY_COMPARE(sent.size(), 1);
         QCOMPARE(sent.at(0).value(QStringLiteral("t")).toString(), QStringLiteral("ui_act"));
         QCOMPARE(sent.at(0).value(QStringLiteral("act")).toString(), QStringLiteral("click"));
         QCOMPARE(sent.at(0).value(QStringLiteral("node")).toInt(), 2);
         QCOMPARE(sent.at(0).value(QStringLiteral("snap")).toInt(), 7);
-        apps->handle(QStringLiteral("ui_done"), {{QStringLiteral("req"), sent.at(0).value(QStringLiteral("req"))},
-                                                 {QStringLiteral("ok"), true}});
-        QTRY_VERIFY(tap.isFinished());
-        QCOMPARE(tap.reply().type(), QDBusMessage::ReplyMessage);
+        answer(sent.takeFirst(), {{QStringLiteral("t"), QStringLiteral("ui_done")}, {QStringLiteral("ok"), true}}, false);
+        QTRY_VERIFY(tap->isFinished());
+        QCOMPARE(tap->reply().type(), QDBusMessage::ReplyMessage);
 
         // Keel's context: the same screen, bounded.
-        sent.clear();
         QDBusPendingCallWatcher context(bus(QStringLiteral("client")).asyncCall(
             QDBusMessage::createMethodCall(name, QStringLiteral("/org/shipwright/Keel/Actions"),
                                            QStringLiteral("org.shipwright.Keel.Actions"), QStringLiteral("GetContext")),
             20000));
+        QTRY_COMPARE(system.size(), 1);
+        answer(system.takeFirst(), {{QStringLiteral("ok"), true}, {QStringLiteral("secure"), false}}, true);
         QTRY_COMPARE(sent.size(), 1);
-        apps->handle(QStringLiteral("screen"), {{QStringLiteral("req"), sent.at(0).value(QStringLiteral("req"))},
-                                                {QStringLiteral("ok"), true},
-                                                {QStringLiteral("pkg"), QStringLiteral("org.example.chat")},
-                                                {QStringLiteral("snap"), 8},
-                                                {QStringLiteral("nodes"), QJsonArray()}});
+        answer(sent.takeFirst(),
+               {{QStringLiteral("t"), QStringLiteral("screen")}, {QStringLiteral("ok"), true},
+                {QStringLiteral("pkg"), QStringLiteral("org.example.chat")}, {QStringLiteral("snap"), 8},
+                {QStringLiteral("nodes"), QJsonArray()}},
+               false);
         QTRY_VERIFY(context.isFinished());
         QCOMPARE(QJsonDocument::fromJson(json(context.reply()).toUtf8()).object().value(QStringLiteral("app")).toString(),
                  name);
+
+        // Without DeckardSystem nobody can say the screen is safe to read.
+        apps->setSystemConnected(false);
+        reply = call(name, QStringLiteral("Invoke"), {QStringLiteral("screen.read"), QStringLiteral("{}"), QVariantMap()});
+        QCOMPARE(reply.errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.NotAvailable"));
+        apps->setSystemConnected(true);
+        QTRY_COMPARE(system.size(), 1);
+        QCOMPARE(system.takeFirst().value(QStringLiteral("op")).toString(), QStringLiteral("shortcuts"));
+        apps->handleSystem(QStringLiteral("keel_changed"), {{QStringLiteral("pkg"), QStringLiteral("org.example.chat")}});
+        QCOMPARE(system.size(), 1);
+        system.clear();
 
         // Locked: nothing runs.
         fakeShell.locked = true;
@@ -434,48 +490,38 @@ class TestKeelApps : public QObject {
         fakeShell.locked = false;
 
         // Android going away fails what it was asked.
-        sent.clear();
-        QDBusPendingCallWatcher lost(bus(QStringLiteral("client")).asyncCall(
-            [&] {
-                QDBusMessage m = QDBusMessage::createMethodCall(name, QStringLiteral("/org/shipwright/Keel/Actions"),
-                                                                QStringLiteral("org.shipwright.Keel.Actions"),
-                                                                QStringLiteral("Invoke"));
-                m << QStringLiteral("screen.read") << QStringLiteral("{}") << QVariantMap();
-                return m;
-            }(),
-            20000));
+        auto lost = invoke(name, QStringLiteral("screen.read"), QStringLiteral("{}"), {});
+        QTRY_COMPARE(system.size(), 1);
+        answer(system.takeFirst(), {{QStringLiteral("ok"), true}, {QStringLiteral("secure"), false}}, true);
         QTRY_COMPARE(sent.size(), 1);
         apps->setConnected(false);
-        QTRY_VERIFY(lost.isFinished());
-        QCOMPARE(lost.reply().errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.NotAvailable"));
+        QTRY_VERIFY(lost->isFinished());
+        QCOMPARE(lost->reply().errorName(), QStringLiteral("org.shipwright.Keel.Actions.Error.NotAvailable"));
         apps->setConnected(true);
+        sent.clear();
 
-        // A changed manifest comes on a new owner, so keel-mcp describes it again.
+        // An unchanged manifest keeps its owner.
         const QString owner = daemon->serviceOwner(name).value();
-        QJsonObject   changed = sample();
-        changed.insert(QStringLiteral("label"), QStringLiteral("Chat 2"));
-        apps->handle(QStringLiteral("app_info"), changed);
-        QTRY_VERIFY(daemon->isServiceRegistered(name));
-        QVERIFY(daemon->serviceOwner(name).value() != owner);
-        const QString sameOwner = daemon->serviceOwner(name).value();
-        apps->handle(QStringLiteral("app_info"), changed);
-        QCOMPARE(daemon->serviceOwner(name).value(), sameOwner);
+        QJsonObject   again = sample();
+        apps->handle(QStringLiteral("app_info"), again);
+        QCOMPARE(daemon->serviceOwner(name).value(), owner);
+        system.clear();
 
         // The catalogue survives a restart of deckardd.
         apps.reset();
         QTRY_VERIFY(!daemon->isServiceRegistered(name));
         apps = std::make_unique<KeelApps>([&sent](const QJsonObject &m) { sent << m; },
+                                          [&system](const QJsonObject &m) { system << m; },
                                           [this](const QString &n) { return bus(n); }, bus(QStringLiteral("deckard")),
                                           QStringList{QStringLiteral("/nonexistent/keel-mcp")}, statePath);
         QVERIFY(daemon->isServiceRegistered(name));
+        const QJsonObject restored =
+            QJsonDocument::fromJson(json(call(name, QStringLiteral("Describe"), {})).toUtf8()).object();
+        QCOMPARE(restored.value(QStringLiteral("appId")).toString(), name);
+        QVERIFY(!toolOf(restored, QStringLiteral("shortcut.anna")).isEmpty());
         // Not keel-mcp nor Pilot: refused.
         reply = call(name, QStringLiteral("Invoke"), {QStringLiteral("app.show"), QStringLiteral("{}"), QVariantMap()});
         QCOMPARE(reply.errorName(), QStringLiteral("org.freedesktop.DBus.Error.AccessDenied"));
-        QCOMPARE(QJsonDocument::fromJson(json(call(name, QStringLiteral("Describe"), {})).toUtf8())
-                     .object()
-                     .value(QStringLiteral("appId"))
-                     .toString(),
-                 name);
 
         apps->handle(QStringLiteral("app_list"), {{QStringLiteral("pkgs"), QJsonArray()}});
         QTRY_VERIFY(!daemon->isServiceRegistered(name));
