@@ -16,6 +16,7 @@ add_library(deckardcore STATIC
     src/images.cpp
     src/ime.cpp
     src/intents.cpp
+    src/keelapps.cpp
     src/manage.cpp
     src/mpris.cpp
     src/notifications.cpp
@@ -66,4 +67,7 @@ if(BUILD_TESTING)
     add_executable(test_settingsapi tests/test_settingsapi.cpp)
     target_link_libraries(test_settingsapi PRIVATE deckardcore Qt6::Test)
     add_test(NAME settingsapi COMMAND test_settingsapi)
+    add_executable(test_keelapps tests/test_keelapps.cpp)
+    target_link_libraries(test_keelapps PRIVATE deckardcore Qt6::Test)
+    add_test(NAME keelapps COMMAND test_keelapps)
 endif()

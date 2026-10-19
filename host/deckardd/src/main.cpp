@@ -4,6 +4,7 @@
 #include "doze.h"
 #include "ime.h"
 #include "intents.h"
+#include "keelapps.h"
 #include "manage.h"
 #include "mpris.h"
 #include "notifications.h"
@@ -98,10 +99,20 @@ int main(int argc, char *argv[]) {
                             QDBusConnection::ExportAdaptors))
         qWarning("cannot export /org/marathonos/Deckard");
 
+    // Each Android app as a Keel Actions provider for keel-mcp and Pilot.
+    KeelApps keelApps([&bridge](const QJsonObject &message) { bridge.send(message); },
+                      [](const QString &name) {
+                          return QDBusConnection::connectToBus(QDBusConnection::SessionBus, name);
+                      },
+                      bus, {QStringLiteral("/usr/bin/keel-mcp"), QStringLiteral("/usr/bin/pilotd")},
+                      state + QStringLiteral("/apps.json"));
+
     QObject::connect(&bridge, &Bridge::received, &app,
                      [&](const QString &type, const QJsonObject &message) {
                          if (type.startsWith(QLatin1String("media")))
                              mpris.handle(type, message);
+                         else if (KeelApps::handles(type))
+                             keelApps.handle(type, message);
                          else if (type.endsWith(QLatin1String("_result")) ||
                                   type == QLatin1String("install_progress") ||
                                   type == QLatin1String("package_changed"))
@@ -110,6 +121,7 @@ int main(int argc, char *argv[]) {
                              notifications.handle(type, message);
                      });
     QObject::connect(&bridge, &Bridge::connectedChanged, &app, [&](bool connected) {
+        keelApps.setConnected(connected);
         if (!connected) {
             mpris.clear();
             packages.bridgeLost();
