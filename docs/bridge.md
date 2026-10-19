@@ -204,7 +204,9 @@ the Store (Callers::require) and the Store's handler (by executable,
     Settings agent after a reset): `deletePackageVersioned` removes silently
     only for the installer of record, the verifier, the uninstaller app or
     the system uid, DELETE_PACKAGES or not. Removals now go to DeckardSystem,
-    which runs as the system uid.
+    which runs as the system uid. On the device an app installed with
+    `pm install` (no installer of record) was removed through
+    `marathon-store-handler`'s uninstall with no prompt.
 - **F-Droid catalogue on the device:** a full sync (verify entry.jar,
   download 16 MB, stream-parse 66 MB) took **4.4 s at 59 MB peak RSS**; with
   the index unchanged, 0.8 s. The catalogue holds 4,713 apps in 7.2 MB.
@@ -247,18 +249,37 @@ cannot simply be stopped: it is what writes each process's `oom_score_adj`
 for ActivityManager (`cmd_procprio`), which the cgroup OOM killer relies on,
 and it is a `critical` service. So it now runs without pressure monitors
 (`ro.lmk.use_new_strategy=true` with both PSI stall thresholds 0, in
-`image/waydroid.prop`): it registers no triggers, so it should neither wake
-for pressure nor log (to confirm on the device).
+`image/waydroid.prop`). On the device it logs "Using psi monitors" and then
+nothing, and still sets the adj: cached calendar 915, settings 955, the
+foreground app 0.
 
 The killing moved to Marathon. deckardd's `Reclaimer` asks DeckardSystem to
 end the two least recently used cached app processes (protocol/bridge.md,
 `reclaim`) when the container goes over `memory.high` or `memory.max`
-(`memory.events`, watched with inotify), when Android stalls on memory
-(a PSI trigger on the container's `memory.pressure`, which the LXC hook hands
-to the session's user) or when the whole phone stalls at the shell's High
-level (`/proc/pressure/memory`; the shell does not publish its level on the
-bus). Idle, it costs nothing: no polling, only kernel notifications. Not yet
-run on the device; the squeeze test above is the check.
+(`memory.events`, watched with inotify), when Android stalls on memory (a
+PSI trigger on the container's `memory.pressure`; the whole container cgroup
+already belongs to the session's user) or when the whole phone stalls at the
+shell's High level (`/proc/pressure/memory`; the shell does not publish its
+level on the bus). Idle, it costs nothing: no polling, only kernel
+notifications.
+
+Measured on the HackberryPi:
+- Lowering `memory.high` alone (1.04 GB in use, to 800 MB, then 500 MB)
+  reclaimed page cache on the write itself: no `high` events, no pressure.
+- `memory.high` 600 MB with 450 MB allocated inside the container: 245
+  `high` events, container PSI some avg10 15 %. Within 2 s DeckardSystem
+  ended `android.process.acore` (adj 965) and `android.process.media` (925),
+  2 s later `com.android.providers.calendar` (915) and
+  `com.android.permissioncontroller` (905): oldest first, two per request.
+  Then it stopped: the cached processes left were keychain, shell and
+  settings, which run with system uids and are never candidates. The
+  foreground app, the persistent apps and system_server were untouched; no
+  OOM kill.
+- With 2 s windows the phone-wide trigger (20 % of 2 s) fired on each
+  Android boot with 10 GB free and ended packageinstaller and
+  externalstorage. Both triggers now use 10 s windows (container 10 %, phone
+  20 %, the latter the shell's avg10 High level); that change is not yet
+  measured.
 
 ## Back
 
@@ -365,8 +386,18 @@ freezer state, the boot properties, and for the composer HAL and
 SurfaceFlinger their state, Unix sockets (`ss -xp` in the container's network
 namespace, the Wayland link among them) and `debuggerd -b` stacks. deckardd
 then restarts the session once. If the restarted session stalls as well, it
-is only reported; a completed boot re-arms the restart. Not yet seen
-working on the device.
+is only reported; a completed boot re-arms the restart.
+
+Checked on the device by putting a directory where the marker goes, so init
+could neither remove nor write it: 60 s after the start deckardd logged the
+stall, pkexec ran the helper with no prompt from the user service, and the
+journal got the freezer state (not frozen), the boot properties, both
+processes' sockets and full `debuggerd -b` stacks (the composer in
+`wl_display_dispatch_queue`). It restarted the session once; 60 s after
+that it logged "the restarted session stalled too; leaving it". The
+composer HAL aborted (SIGABRT in `hwcomposer.waydroid.so`) once or twice at
+the start of each of these boots, and init restarted it; worth following up
+as the possible cause of the real hang.
 
 ## Install
 
