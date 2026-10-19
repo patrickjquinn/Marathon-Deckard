@@ -147,6 +147,10 @@ public class BridgeService extends NotificationListenerService implements Link.L
             return false;
         if ("android".equals(sbn.getPackageName()) && SYSTEM_NOISE.contains(n.getChannelId()))
             return false;
+        // Marathon updates the system; the image's own updater stays silent.
+        String pkg = sbn.getPackageName();
+        if (pkg.equals("org.lineageos.updater") || pkg.toLowerCase().contains("waydroid"))
+            return false;
         if ((n.flags & Notification.FLAG_GROUP_SUMMARY) != 0) {
             StatusBarNotification[] active = getActiveNotifications();
             for (StatusBarNotification other : active == null ? new StatusBarNotification[0] : active) {

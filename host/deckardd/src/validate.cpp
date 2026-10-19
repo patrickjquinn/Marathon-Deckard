@@ -66,6 +66,14 @@ namespace Validate {
         return out;
     }
 
+    QString label(const QJsonObject &object, const QString &key) {
+        static const QRegularExpression kRuntime(QStringLiteral("\\b(Waydroid|WayDroid|LineageOS|Lineage OS)\\b"),
+                                                 QRegularExpression::CaseInsensitiveOption);
+        QString out = text(object, key, 128);
+        out.replace(kRuntime, QStringLiteral("Android"));
+        return out.simplified();
+    }
+
     QByteArray base64(const QJsonObject &object, const QString &key, int maxBytes) {
         const QString encoded = object.value(key).toString();
         if (encoded.isEmpty() || encoded.size() > (qsizetype(maxBytes) + 2) / 3 * 4)
@@ -105,7 +113,7 @@ namespace Validate {
             *error = QStringLiteral("bad package");
             return std::nullopt;
         }
-        p.label = text(m, QStringLiteral("label"), 128);
+        p.label = label(m, QStringLiteral("label"));
         if (p.label.trimmed().isEmpty())
             p.label = p.pkg;
         p.title      = text(m, QStringLiteral("title"), 256);
@@ -164,7 +172,7 @@ namespace Validate {
             *error = QStringLiteral("bad session");
             return std::nullopt;
         }
-        s.label = text(m, QStringLiteral("label"), 128);
+        s.label = label(m, QStringLiteral("label"));
         if (s.label.trimmed().isEmpty())
             s.label = s.pkg;
         const QString state = m.value(QStringLiteral("state")).toString();

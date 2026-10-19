@@ -36,6 +36,15 @@ class TestValidate : public QObject {
         QVERIFY(Validate::base64(o, QStringLiteral("bad"), 50).isEmpty());
     }
 
+    void labelsNameAndroidNotTheRuntime() {
+        const QJsonObject o{{QStringLiteral("a"), QStringLiteral("Waydroid Updater")},
+                            {QStringLiteral("b"), QStringLiteral("LineageOS  Settings")},
+                            {QStringLiteral("c"), QStringLiteral("Wayfarer")}};
+        QCOMPARE(Validate::label(o, QStringLiteral("a")), QStringLiteral("Android Updater"));
+        QCOMPARE(Validate::label(o, QStringLiteral("b")), QStringLiteral("Android Settings"));
+        QCOMPARE(Validate::label(o, QStringLiteral("c")), QStringLiteral("Wayfarer"));
+    }
+
     void categories() {
         QCOMPARE(Validate::fdoCategory(QStringLiteral("msg")), QStringLiteral("im.received"));
         QCOMPARE(Validate::fdoCategory(QStringLiteral("alarm")), QStringLiteral("x-android.alarm"));

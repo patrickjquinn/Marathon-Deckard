@@ -203,7 +203,7 @@ void Packages::handle(const QString &type, const QJsonObject &m) {
             if (!Validate::isPackageName(pkg))
                 continue;
             list.append({{QStringLiteral("pkg"), pkg},
-                         {QStringLiteral("label"), Validate::text(o, QStringLiteral("label"), 128)},
+                         {QStringLiteral("label"), Validate::label(o, QStringLiteral("label"))},
                          {QStringLiteral("versionName"), Validate::text(o, QStringLiteral("versionName"), 64)},
                          {QStringLiteral("versionCode"), qint64(o.value(QStringLiteral("versionCode")).toDouble())},
                          {QStringLiteral("system"), o.value(QStringLiteral("system")).toBool()}});
@@ -230,7 +230,7 @@ void Packages::handle(const QString &type, const QJsonObject &m) {
     }
     QVariantMap info{{QStringLiteral("ok"), true},
                      {QStringLiteral("pkg"), pkg},
-                     {QStringLiteral("label"), Validate::text(m, QStringLiteral("label"), 128)},
+                     {QStringLiteral("label"), Validate::label(m, QStringLiteral("label"))},
                      {QStringLiteral("versionName"), Validate::text(m, QStringLiteral("versionName"), 64)},
                      {QStringLiteral("versionCode"), qint64(m.value(QStringLiteral("versionCode")).toDouble())},
                      {QStringLiteral("minSdk"), m.value(QStringLiteral("minSdk")).toInt()},

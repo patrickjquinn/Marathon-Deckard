@@ -15,6 +15,8 @@ namespace Validate {
 
     bool    isPackageName(const QString &name);
     QString text(const QJsonObject &object, const QString &key, int maxLength);
+    // An app's name as Marathon shows it: Android, never the runtime under it.
+    QString label(const QJsonObject &object, const QString &key);
     QByteArray base64(const QJsonObject &object, const QString &key, int maxBytes);
     QString fdoCategory(const QString &androidCategory);
 

@@ -203,7 +203,7 @@ void Notifications::toast(const QJsonObject &message) {
     if (now - m_lastToast.value(pkg) < 500)
         return;
     m_lastToast.insert(pkg, now);
-    QString label = Validate::text(message, QStringLiteral("label"), 128);
+    QString label = Validate::label(message, QStringLiteral("label"));
     if (label.trimmed().isEmpty())
         label = pkg;
     const QString iconPath = m_iconDir + QLatin1Char('/') + pkg + QStringLiteral(".png");
