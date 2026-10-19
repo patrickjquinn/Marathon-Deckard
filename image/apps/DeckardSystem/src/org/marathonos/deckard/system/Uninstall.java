@@ -29,6 +29,7 @@ final class Uninstall {
     static synchronized void handle(JSONObject m) {
         String id = m.optString("id");
         String pkg = m.optString("pkg");
+        Log.i(TAG, "uninstall " + pkg + " (" + id + ")");
         try {
             Context c = (Context) Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null);
             if (!sRegistered) {
@@ -64,6 +65,7 @@ final class Uninstall {
     }
 
     private static void reply(String id, boolean ok, String pkg, String message) {
+        Log.i(TAG, (ok ? "uninstalled " : "not uninstalled ") + pkg + " (" + id + ")" + (ok ? "" : ": " + message));
         try {
             HostLink.get().send(new JSONObject().put("t", "install_result").put("id", id).put("ok", ok)
                     .put("pkg", pkg == null ? "" : pkg).put("message", message == null ? "" : message));
