@@ -503,6 +503,33 @@ only the paths a Marathon app sees in a shared folder are accepted), and it
 honours `source` from session services only, to leave the sharing app out of
 the targets. Transfers go with the 30-day cleanup of `xfer/`.
 
+## Permission prompts
+
+Android's runtime permission requests drawn by Marathon's prompt
+([../docs/permissions.md](../docs/permissions.md)). PermissionController's
+patched GrantPermissionsActivity hands each question to DeckardSystem's
+provider `org.marathonos.deckard.system.permissions` (`call("ask")` with a
+`ResultReceiver`, `call("cancel")`; PermissionController's uid only), and
+DeckardSystem's `BackgroundAccess` asks for "all the time". Both use the
+system channel:
+
+| `t` | Direction | Fields | Meaning |
+|---|---|---|---|
+| `perm_ask` | Android to host | `id` (16 hex digits, DeckardSystem's), `pkg`, `perms` (the Android permissions asked for, 1 to 16), `kind` (`foreground`, `background`, `precise`), `once` (offer "only this time"), `accuracy` (`""`, `choice`, `approximate`), `preciseDefault` | One question. deckardd names `perms` with `PermissionMap::marathon`; all must have the same name. A repeated `id` is ignored. |
+| `perm_answer` | host to Android | `id`, `answer` (`allow`, `once`, `deny`, `cancel`, `unsupported`), `precise` | The person's answer. `cancel`: dismissed, as Android's back. `unsupported`: Marathon can't ask (a bad or unnamed request, more than 8 waiting, no shell or an older one); Android shows its own dialog. |
+| `perm_cancel` | Android to host | `id` | GrantPermissionsActivity went away; deckardd withdraws the prompt and sends no answer. |
+
+deckardd asks the shell with `org.marathonos.Shell` `/org/marathonos/Shell/Permissions`
+`org.marathonos.Shell.Permissions1.PromptAndroid(s appId, s permission,
+a{sv} options) → a{sv}`, where `appId` is `waydroid.<pkg>`, `permission` is
+the Marathon name and `options` are `request` (= `id`), `kind`, `once`,
+`accuracy` and `preciseDefault`. The reply waits for the person (deckardd
+waits up to 10 minutes, then answers `cancel`) and is `{answer, precise}`.
+`CancelAndroidPrompt(s request)` withdraws one. Both need the caller to be a
+declared session service with `android-permissions`. When the system
+channel drops, deckardd withdraws every waiting prompt; DeckardSystem then
+lets Android ask.
+
 ## Settings API
 
 How Marathon's Settings shows and changes Android apps. deckardd exports

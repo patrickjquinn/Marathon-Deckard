@@ -1,1 +1,1 @@
-{"exec": "/usr/bin/deckardd", "permissions": ["text-input"]}
+{"exec": "/usr/bin/deckardd", "permissions": ["text-input", "android-permissions"]}

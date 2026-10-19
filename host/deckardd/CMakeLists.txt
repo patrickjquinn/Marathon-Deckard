@@ -24,6 +24,7 @@ add_library(deckardcore STATIC
     src/packages.cpp
     src/palette.cpp
     src/permissionmap.cpp
+    src/permissionprompts.cpp
     src/reclaimer.cpp
     src/runtime.cpp
     src/sessionfollower.cpp
@@ -93,4 +94,7 @@ if(BUILD_TESTING)
     add_executable(test_keelapps tests/test_keelapps.cpp)
     target_link_libraries(test_keelapps PRIVATE deckardcore Qt6::Test)
     add_test(NAME keelapps COMMAND test_keelapps)
+    add_executable(test_permissionprompts tests/test_permissionprompts.cpp)
+    target_link_libraries(test_permissionprompts PRIVATE deckardcore Qt6::Test)
+    add_test(NAME permissionprompts COMMAND test_permissionprompts)
 endif()

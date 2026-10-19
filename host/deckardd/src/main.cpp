@@ -11,6 +11,7 @@
 #include "notifications.h"
 #include "packages.h"
 #include "palette.h"
+#include "permissionprompts.h"
 #include "reclaimer.h"
 #include "runtime.h"
 #include "sessionfollower.h"
@@ -208,6 +209,13 @@ int main(int argc, char *argv[]) {
     QObject::connect(&systemBridge, &Bridge::connectedChanged, &sharing, [&](bool connected) {
         if (!connected)
             sharing.systemLost();
+    });
+    // Android's permission requests as Marathon's prompt.
+    PermissionPrompts permissionPrompts(bus, [&systemBridge](const QJsonObject &message) { systemBridge.send(message); });
+    QObject::connect(&systemBridge, &Bridge::received, &permissionPrompts, &PermissionPrompts::handle);
+    QObject::connect(&systemBridge, &Bridge::connectedChanged, &permissionPrompts, [&](bool connected) {
+        if (!connected)
+            permissionPrompts.systemLost();
     });
     if (!systemBridge.listen())
         return 1;
