@@ -236,7 +236,23 @@ kernel:
   Android apps (900+) first and system_server (−800) and SurfaceFlinger
   (−1000) last.
 
-Fixing lmkd needs a rebuilt lmkd (zoneinfo parser), not a setting.
+Fixing lmkd needs a rebuilt lmkd (zoneinfo parser), not a setting. lmkd
+cannot simply be stopped: it is what writes each process's `oom_score_adj`
+for ActivityManager (`cmd_procprio`), which the cgroup OOM killer relies on,
+and it is a `critical` service. So it now runs without pressure monitors
+(`ro.lmk.use_new_strategy=true` with both PSI stall thresholds 0, in
+`image/waydroid.prop`): it registers no triggers, so it should neither wake
+for pressure nor log (to confirm on the device).
+
+The killing moved to Marathon. deckardd's `Reclaimer` asks DeckardSystem to
+end the two least recently used cached app processes (protocol/bridge.md,
+`reclaim`) when the container goes over `memory.high` or `memory.max`
+(`memory.events`, watched with inotify), when Android stalls on memory
+(a PSI trigger on the container's `memory.pressure`, which the LXC hook hands
+to the session's user) or when the whole phone stalls at the shell's High
+level (`/proc/pressure/memory`; the shell does not publish its level on the
+bus). Idle, it costs nothing: no polling, only kernel notifications. Not yet
+run on the device; the squeeze test above is the check.
 
 ## Back
 
