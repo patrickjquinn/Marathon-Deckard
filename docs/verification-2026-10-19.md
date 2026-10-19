@@ -254,3 +254,36 @@ permission and its `USER_SET` flags, Material Files' `MANAGE_EXTERNAL_STORAGE`
 APK copy and the two `xfer/` folders were deleted. Left as found: Material
 Files waiting on Android's notification prompt; Catima after its crash; Markor's
 cache cleared.
+
+## Re-check (shell 56e33f46, deckard a5362f4)
+
+The coordinator deployed fixes for F1–F10 at 07:2x. I re-ran the failed and
+partial items the same way from 07:30 to 07:49, plus three items that passed
+before. Same device, same rules (DND on, Bluetooth off, silent).
+
+| Item | Result | Evidence |
+|---|---|---|
+| F1 First launch with Android stopped | **PASS** (2 of 2). Markor: a splash with the app's icon right after the tap, a spinner while Android boots (session start 07:30:59, ready 07:31:10), Markor's window at about 14.4 s, no timeout. Catima (07:31:51): the same, window at about 15–16 s, `foregroundApp` = Catima | [recheck-first-launch](verification-2026-10-19/recheck-first-launch.png) |
+| F2 On-screen keyboard | **PASS**. FOSS Browser address bar (Jelly is not in the slim image): URL layout (`/`, `.com`, `www.`) with no prediction bar; "d", "i", ".com" → three `CommitString` and the field reads `di.com`; Backspace → `Key`, `di.co`. Feeder's search: "i", "o", space → three `CommitString`, the field reads `io` and the list filters. After Home twice → switcher → the browser card, a hardware `m` landed in the field (`di.com`) | [recheck-keyboard](verification-2026-10-19/recheck-keyboard.png) |
+| F3 Toast | **PASS**. logcat `DeckardToastBar: registered` (07:32:03). Toasts with Notify Test in front and behind both reached the shell as `x-marathon-toast` and showed as Marathon toasts with the app icon. Markor's own "Permission not granted" toast showed the same way | [recheck-hub](verification-2026-10-19/recheck-hub.png) first tile |
+| F4 Tap a notification | **PASS, with a fault**. With Notify Test force-stopped, tapping its row showed the app (`foregroundApp` = Notify Test). But the shell also starts the app's launcher activity 0.5 s after the `contentIntent` (`START … TestActivity (has extras)` at 07:36:26.388 from the app, then `START act=MAIN cat=LAUNCHER` at 07:36:26.882 from uid 1000). So a second activity covers the one the notification opened: the screen says "opened from: null", and back does not reveal it (two TestActivity records in the task). A messaging app would open on its main screen, not the conversation | [recheck-hub](verification-2026-10-19/recheck-hub.png) last tile |
+| F5 Reply in the Hub row | **FAIL**. The row now has Reply and Mark read; Reply opens an inline field with a Send button. The field never receives text. Hardware keys open the shell's type-to-search with the text ("On my way", "No results"). With the keyboard opened from the nav bar, typing shows predictions, but nothing lands in the field, Send stays disabled and no `NotificationReplied` is sent. Tapping the field itself counts as a tap on the row and opens the app | [recheck-hub](verification-2026-10-19/recheck-hub.png) tiles 2–4 |
+| F6 File picker | **PASS**. Catima › Import › Marathon's chooser › `Documents/verify-0739.txt` › Open: the URI is now `content://org.marathonos.deckard.bridge.files/…`; Catima logs `Starting file import with: content://…` and `Import result`; no Permission Denial, no crash. system_server still logs the "cannot issue a Uri permission grant" warning once, harmless now | [recheck-files](verification-2026-10-19/recheck-files.png) |
+| F6 Marathon share → Markor | **PASS**. Gallery › Share › Markor: no Permission Denial. Markor first asked for its own storage access (see F10). After that grant, a second share opened Markor's "Share into" with the image `verify-share-0740` and its Attach/Share options | [recheck-files](verification-2026-10-19/recheck-files.png) |
+| F7 .apk install page | **PASS, with a cosmetic fault**. `deckard-open-apk` returned without the GetButton error, "Update app, replacing 0.1.0" › Update (`lastUpdateTime` 07:42:47) → the button stays as Open, and Open starts the app. The notice reads `android:org.marathonos.deckard.notifytest installed` (the raw id, not "Notify Test installed"). A fresh install was not repeated (see F8) | [recheck-store-settings](verification-2026-10-19/recheck-store-settings.png) |
+| F8 Uninstall from Settings | **PASS for a normal app, silent failure for Notify Test**. Page (Store Get via `apps.show`): Settings › Uninstall → remorse → removed (`DeckardUninstall: uninstalled com.page.bizzle`), list 7 → 6, no error. Notify Test: the remorse timer runs, then nothing happens. No error is shown and the app stays installed: `DeckardUninstall: not uninstalled org.marathonos.deckard.notifytest: part of the system`. That refusal is probably intended for `org.marathonos.deckard.*`, but then Settings should not offer Uninstall, or should say why | [recheck-store-settings](verification-2026-10-19/recheck-store-settings.png) |
+| F9 Close Android cards 10× | **PASS, with a cosmetic fault**. Feeder, Catima, FOSS Browser in turn (07:45:50–07:48): each launched card was top-left, its ✕ removed it, and Android had no window left for the package each time. No `unknown surface` warnings and no black card. After the last close, the card that moved into the top-left slot shows "Feeder" drawn over its own label "Settings", and it stays that way | [recheck-cards](verification-2026-10-19/recheck-cards.png) |
+| F10 All files access request | **PASS**. Material Files (cold, via `app.show`) › "manage all files" › OK → Marathon Settings' All files page with only Material Files listed (`foregroundApp` = settings). Markor's request did the same. Back from that page stays in Settings rather than returning to the app | [recheck-files](verification-2026-10-19/recheck-files.png) last tile |
+| Spot: tel: → Phone | PASS: dialer with +1 555 000 1111 | [recheck-spot](verification-2026-10-19/recheck-spot.png) |
+| Spot: back gesture | PASS: Feeder's drawer closes | [recheck-spot](verification-2026-10-19/recheck-spot.png) |
+| Spot: QS media card | PASS: "Silent track 1 / Deckard" from Notify Test's silent session | [recheck-spot](verification-2026-10-19/recheck-spot.png) |
+
+Still open after the re-check: F5 (the reply field takes no input), the
+second launcher start after a notification tap (F4), Uninstall offered for an
+app DeckardSystem refuses (F8), and the cosmetic label and notice text
+(F9, F7).
+
+Re-check cleanup: Page installed and removed; Notify Test updated in place and
+kept. Markor's `MANAGE_EXTERNAL_STORAGE` (granted for the share test) is back
+to default. The test document, picture, APK copy and this run's three
+`xfer/` folders were deleted.
