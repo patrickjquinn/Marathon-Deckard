@@ -93,7 +93,7 @@ S1 system/product/app/Etar
 S1 system/product/app/ExactCalculator
 S1 system/product/app/LatinIME
 S1 system/product/app/LocalContactsBackup
-S1 system/product/app/ModuleMetadata
+KEEP system/product/app/ModuleMetadata
 S1 system/product/app/PhotoTable
 S1 system/product/app/Recorder
 S1 system/product/app/ThemesStub
