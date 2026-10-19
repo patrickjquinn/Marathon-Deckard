@@ -158,4 +158,55 @@ puts that app's tools first, as it does for Marathon apps.
   the device's.
 - pilotd: `the_shell_names_the_android_app_in_front` and the existing
   Marathon adapter tests pass (`cargo test -p shoal-pilotd --test marathon`).
-- On the device: pending.
+- On the HackberryPi (2026-10-19 03:18–03:26). The shell had
+  `GetForegroundApp`, `ExpectAppWindow` and `SetAppWindowSecure`, and
+  Deckard was at e3df5d5. Android's data had just been reset, so the only
+  app was Android's Settings. I drove everything through `keel-mcp --stdio`
+  over ssh:
+  - **Discovery.** keel-mcp lists `waydroid.com.android.settings` with
+    `app.show`, `screen.read`, `ui.tap`, `ui.type` and three shortcuts that
+    DeckardSystem returned: `manifest-shortcut-wifi`, `-data-usage` and
+    `-battery`, with ids in LauncherApps' form. A new keel-mcp lists them
+    once its first probe has run (within 10 s), not in its first
+    `tools/list`.
+  - **A shortcut.** `shortcut.manifest_shortcut_battery` answered Done.
+    DeckardSystem started it, and its own stub then sent Android's battery
+    page to Marathon Settings (`foregroundApp` `settings`,
+    [settings-battery-shortcut.png](pilot/settings-battery-shortcut.png)).
+  - **app.show** of Android Settings: deckardd's call succeeded and
+    `foregroundApp` became `waydroid.com.android.settings`. Android
+    Settings itself never mapped a window: the shell showed "Settings
+    couldn't open". That is outside Keel (slim stages). `screen.read` then
+    answered `NotAvailable: Android cannot say whether the screen is
+    protected`, because the app had no window to check: it failed closed,
+    as intended.
+  - **Install → publish → withdraw.** `pm install` of Markor (F-Droid)
+    published `waydroid.net.gsantner.markor` (app.show, share.text,
+    screen.read, ui.*) within seconds, with no restart. `pm uninstall`
+    withdrew the bus name and the `apps.json` entry.
+  - **share.text** into Markor, a cold start: Done. The shell expected the
+    window, and Markor's activity came to the front as a launch would
+    ([markor-share.png](pilot/markor-share.png), showing Markor's own
+    storage permission prompt).
+  - **screen.read** of Markor: DeckardSystem's secure check found Markor's
+    window not secure, and ScreenReader was bound on demand. The result,
+    marked untrusted:
+    `[1.0] text "Storage permission required to read and write files" #message`,
+    `[1.1] button "EXIT" #button2`, `[1.2] button "OK" #button1`. A
+    second read, with the service bound again from cold, took about 0.4 s
+    including keel-mcp.
+  - **On demand.** ScreenReader appeared in `enabled_accessibility_services`
+    for a read. It was gone again two minutes later (only ToastWatcher
+    left), and came back for the next read.
+  - **ui.tap from a non-Pilot client:** `NeedsConfirmation ... only Pilot,
+    which asks the person, can confirm them`.
+  - **The secure parser** on the device's real `dumpsys window windows`:
+    Markor not secure. The same dump with `SECURE` added to Markor's `fl=`:
+    secure. Settings, with no window: refused.
+  - **Pilot** was running, but `Ask` answered route `not-onboarded`.
+    Nothing reaches a model until the person consents in Pilot, and I did
+    not consent for them. So `ui.tap`, `ui.type` and the context read
+    through Pilot are untested on the device. pilotd there is r2, without
+    patch 0003's Android mapping.
+  - **Not on the device yet:** deckardd telling the shell about secure
+    windows (`SetAppWindowSecure`; tested on the host).
