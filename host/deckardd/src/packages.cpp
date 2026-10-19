@@ -12,6 +12,8 @@
 #include <QRandomGenerator>
 #include <QTimer>
 
+#include <sys/stat.h>
+
 Q_LOGGING_CATEGORY(lcPackages, "deckard.packages")
 
 Q_DECLARE_METATYPE(PackageList)
@@ -41,6 +43,15 @@ Packages::Packages(QObject *root, Send send, MayChange mayChange, const QString 
     const QStringList left = QDir(m_dir).entryList({QStringLiteral("*.apk")}, QDir::Files);
     for (const QString &name : left)
         QFile::remove(m_dir + u'/' + name);
+}
+
+bool Packages::runs(qint64 pid, const QString &path) {
+    struct stat exe {};
+    struct stat file {};
+    const QByteArray link = "/proc/" + QByteArray::number(pid) + "/exe";
+    return pid > 0 && ::stat(link.constData(), &exe) == 0 &&
+           ::stat(QFile::encodeName(path).constData(), &file) == 0 && exe.st_dev == file.st_dev &&
+           exe.st_ino == file.st_ino;
 }
 
 void Packages::sendReply(const QDBusMessage &reply) {
@@ -125,44 +136,45 @@ QVariantMap Packages::InspectPackage(const QString &path, const QDBusMessage &ca
     return {};
 }
 
+void Packages::startJob(const QDBusMessage &call, const QJsonObject &message, const Pending &pending) {
+    QString       error;
+    const QString id = start(message, pending, &error);
+    sendReply(id.isEmpty() ? call.createErrorReply(QDBusError::Failed, error) : call.createReply(id));
+}
+
 QString Packages::InstallPackage(const QString &path, const QDBusMessage &call) {
-    if (!m_mayChange(call)) {
-        sendReply(
-            call.createErrorReply(QDBusError::AccessDenied, QStringLiteral("Only the Store installs apps")));
-        return {};
-    }
-    QString error;
-    const QString staged = stage(path, &error);
-    const QString id     = newId();
-    if (staged.isEmpty() || start({{QStringLiteral("t"), QStringLiteral("install")},
-                                   {QStringLiteral("id"), id},
-                                   {QStringLiteral("path"), kAndroidDir + staged}},
-                                  {{}, QStringLiteral("install"), staged}, &error)
-                                .isEmpty()) {
-        sendReply(call.createErrorReply(QDBusError::Failed, error));
-        return {};
-    }
-    qCInfo(lcPackages) << "installing" << path << "as job" << id;
-    return id;
+    call.setDelayedReply(true);
+    m_mayChange(call, [this, path, call] {
+        QString       error;
+        const QString staged = stage(path, &error);
+        if (staged.isEmpty()) {
+            sendReply(call.createErrorReply(QDBusError::Failed, error));
+            return;
+        }
+        qCInfo(lcPackages) << "installing" << path;
+        startJob(call,
+                 {{QStringLiteral("t"), QStringLiteral("install")},
+                  {QStringLiteral("id"), newId()},
+                  {QStringLiteral("path"), kAndroidDir + staged}},
+                 {{}, QStringLiteral("install"), staged});
+    });
+    return {};
 }
 
 QString Packages::UninstallPackage(const QString &pkg, const QDBusMessage &call) {
-    if (!m_mayChange(call)) {
-        sendReply(
-            call.createErrorReply(QDBusError::AccessDenied, QStringLiteral("Only the Store removes apps")));
-        return {};
-    }
-    QString error = QStringLiteral("bad package name");
-    const QString id = newId();
-    if (!Validate::isPackageName(pkg) || start({{QStringLiteral("t"), QStringLiteral("uninstall")},
-                                                {QStringLiteral("id"), id},
-                                                {QStringLiteral("pkg"), pkg}},
-                                               {{}, QStringLiteral("uninstall"), {}}, &error)
-                                             .isEmpty()) {
-        sendReply(call.createErrorReply(QDBusError::Failed, error));
-        return {};
-    }
-    return id;
+    call.setDelayedReply(true);
+    m_mayChange(call, [this, pkg, call] {
+        if (!Validate::isPackageName(pkg)) {
+            sendReply(call.createErrorReply(QDBusError::InvalidArgs, QStringLiteral("bad package name")));
+            return;
+        }
+        startJob(call,
+                 {{QStringLiteral("t"), QStringLiteral("uninstall")},
+                  {QStringLiteral("id"), newId()},
+                  {QStringLiteral("pkg"), pkg}},
+                 {{}, QStringLiteral("uninstall"), {}});
+    });
+    return {};
 }
 
 PackageList Packages::ListPackages(const QDBusMessage &call) {

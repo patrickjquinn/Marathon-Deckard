@@ -21,7 +21,9 @@ class Packages : public QDBusAbstractAdaptor {
 
   public:
     using Send      = std::function<bool(const QJsonObject &)>;
-    using MayChange = std::function<bool(const QDBusMessage &)>;
+    // Runs run for a caller allowed to install and remove apps; otherwise it
+    // answers the call itself (AccessDenied).
+    using MayChange = std::function<void(const QDBusMessage &, std::function<void()> run)>;
 
     static constexpr qint64 kMaxApk = Q_INT64_C(1) << 30;
 
@@ -30,6 +32,9 @@ class Packages : public QDBusAbstractAdaptor {
 
     void handle(const QString &type, const QJsonObject &message);
     void bridgeLost();
+
+    // Whether process pid runs the executable at path (same file).
+    static bool runs(qint64 pid, const QString &path);
 
   public Q_SLOTS:
     // {ok, message, pkg, label, versionName, versionCode, minSdk, targetSdk,
@@ -60,6 +65,7 @@ class Packages : public QDBusAbstractAdaptor {
 
     QString stage(const QString &path, QString *error);
     QString start(const QJsonObject &message, const Pending &pending, QString *error);
+    void    startJob(const QDBusMessage &call, const QJsonObject &message, const Pending &pending);
     void    reply(const QString &id, const QVariant &value);
     void    done(const QString &id, bool ok, const QString &pkg, const QString &message);
 

@@ -71,6 +71,9 @@ int main(int argc, char *argv[]) {
 
     // /org/marathonos/Deckard: each feature adds its own interface.
     QObject  dbusRoot;
+    Callers     callers(bus);
+    // Installs and removals: Settings, the Store, and the Store's handler,
+    // known by its executable since it runs outside any app.
     Packages packages(
         &dbusRoot,
         [&bridge](const QJsonObject &message) {
@@ -79,20 +82,13 @@ int main(int argc, char *argv[]) {
             bridge.send(message);
             return true;
         },
-        [&bus](const QDBusMessage &call) {
-            // Sandboxed apps carry a Marathon app id; only Settings and the Store may change apps.
+        [&bus, &callers](const QDBusMessage &call, std::function<void()> run) {
             const auto pid = bus.interface()->servicePid(call.service());
-            if (!pid.isValid())
-                return false;
-            QDBusMessage ask = QDBusMessage::createMethodCall(
-                QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
-                QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("AppIdForPid"));
-            ask << pid.value();
-            const QDBusMessage answer = bus.call(ask, QDBus::Block, 3000);
-            if (answer.type() != QDBusMessage::ReplyMessage || answer.arguments().isEmpty())
-                return false;
-            const QString appId = answer.arguments().constFirst().toString();
-            return appId.isEmpty() || appId == QLatin1String("settings") || appId == QLatin1String("store");
+            if (pid.isValid() && Packages::runs(pid.value(), QStringLiteral("/usr/bin/marathon-store-handler"))) {
+                run();
+                return;
+            }
+            callers.require(call, {QStringLiteral("settings"), QStringLiteral("store")}, std::move(run));
         },
         data + QStringLiteral("/deckard/install"));
     if (!bus.registerObject(QStringLiteral("/org/marathonos/Deckard"), &dbusRoot,
@@ -182,7 +178,6 @@ int main(int argc, char *argv[]) {
             });
     });
 
-    Callers     callers(bus);
     SettingsApi settingsApi(&dbusRoot, bus, &callers, &manage, &runtime,
                             {data + QStringLiteral("/icons"), cache + QStringLiteral("/icons")});
 

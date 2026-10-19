@@ -36,8 +36,16 @@ class TestPackages : public QObject {
         QList<QJsonObject> sent;
         QObject  root;
         bool     mayChange = true;
+        QList<QDBusMessage> *packagesReplies = nullptr;
         TestablePackages packages(&root, [&](const QJsonObject &m) { sent.append(m); return true; },
-                          [&](const QDBusMessage &) { return mayChange; }, install);
+                          [&](const QDBusMessage &call, std::function<void()> run) {
+                              if (mayChange)
+                                  run();
+                              else
+                                  packagesReplies->append(call.createErrorReply(QDBusError::AccessDenied, QStringLiteral("no")));
+                          },
+                          install);
+        packagesReplies = &packages.replies;
         QSignalSpy finished(&packages, &Packages::Finished);
         QSignalSpy progress(&packages, &Packages::Progress);
         QSignalSpy changed(&packages, &Packages::PackageChanged);
@@ -47,7 +55,7 @@ class TestPackages : public QObject {
         QVERIFY(text.open(QIODevice::WriteOnly));
         text.write("hello world");
         text.close();
-        QVERIFY(packages.InstallPackage(notApk, call()).isEmpty());
+        packages.InstallPackage(notApk, call());
         QVERIFY(sent.isEmpty());
         QCOMPARE(packages.replies.size(), 1);
         QCOMPARE(packages.replies[0].type(), QDBusMessage::ErrorMessage);
@@ -59,11 +67,13 @@ class TestPackages : public QObject {
         zip.close();
 
         mayChange = false;
-        QVERIFY(packages.InstallPackage(apk, call()).isEmpty());
+        packages.InstallPackage(apk, call());
         QCOMPARE(packages.replies.last().errorName(), QStringLiteral("org.freedesktop.DBus.Error.AccessDenied"));
         mayChange = true;
 
-        const QString job = packages.InstallPackage(apk, call());
+        QVERIFY(packages.InstallPackage(apk, call()).isEmpty());
+        QCOMPARE(packages.replies.last().type(), QDBusMessage::ReplyMessage);
+        const QString job = packages.replies.last().arguments().constFirst().toString();
         QVERIFY(!job.isEmpty());
         QCOMPARE(sent.size(), 1);
         QCOMPARE(sent[0].value(QStringLiteral("t")).toString(), QStringLiteral("install"));
@@ -95,15 +105,24 @@ class TestPackages : public QObject {
         QCOMPARE(changed.size(), 1);
     }
 
+    void knowsAnExecutable() {
+        QVERIFY(Packages::runs(QCoreApplication::applicationPid(), QCoreApplication::applicationFilePath()));
+        QVERIFY(!Packages::runs(QCoreApplication::applicationPid(), QStringLiteral("/bin/sh")));
+        QVERIFY(!Packages::runs(-1, QCoreApplication::applicationFilePath()));
+    }
+
     void androidGoneFailsJobs() {
         QTemporaryDir dir;
         QObject  root;
         TestablePackages packages(&root, [](const QJsonObject &) { return true; },
-                          [](const QDBusMessage &) { return true; }, dir.filePath(QStringLiteral("i")));
+                          [](const QDBusMessage &, std::function<void()> run) { run(); },
+                          dir.filePath(QStringLiteral("i")));
         QSignalSpy finished(&packages, &Packages::Finished);
-        const QString job = packages.UninstallPackage(QStringLiteral("org.example.app"), call());
+        packages.UninstallPackage(QStringLiteral("org.example.app"), call());
+        const QString job = packages.replies.last().arguments().constFirst().toString();
         QVERIFY(!job.isEmpty());
-        QVERIFY(packages.UninstallPackage(QStringLiteral("bad name"), call()).isEmpty());
+        packages.UninstallPackage(QStringLiteral("bad name"), call());
+        QCOMPARE(packages.replies.last().type(), QDBusMessage::ErrorMessage);
         packages.bridgeLost();
         QCOMPARE(finished.size(), 1);
         QCOMPARE(finished[0][0].toString(), job);
