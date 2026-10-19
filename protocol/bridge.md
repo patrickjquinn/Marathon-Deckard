@@ -428,6 +428,60 @@ characters; settings actions come from a fixed table; `id` must match
 `^[0-9a-f]{16}$`; at most 4 picks wait at once; file names are reduced to a
 base name without control characters, `/` or `\`.
 
+## Share (proposal)
+
+Phase 2 of Marathon's share sheet. Phase 1 is in the shell: the shell owns
+`org.sailfishos.share` on the session bus (Keel's `ShareAction` calls
+`share(a{sv})` on `/`), shows the sheet, and hands the request to the
+Marathon app the person picks, on its `org.marathonos.<id>` name at
+`/share/<method>` (the app's manifest lists its `shareMethods`). Text
+resources are `{name, data}` maps; files are `{name, fileDescriptor}` maps.
+This section proposes what deckardd adds so Android apps take part. Nothing
+here is built yet.
+
+### Android apps as targets
+
+On `org.marathonos.Deckard1`, callable only by the shell (the sender's pid
+is the pid owning `org.marathonos.shell`):
+
+| Method | |
+|---|---|
+| `ShareTargets(s mimeType) → aa{sv}` | The activities that take `ACTION_SEND` for that type (and `ACTION_SEND_MULTIPLE` for several resources): `{id, pkg, label, icon}`, `id` `<pkg>/<activity class>` (at most 256 characters), `icon` as `AppIcon`. Empty while Android is not running; it is not started just to answer. |
+| `Share(s id, a{sv} configuration) → ()` | The shell's request, as the sheet received it: `mimeType`, `title`, `resources`. deckardd copies each file descriptor's content to `xfer/<tid>/<name>` (`tid` 16 hex digits, as a pick's id) and sends `share` on the system channel. Replies once Android started the activity; `org.marathonos.Deckard1.Error.Failed` otherwise. |
+
+System channel, host to Android:
+
+| `t` | Fields | Meaning |
+|---|---|---|
+| `share` | `id`, `target`, `mime`, `title`, `text`, `files` | DeckardSystem starts `target` with `ACTION_SEND` (`EXTRA_TEXT`, `EXTRA_SUBJECT` from `title`, `EXTRA_STREAM`) or `ACTION_SEND_MULTIPLE` (`EXTRA_STREAM` list), the streams being its DocumentsProvider's `<id>/<name>` URIs with `FLAG_GRANT_READ_URI_PERMISSION`. Answers `shared {id, ok}`. |
+
+The shell lists these targets after the Marathon apps, only while
+`org.marathonos.Deckard` is on the bus, and asks with the request's type (or
+`text/plain` for text). deckardd brings the target's window forward with
+`Navigation1.ExpectAppWindow("waydroid.<pkg>")` before `share`, so the window
+Android opens for it takes the front.
+
+Limits as for the sheet: at most 32 resources, text at most 65,536
+characters, file names reduced to a base name as for picks; transfers go
+with the 30-day cleanup.
+
+### Android apps as sources
+
+DeckardSystem answers `ACTION_CHOOSER` with an activity at a priority above
+100 (see [../docs/slim.md](../docs/slim.md), *The chooser*). It unwraps
+`EXTRA_INTENT` (`ACTION_SEND` or `ACTION_SEND_MULTIPLE`), copies the streams
+to `xfer/<tid>/`, and sends:
+
+| `t` | Fields | Meaning |
+|---|---|---|
+| `share_out` | `id`, `pkg`, `mime`, `title`, `text`, `files` | Android to host. deckardd calls `org.sailfishos.share.share(a{sv})` with `resources` (`text` as one `{name, data}`; each file as `{name, fileDescriptor}` opened from `xfer`), `mimeType`, `title` and `source` `waydroid.<pkg>`. |
+
+Two shell changes come with this, both small: the sheet accepts
+`{name, fileDescriptor}` resources from any caller (a descriptor is its own
+proof of access; today only the paths a Marathon app sees in a shared folder
+are accepted), and it honours `source` from session services only, to leave
+the sharing app out of the targets.
+
 ## Settings API
 
 How Marathon's Settings shows and changes Android apps. deckardd exports
