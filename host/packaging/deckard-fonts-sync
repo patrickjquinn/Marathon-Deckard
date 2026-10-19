@@ -1,19 +1,53 @@
 #!/bin/sh
-# Gives Android Marathon's UI face: copies the host's Source Sans 3 into
-# Waydroid's overlay with a fonts.xml that makes it Android's sans-serif.
-# Without the fonts, Android keeps its own fonts.xml (an empty default family
-# would stop Android from booting).
+# Gives Android Marathon's font set: copies the host's fonts into Waydroid's
+# overlay with a fonts.xml that maps Android's families onto them, replaces
+# Android fonts the host also ships (same file name), and hides the Android
+# fonts nothing names any more (overlayfs whiteouts). If a host font that
+# fonts.xml needs is missing, Android keeps its own fonts: a family with no
+# usable file would stop Android booting.
 set -eu
-fonts=/usr/share/fonts/source-sans-3
-xml=/usr/share/deckard/fonts/fonts.xml
+share=${DECKARD_FONTS:-/usr/share/deckard/fonts}
 dst=/var/lib/waydroid/overlay/system
+state=/var/lib/waydroid/deckard-fonts.list
 
-rm -f "$dst"/etc/fonts.xml "$dst"/fonts/SourceSans3-*.ttf
-for f in ExtraLight Light LightIt Regular It Semibold Bold; do
-	[ -f "$fonts/SourceSans3-$f.ttf" ] || exit 0
-done
-[ -f "$xml" ] || exit 0
-mkdir -p "$dst/etc" "$dst/fonts"
-cp "$fonts"/SourceSans3-*.ttf "$dst/fonts/"
-cp "$xml" "$dst/etc/fonts.xml"
-chmod 644 "$dst"/fonts/SourceSans3-*.ttf "$dst/etc/fonts.xml"
+if [ -f "$state" ]; then
+	while IFS= read -r f; do
+		rm -f "$dst/$f"
+	done < "$state"
+fi
+rm -f "$state"
+
+[ -f "$share/fonts.xml" ] || exit 0
+host() {
+	find /usr/share/fonts -name "$1" -type f 2>/dev/null | head -n 1
+}
+while IFS= read -r f; do
+	[ -n "$(host "$f")" ] || exit 0
+done < "$share/host-fonts.txt"
+
+mkdir -p "$dst/etc" "$dst/fonts" "$dst/product/etc" "$dst/product/fonts"
+: > "$state.new"
+copy() {
+	cp "$1" "$dst/fonts/$2"
+	chmod 644 "$dst/fonts/$2"
+	echo "fonts/$2" >> "$state.new"
+}
+while IFS= read -r f; do
+	copy "$(host "$f")" "$f"
+done < "$share/host-fonts.txt"
+while IFS= read -r f; do
+	src=$(host "$f")
+	[ -z "$src" ] || copy "$src" "$f"
+done < "$share/android-fonts.txt"
+while IFS= read -r f; do
+	case $f in
+	product/*) path=product/fonts/${f#product/} ;;
+	*) path=fonts/$f ;;
+	esac
+	mknod "$dst/$path" c 0 0
+	echo "$path" >> "$state.new"
+done < "$share/hidden-fonts.txt"
+install -m644 "$share/fonts.xml" "$dst/etc/fonts.xml"
+install -m644 "$share/fonts_customization.xml" "$dst/product/etc/fonts_customization.xml"
+printf 'etc/fonts.xml\nproduct/etc/fonts_customization.xml\n' >> "$state.new"
+mv "$state.new" "$state"
