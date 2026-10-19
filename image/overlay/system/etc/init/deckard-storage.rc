@@ -1,0 +1,14 @@
+# Marathon's folders as Android's shared storage: deckard-shared-folders
+# binds them over /data/media/0/<folder> before Android starts, but vold's
+# lower view for MediaProvider (/mnt/pass_through/0/emulated) is a bind of
+# /data/media without its submounts, so they are bound there again once vold
+# has made it. Mounts there reach every app namespace (shared propagation).
+service deckard-storage /system/bin/deckard-storage
+    class main
+    user root
+    group root
+    oneshot
+    disabled
+
+on post-fs-data
+    start deckard-storage

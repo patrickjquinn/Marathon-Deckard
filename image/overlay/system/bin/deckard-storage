@@ -1,0 +1,15 @@
+#!/system/bin/sh
+# Binds each folder deckard-shared-folders shared into vold's pass-through
+# view, once vold has mounted it (deckard-storage.rc).
+lower=/mnt/pass_through/0/emulated
+n=0
+until grep -q " $lower " /proc/mounts; do
+	n=$((n + 1))
+	[ $n -le 600 ] || exit 0
+	sleep 0.2
+done
+for d in Documents Download Pictures Music Movies DCIM; do
+	grep -q " /data/media/0/$d " /proc/mounts || continue
+	grep -q " $lower/0/$d " /proc/mounts && continue
+	mount -o bind "/data/media/0/$d" "$lower/0/$d" && log -t deckard-storage "shared $d"
+done

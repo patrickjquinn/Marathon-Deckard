@@ -447,6 +447,16 @@ Whatever an Android folder held before is moved into the user's folder
 (kept in Android if the name is taken), owned by the user, group media_rw,
 group read and write.
 
+**vold's pass-through view.** MediaProvider's FUSE daemon doesn't work on
+`/data/media` itself but on `/mnt/pass_through/0/emulated`, which vold
+makes at boot as a bind of `/data/media` without its submounts. So the
+binds over `/data/media/0/<folder>` alone don't reach `/sdcard` (seen on the
+device: `/data/media/0/Pictures` showed the user's folder, `/sdcard/Pictures`
+still Android's). `deckard-storage` (an overlay rc service, started at
+`post-fs-data`) waits for vold's mount and binds each shared folder there
+too; the mount point is shared, so the binds reach every app's namespace,
+MediaProvider's included.
+
 **Permissions both ways, nothing world-writable.** deckardd gives each
 folder an access ACL with group media_rw rwx and a default ACL with
 media_rw rwx and the user rwx, and once (the first time it runs) the same to
@@ -473,8 +483,23 @@ carried over.
 
 Host tests: `test-deckard-shared-folders.py` (mapping, creation, moving
 Android's files, refusing links and data outside the home) and
-`test_sharedstorage` (ACLs, inheritance, the paths sent for scanning). Not
-yet run on the device.
+`test_sharedstorage` (ACLs, inheritance, the paths sent for scanning).
+
+On the HackberryPi (deckard a5362f4 with the hook, `deckard-storage` and the
+ACLs staged by hand, scans triggered with `content call … scan_file` in
+place of the newer deckardd): MediaProvider is u0_a29 (10029) with media_rw
+among its groups, and Android's own `/data/media/0` folders already carry
+the same media_rw ACLs. All six folders were bound in `/data/media/0` and
+in vold's view; Markor's folder and the `.thumbnails` folders moved to the
+user's. A `screencap` into `/sdcard/Pictures` appeared as
+`~/Pictures/android-shot.png`, owned by 10029, with ACL `user:1000:rwx` and
+`group:media_rw:rwx` (mask rw), readable and writable by the user. A picture
+copied into `~/Pictures/Marathon` on the host showed in `/sdcard` and in
+MediaStore after the scan, and was gone from MediaStore after it was
+deleted on the host and scanned again. `Android/data` and `Android/obb` stay
+under `/data/media/0/Android`; nothing in the shared folders was
+world-writable. Not yet seen in Marathon's Gallery on screen: the
+screenshot showed an Android window over it.
 
 ## A boot that never completes
 
