@@ -74,7 +74,7 @@ class TestPalette : public QObject {
         QDBusConnection bus = QDBusConnection::sessionBus();
         QVERIFY(bus.registerObject(QStringLiteral("/org/marathonos/Shell/Ambience"), &shell,
                                    QDBusConnection::ExportAllSlots));
-        QVERIFY(bus.registerService(QStringLiteral("org.marathonos.Shell")));
+        QVERIFY(bus.registerService(QStringLiteral("org.marathonos.Shell.Session")));
         QTemporaryDir dir;
         const QString path = dir.filePath(QStringLiteral("deckard/palette"));
         AmbiencePalette palette(path);

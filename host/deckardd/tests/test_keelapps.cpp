@@ -399,7 +399,7 @@ class TestKeelApps : public QObject {
         FakeNavigation navigation;
         QVERIFY(shellBus.registerObject(QStringLiteral("/org/marathonos/Shell/Navigation"), &navigation,
                                         QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllSignals));
-        QVERIFY(shellBus.registerService(QStringLiteral("org.marathonos.Shell")));
+        QVERIFY(shellBus.registerService(QStringLiteral("org.marathonos.Shell.Session")));
         fakeShell.launched.clear();
         auto search = invoke(name, QStringLiteral("app.search"), QStringLiteral("{\"query\":\"anna\"}"), {});
         QTRY_COMPARE(sent.size(), 1);

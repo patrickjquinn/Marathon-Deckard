@@ -12,7 +12,7 @@
 Q_LOGGING_CATEGORY(lcIme, "deckard.ime")
 
 namespace {
-    const QString kShell     = QStringLiteral("org.marathonos.Shell");
+    const QString kShell     = QStringLiteral("org.marathonos.Shell.Session");
     const QString kPath      = QStringLiteral("/org/marathonos/Shell/TextInput");
     const QString kInterface = QStringLiteral("org.marathonos.Shell.TextInput1");
 

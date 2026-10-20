@@ -284,7 +284,7 @@ void Sharing::Share(const QString &id, const QVariantMap &configuration, const Q
 
     // The shell lets the window Android opens for the share take the front.
     QDBusMessage expect = QDBusMessage::createMethodCall(
-        QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+        QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Navigation"),
         QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("ExpectAppWindow"));
     expect << QStringLiteral("waydroid.") + pkg;
     auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(expect, 2000), this);

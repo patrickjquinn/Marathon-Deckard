@@ -298,7 +298,7 @@ class TestSettingsApi : public QObject {
         FakeShell       shell;
         QVERIFY(bus.registerObject(QStringLiteral("/org/marathonos/Shell/Navigation"), &shell,
                                    QDBusConnection::ExportAllSlots));
-        QVERIFY(bus.registerService(QStringLiteral("org.marathonos.Shell")));
+        QVERIFY(bus.registerService(QStringLiteral("org.marathonos.Shell.Session")));
 
         QTemporaryDir dir;
         QStringList   unitCalls;
