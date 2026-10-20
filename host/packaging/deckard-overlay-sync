@@ -18,7 +18,13 @@ cfg=$wd/waydroid.cfg
 # <path>": anywhere else they are left out, so they never shadow a newer image.
 guards='vendor_datetime 1790486210 vendor/lib64/hw/hwcomposer.waydroid.so
 system_datetime 1790477549 system/apex/com.android.permission/priv-app/PermissionController@TQ3A.230901.001/PermissionController.apk
-system_datetime 1790477549 system/etc/init/hw/init.rc'
+system_datetime 1790477549 system/etc/init/hw/init.rc
+system_datetime 1790477549 system/etc/init/atrace.rc
+system_datetime 1790477549 system/etc/init/audioserver.rc
+system_datetime 1790477549 system/etc/init/bpfloader.rc
+system_datetime 1790477549 system/etc/init/dmesgd.rc
+system_datetime 1790477549 system/etc/init/llkd.rc
+system_datetime 1790477549 system/etc/init/perfetto.rc'
 
 [ -d "$src" ] || exit 0
 mkdir -p "$dst"

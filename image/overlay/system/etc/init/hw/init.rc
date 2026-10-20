@@ -14,7 +14,6 @@ import /system/etc/init/hw/init.${ro.zygote}.rc
 # Cgroups are mounted right before early-init using list from /etc/cgroups.json
 on early-init
     # Disable sysrq from keyboard
-    write /proc/sys/kernel/sysrq 0
 
     # Android doesn't need kernel module autoloading, and it causes SELinux
     # denials.  So disable it by setting modprobe to the empty string.  Note: to
@@ -27,7 +26,6 @@ on early-init
     # Set the security context of /postinstall if present.
     restorecon /postinstall
 
-    mkdir /acct/uid
 
     # memory.pressure_level used by lmkd
     # app mem cgroups, used by activity manager, lmkd and zygote
@@ -87,11 +85,7 @@ on init
 
     # Mix device-specific information into the entropy pool
     copy /proc/cmdline /dev/urandom
-    copy /system/etc/prop.default /dev/urandom
 
-    symlink /proc/self/fd/0 /dev/stdin
-    symlink /proc/self/fd/1 /dev/stdout
-    symlink /proc/self/fd/2 /dev/stderr
 
     # Create energy-aware scheduler tuning nodes
 
@@ -154,8 +148,6 @@ on init
     symlink /storage/self/primary /mnt/sdcard
     symlink /mnt/user/0/primary /mnt/runtime/default/self/primary
 
-    write /proc/sys/kernel/panic_on_oops 1
-    write /proc/sys/kernel/hung_task_timeout_secs 0
     write /proc/cpu/alignment 4
 
     # scheduler tunables
@@ -167,16 +159,12 @@ on init
     write /proc/sys/kernel/sched_wakeup_granularity_ns 2000000
     write /proc/sys/kernel/sched_child_runs_first 0
 
-    write /proc/sys/kernel/randomize_va_space 2
-    write /proc/sys/vm/mmap_min_addr 32768
     write /proc/sys/net/ipv4/ping_group_range "0 2147483647"
     write /proc/sys/net/unix/max_dgram_qlen 600
 
     # Assign reasonable ceiling values for socket rcv/snd buffers.
     # These should almost always be overridden by the target per the
     # the corresponding technology maximums.
-    write /proc/sys/net/core/rmem_max  262144
-    write /proc/sys/net/core/wmem_max  262144
 
     # reflect fwmark from incoming packets onto generated replies
     write /proc/sys/net/ipv4/fwmark_reflect 1
@@ -242,11 +230,9 @@ on init
     chmod 0440 /sys/fs/pstore/pmsg-ramoops-0
 
     # enable armv8_deprecated instruction hooks
-    write /proc/sys/abi/swp 1
 
     # Linux's execveat() syscall may construct paths containing /dev/fd
     # expecting it to point to /proc/self/fd
-    symlink /proc/self/fd /dev/fd
 
     export DOWNLOAD_CACHE /data/cache
 
@@ -261,9 +247,7 @@ on init
     chmod 0444 /dev/cpu_variant:${ro.bionic.2nd_arch}
 
     # Allow system processes to read / write power state.
-    chown system system /sys/power/state
     chown system system /sys/power/wakeup_count
-    chmod 0660 /sys/power/state
 
     chown radio wakelock /sys/power/wake_lock
     chown radio wakelock /sys/power/wake_unlock
@@ -273,7 +257,6 @@ on init
     # Start logd before any other services run to ensure we capture all of their logs.
     start logd
     # Start lmkd before any other services run so that it can register them
-    write /proc/sys/vm/watermark_boost_factor 0
     chown root system /sys/module/lowmemorykiller/parameters/adj
     chmod 0664 /sys/module/lowmemorykiller/parameters/adj
     chown root system /sys/module/lowmemorykiller/parameters/minfree
@@ -380,8 +363,6 @@ on post-fs
     restorecon --recursive --cross-filesystems /sys/kernel/debug
 
     # We chown/chmod /cache again so because mount is run as root + defaults
-    chown system cache /cache
-    chmod 0770 /cache
     # We restorecon /cache in case the cache partition has been reset.
     restorecon_recursive /cache
 
@@ -406,8 +387,6 @@ on post-fs
     #change permissions on kmsg & sysrq-trigger so bugreports can grab kthread stacks
     chown root system /proc/kmsg
     chmod 0440 /proc/kmsg
-    chown root system /proc/sysrq-trigger
-    chmod 0220 /proc/sysrq-trigger
     chown system log /proc/last_kmsg
     chmod 0440 /proc/last_kmsg
 
@@ -729,7 +708,6 @@ on post-fs-data
     mkdir /data/user_de 0711 system system encryption=None
 
     # Unlink /data/user/0 if we previously symlink it to /data/data
-    rm /data/user/0
 
     # Bind mount /data/user/0 to /data/data
     mkdir /data/user/0 0700 system system encryption=None
@@ -851,7 +829,6 @@ on post-fs-data && property:sys.use_memfd=""
 on zygote-start && property:ro.crypto.state=unencrypted
     wait_for_prop odsign.verification.done 1
     # A/B update verifier that marks a successful boot.
-    exec_start update_verifier_nonencrypted
     start statsd
     start netd
     start zygote
@@ -860,7 +837,6 @@ on zygote-start && property:ro.crypto.state=unencrypted
 on zygote-start && property:ro.crypto.state=unsupported
     wait_for_prop odsign.verification.done 1
     # A/B update verifier that marks a successful boot.
-    exec_start update_verifier_nonencrypted
     start statsd
     start netd
     start zygote
@@ -869,7 +845,6 @@ on zygote-start && property:ro.crypto.state=unsupported
 on zygote-start && property:ro.crypto.state=encrypted && property:ro.crypto.type=file
     wait_for_prop odsign.verification.done 1
     # A/B update verifier that marks a successful boot.
-    exec_start update_verifier_nonencrypted
     start statsd
     start netd
     start zygote
@@ -883,8 +858,6 @@ on boot && property:ro.config.low_ram=true
 on boot
     # basic network init
     ifup lo
-    hostname localhost
-    domainname localdomain
 
     # IPsec SA default expiration length
     write /proc/sys/net/core/xfrm_acq_expires 3600
@@ -892,24 +865,16 @@ on boot
     # Memory management.  Basic kernel parameters, and allow the high
     # level system server to be able to adjust the kernel OOM driver
     # parameters to match how it is managing things.
-    write /proc/sys/vm/overcommit_memory 1
     write /proc/sys/vm/min_free_order_shift 4
 
     # System server manages zram writeback
-    chown root system /sys/block/zram0/idle
-    chmod 0664 /sys/block/zram0/idle
-    chown root system /sys/block/zram0/writeback
-    chmod 0664 /sys/block/zram0/writeback
 
     # to access F2FS sysfs on dm-<num> directly
     mkdir /dev/sys/fs/by-name 0755 system system
-    symlink /sys/fs/f2fs/${dev.mnt.dev.data} /dev/sys/fs/by-name/userdata
 
     # dev.mnt.dev.data=dm-N, dev.mnt.blk.data=sdaN/mmcblk0pN, dev.mnt.rootdisk.data=sda/mmcblk0, or
     # dev.mnt.dev.data=sdaN/mmcblk0pN, dev.mnt.blk.data=sdaN/mmcblk0pN, dev.mnt.rootdisk.data=sda/mmcblk0
     mkdir /dev/sys/block/by-name 0755 system system
-    symlink /sys/class/block/${dev.mnt.dev.data} /dev/sys/block/by-name/userdata
-    symlink /sys/class/block/${dev.mnt.rootdisk.data} /dev/sys/block/by-name/rootdisk
 
     # F2FS tuning. Set cp_interval larger than dirty_expire_centisecs, 30 secs,
     # to avoid power consumption when system becomes mostly idle. Be careful
@@ -956,8 +921,6 @@ on boot
     chmod 0660 /sys/devices/system/cpu/cpufreq/interactive/io_is_busy
 
     # Assume SMP uses shared cpufreq policy for all CPUs
-    chown system system /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq
-    chmod 0660 /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq
 
     chown system system /sys/class/leds/vibrator/trigger
     chown system system /sys/class/leds/vibrator/activate
@@ -988,7 +951,6 @@ on boot
     setprop net.tcp_def_init_rwnd 60
 
     # Update dm-verity state and set partition.*.verified properties.
-    verity_update_state
 
     # Start standard binderized HAL daemons
     class_start hal
@@ -1039,7 +1001,6 @@ on property:sys.init.perf_lsm_hooks=1
 on property:security.perf_harden=0 && property:sys.init.perf_lsm_hooks=""
     write /proc/sys/kernel/perf_event_paranoid 1
 on property:security.perf_harden=1 && property:sys.init.perf_lsm_hooks=""
-    write /proc/sys/kernel/perf_event_paranoid 3
 
 # Additionally, simpleperf profiler uses debug.* and security.perf_harden
 # sysprops to be able to indirectly set these sysctls.
@@ -1049,9 +1010,6 @@ on property:security.perf_harden=0
     write /proc/sys/kernel/perf_event_mlock_kb ${debug.perf_event_mlock_kb:-516}
 # Default values.
 on property:security.perf_harden=1
-    write /proc/sys/kernel/perf_event_max_sample_rate 100000
-    write /proc/sys/kernel/perf_cpu_time_max_percent 25
-    write /proc/sys/kernel/perf_event_mlock_kb 516
 
 # This property can be set only on userdebug/eng. See neverallow rule in
 # /system/sepolicy/private/property.te .
