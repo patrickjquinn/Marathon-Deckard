@@ -157,7 +157,7 @@ AmbiencePalette::AmbiencePalette(const QString &path, QObject *parent)
     : QObject(parent)
     , m_path(path) {
     QDBusConnection bus = QDBusConnection::sessionBus();
-    bus.connect(QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Ambience"),
+    bus.connect(QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Ambience"),
                 QStringLiteral("org.marathonos.Shell.Ambience1"), QStringLiteral("AmbienceChanged"),
                 this, SLOT(refresh()));
     bus.connect(QStringLiteral("org.freedesktop.DBus"), QStringLiteral("/org/freedesktop/DBus"),
@@ -167,13 +167,13 @@ AmbiencePalette::AmbiencePalette(const QString &path, QObject *parent)
 }
 
 void AmbiencePalette::onNameOwnerChanged(const QString &name) {
-    if (name == QLatin1String("org.marathonos.Shell.Session"))
+    if (name == QLatin1String("org.marathonos.Shell"))
         refresh();
 }
 
 void AmbiencePalette::refresh() {
     const QDBusMessage call = QDBusMessage::createMethodCall(
-        QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Ambience"),
+        QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Ambience"),
         QStringLiteral("org.marathonos.Shell.Ambience1"), QStringLiteral("GetAmbience"));
     auto *watcher = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(call), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher] {

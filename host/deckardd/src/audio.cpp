@@ -11,7 +11,7 @@
 Q_LOGGING_CATEGORY(lcAudio, "deckard.audio")
 
 namespace {
-    const QString kShell = QStringLiteral("org.marathonos.Shell.Session");
+    const QString kShell = QStringLiteral("org.marathonos.Shell");
 } // namespace
 
 AudioSync::AudioSync(Bridge *bridge, QObject *parent)
