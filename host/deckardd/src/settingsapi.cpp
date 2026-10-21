@@ -237,7 +237,7 @@ void SettingsApi::OpenGoogleServices(const QString &page, const QDBusMessage &me
                                   return;
                               }
                               QDBusMessage expect = QDBusMessage::createMethodCall(
-                                  QStringLiteral("org.marathonos.Shell.Session"),
+                                  QStringLiteral("org.marathonos.Shell"),
                                   QStringLiteral("/org/marathonos/Shell/Navigation"),
                                   QStringLiteral("org.marathonos.Shell.Navigation1"),
                                   QStringLiteral("ExpectAppWindow"));

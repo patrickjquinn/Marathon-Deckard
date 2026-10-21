@@ -46,7 +46,7 @@ Callers::Callers(QDBusConnection bus, PidOf pidOf, Lookup lookup, Parent parentO
     if (!m_lookup) {
         m_lookup = [this](qint64 pid, AppId done) {
             QDBusMessage call = QDBusMessage::createMethodCall(
-                QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+                QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
                 QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("AppIdForPid"));
             call << uint(pid);
             callAsync(m_bus, call, this, [done = std::move(done)](const QDBusMessage &reply) {

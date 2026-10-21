@@ -595,7 +595,7 @@ KeelApps::KeelApps(Send send, Send system, Connect connect, QDBusConnection shel
     , m_trusted(std::move(trusted))
     , m_statePath(statePath) {
     load();
-    m_shell.connect(QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+    m_shell.connect(QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
                     QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("ForegroundAppChanged"), this,
                     SLOT(onForeground(QString)));
 }
@@ -722,7 +722,7 @@ void KeelApps::reportSecure(const QString &pkg, bool secure) {
         return;
     m_secure.insert(pkg, secure);
     QDBusMessage call = QDBusMessage::createMethodCall(
-        QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+        QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
         QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("SetAppWindowSecure"));
     call << appId(pkg) << secure;
     m_shell.call(call, QDBus::NoBlock);
@@ -975,7 +975,7 @@ void KeelApps::waitForWindow(const QString &id, int left, Done done) {
 // while, as for a launch from Marathon.
 void KeelApps::expectWindow(const QString &id, std::function<void(bool)> done) {
     QDBusMessage call = QDBusMessage::createMethodCall(
-        QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+        QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
         QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("ExpectAppWindow"));
     call << id;
     auto *watcher = new QDBusPendingCallWatcher(m_shell.asyncCall(call, 5000), this);

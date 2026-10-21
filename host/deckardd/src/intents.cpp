@@ -311,7 +311,7 @@ SystemIntents::SystemIntents(Send send, const QString &xferDir, const QString &c
     qDBusRegisterMetaType<QList<PortalFilter>>();
     QDir().mkpath(m_xfer);
     sweep();
-    m_bus.connect(QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+    m_bus.connect(QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
                   QStringLiteral("org.marathonos.Shell.Navigation1"), QStringLiteral("ForegroundAppChanged"),
                   this, SLOT(onForegroundApp(QString)));
 }
@@ -370,7 +370,7 @@ void SystemIntents::open(const QJsonObject &message) {
     } else {
         const bool route = t->kind == Intents::Target::Route;
         call = QDBusMessage::createMethodCall(
-            QStringLiteral("org.marathonos.Shell.Session"), QStringLiteral("/org/marathonos/Shell/Navigation"),
+            QStringLiteral("org.marathonos.Shell"), QStringLiteral("/org/marathonos/Shell/Navigation"),
             QStringLiteral("org.marathonos.Shell.Navigation1"),
             route ? QStringLiteral("LaunchAppWithRoute") : QStringLiteral("LaunchApp"));
         call << t->app;
