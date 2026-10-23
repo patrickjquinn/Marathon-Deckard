@@ -1,0 +1,3 @@
+# shipped properties
+ro.product.cpu.abilist=arm64-v8a
+ro.lmk.use_new_strategy=true
