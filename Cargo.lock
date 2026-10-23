@@ -274,6 +274,7 @@ dependencies = [
  "async-channel",
  "async-io",
  "base64",
+ "blocking",
  "deckard-core",
  "deckard-ime",
  "deckard-mpris",
@@ -281,6 +282,7 @@ dependencies = [
  "deckard-packages",
  "futures-lite",
  "image",
+ "percent-encoding",
  "regex",
  "rustix",
  "serde",
@@ -751,6 +753,12 @@ name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
+
+[[package]]
+name = "percent-encoding"
+version = "2.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pin-project-lite"
