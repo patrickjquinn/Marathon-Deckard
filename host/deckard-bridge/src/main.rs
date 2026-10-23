@@ -15,6 +15,7 @@ use deckard_bridge::manage::Manage;
 use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
 use deckard_bridge::runtime::{Runtime, call_unit, watch_unit};
+use deckard_bridge::shell_sync;
 use deckard_core::ids::PackageName;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
@@ -384,6 +385,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let changed = || emit_runtime(&watch_bus, &watch_runtime);
         if let Err(error) = watch_unit(&watch_bus, &watch_runtime, changed) {
             eprintln!("deckard-bridge: unit watch failed: {error}")
+        }
+    });
+    let doze_bus = bus.clone();
+    let doze = data.join("deckard/doze");
+    thread::spawn(move || {
+        if let Err(error) = shell_sync::sync_doze(&doze_bus, &doze) {
+            eprintln!("deckard-bridge: Doze sync failed: {error}");
+        }
+    });
+    let palette_bus = bus.clone();
+    let palette = data.join("deckard/palette");
+    thread::spawn(move || {
+        if let Err(error) = shell_sync::sync_palette(palette_bus.inner(), &palette) {
+            eprintln!("deckard-bridge: palette sync failed: {error}");
         }
     });
     let marker = env::var_os("XDG_RUNTIME_DIR")

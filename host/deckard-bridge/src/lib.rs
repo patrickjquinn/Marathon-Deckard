@@ -9,3 +9,4 @@ pub mod manage;
 pub mod notifications;
 pub mod packages;
 pub mod runtime;
+pub mod shell_sync;
