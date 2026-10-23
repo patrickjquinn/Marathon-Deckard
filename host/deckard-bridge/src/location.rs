@@ -19,8 +19,9 @@ use zbus::{MatchRule, MessageStream};
 
 use crate::Outbound;
 
+/// The GeoClue client's desktop id, which the Shell's agent authorises.
 pub const DESKTOP_ID: &str = "org.marathonos.Deckard";
-pub const MAX_INTERVAL_MS: u64 = 24 * 3600 * 1000;
+const MAX_INTERVAL_MS: u64 = 24 * 3600 * 1000;
 const GEOCLUE: &str = "org.freedesktop.GeoClue2";
 const CLIENT: &str = "org.freedesktop.GeoClue2.Client";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";

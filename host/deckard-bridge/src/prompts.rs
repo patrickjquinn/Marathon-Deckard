@@ -22,6 +22,7 @@ const SHELL: &str = "org.marathonos.Shell";
 const PATH: &str = "/org/marathonos/Shell/Permissions";
 const INTERFACE: &str = "org.marathonos.Shell.Permissions1";
 const NO_REPLY: &str = "org.freedesktop.DBus.Error.NoReply";
+/// Prompts the Shell may hold at once; more are left to Android.
 pub const MAX_WAITING: usize = 8;
 const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const ANSWERS: [&str; 4] = ["allow", "once", "deny", "cancel"];

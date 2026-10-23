@@ -24,7 +24,7 @@ use crate::Outbound;
 
 /// How long a folder stays quiet before Android is asked to index it.
 pub const SETTLE: Duration = Duration::from_secs(3);
-pub const MAX_PATHS: usize = 64;
+const MAX_PATHS: usize = 64;
 const RECENT: Duration = Duration::from_secs(2 * 3 + 2);
 const QUEUE: usize = 256;
 
