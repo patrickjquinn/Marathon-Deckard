@@ -31,6 +31,7 @@ const PERMISSIONS: &[(&str, &[&str])] = &[
     ("sensors", &["BODY_SENSORS", "BODY_SENSORS_BACKGROUND", "ACTIVITY_RECOGNITION"]),
 ];
 
+/// The kinds of Android special access Settings manages.
 #[rustfmt::skip]
 pub const SPECIAL_KINDS: &[&str] = &[
     "all_files", "install_apps", "overlay", "write_settings", "usage", "notification_listener",
@@ -45,6 +46,7 @@ pub enum Fixed {
 }
 
 /// The Android permissions of the Marathon permission `name`.
+#[must_use]
 pub fn permission(name: &str) -> Option<Vec<String>> {
     let (_, values) = PERMISSIONS.iter().find(|(key, _)| *key == name)?;
     let mut out = Vec::new();
@@ -86,6 +88,7 @@ fn objects<'a>(value: &'a Map<String, Value>, key: &str) -> Vec<&'a Map<String, 
 }
 
 /// An app's settings page, or an empty map for a bad package.
+#[must_use]
 pub fn app(value: &Map<String, Value>) -> VariantMap {
     let pkg = keel::string(value, "pkg");
     if !ids::is_package_name(pkg) {
@@ -161,6 +164,7 @@ fn permissions(value: &Map<String, Value>) -> Vec<VariantMap> {
 }
 
 /// At most 500 apps, each package once.
+#[must_use]
 pub fn apps(value: &Map<String, Value>, fixed: Fixed) -> Vec<VariantMap> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
@@ -189,6 +193,7 @@ pub fn apps(value: &Map<String, Value>, fixed: Fixed) -> Vec<VariantMap> {
 }
 
 /// microG's state; push only while it is enabled, at most 10 accounts.
+#[must_use]
 pub fn google(value: &Map<String, Value>) -> VariantMap {
     let mut accounts = Vec::new();
     let entries = keel::array(value, "accounts").iter().take(MAX_ENTRIES);

@@ -24,8 +24,7 @@ use crate::intents::{self, Endpoint, NAVIGATION};
 use crate::manage::Manage;
 use crate::runtime::{self, Runtime};
 
-pub const BUS_NAME: &str = "org.marathonos.Deckard";
-pub const OBJECT_PATH: &str = "/org/marathonos/Deckard";
+pub use deckard_packages::{BUS_NAME, OBJECT_PATH};
 pub const INTERFACE: &str = "org.marathonos.Deckard1";
 const SYSTEMD: Endpoint<'static> = (
     "org.freedesktop.systemd1",
@@ -47,6 +46,7 @@ pub enum ApiError {
     Failed(String),
 }
 
+/// A Settings or Share method's result.
 pub type Result<T> = std::result::Result<T, ApiError>;
 
 fn invalid() -> ApiError {
@@ -85,6 +85,7 @@ where
     bus.send(&call.build(body)?).await
 }
 
+/// `org.marathonos.Deckard1` at [`OBJECT_PATH`].
 #[derive(Clone)]
 pub struct SettingsApi {
     pub bus: zbus::Connection,

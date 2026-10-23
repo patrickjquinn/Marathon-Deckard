@@ -36,7 +36,9 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub type VariantMap = HashMap<String, OwnedValue>;
+/// Queues a message to the bridge on a route; false when it is not connected.
 pub type BridgeSend = dyn Fn(BridgeRoute, &Value) -> bool + Send + Sync;
+/// Whether a caller, by unique bus name, may install or remove apps.
 pub type MayChange = dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync;
 type Answer = fdo::Result<Map<String, Value>>;
 
@@ -69,6 +71,7 @@ impl Kind {
 }
 
 /// An `a{sv}` of `entries`; a value that cannot be owned is left out.
+#[must_use]
 pub fn dict<'a>(entries: impl IntoIterator<Item = (&'a str, Variant<'a>)>) -> VariantMap {
     let mut map = VariantMap::new();
     for (key, value) in entries {
@@ -112,6 +115,7 @@ struct Inner {
     staged: Arc<AtomicU64>,
 }
 
+/// The package service, shared with the bridge threads.
 #[derive(Clone)]
 pub struct Packages(Arc<Inner>);
 
@@ -149,6 +153,7 @@ impl Packages {
         })))
     }
 
+    /// The interface to serve at [`OBJECT_PATH`].
     pub fn interface(&self) -> PackagesInterface {
         PackagesInterface(Arc::downgrade(&self.0))
     }
@@ -227,6 +232,7 @@ impl Packages {
         Ok(())
     }
 
+    /// The requests still waiting for Android.
     pub fn pending_count(&self) -> usize {
         sync::lock(&self.0.pending).len()
     }

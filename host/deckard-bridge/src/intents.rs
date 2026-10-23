@@ -32,6 +32,7 @@ pub type SendSystem = dyn Fn(Map<String, Value>) -> bool + Send + Sync;
 /// A D-Bus service, object path and interface.
 pub(crate) type Endpoint<'a> = (&'a str, &'a str, &'a str);
 
+/// The Shell's Navigation1 interface.
 pub(crate) const NAVIGATION: Endpoint<'static> = (
     "org.marathonos.Shell",
     "/org/marathonos/Shell/Navigation",
@@ -300,6 +301,7 @@ fn point(text: &str) -> Option<Map<String, Value>> {
 
 /// Marathon Settings' page for an Android settings action, or "" for none;
 /// per app when it names one.
+#[must_use]
 pub fn settings_route(action: &str, pkg: &str) -> String {
     let find = |table: &[(&str, &'static str)]| {
         let found = table.iter().find(|(key, _)| *key == action);
@@ -317,11 +319,13 @@ pub fn settings_route(action: &str, pkg: &str) -> String {
 }
 
 /// A transfer ID: 16 lowercase hex digits.
+#[must_use]
 pub fn request_id(id: &str) -> bool {
     id.len() == 16 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// The last component of `path`, fit to be a file name in `xfer/<id>/`.
+#[must_use]
 pub fn safe_name(path: &str) -> String {
     let base = path.rsplit('/').next().unwrap_or("");
     let kept: String = base.chars().filter(|c| *c >= ' ' && *c != '\\').collect();
@@ -331,6 +335,7 @@ pub fn safe_name(path: &str) -> String {
     }
 }
 
+/// `value` if it is an object, else an empty one.
 pub(crate) fn object(value: Value) -> Map<String, Value> {
     match value {
         Value::Object(map) => map,

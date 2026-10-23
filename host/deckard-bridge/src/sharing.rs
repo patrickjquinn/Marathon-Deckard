@@ -363,6 +363,7 @@ fn copy_in(
 }
 
 /// `<pkg>/<activity class>`, at most 256 characters.
+#[must_use]
 pub fn target_id(id: &str) -> bool {
     let Some((pkg, class)) = id.split_once('/') else {
         return false;
