@@ -1,0 +1,22 @@
+[package]
+name = "deckard-packages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[dependencies]
+async-channel.workspace = true
+async-io.workspace = true
+deckard-core = { path = "../deckard-core" }
+futures-lite.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+zbus = { workspace = true, features = ["blocking-api"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
