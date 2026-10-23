@@ -37,6 +37,12 @@ never executes the Waydroid Python CLI or network script.
   Blocking LXC/mount/network calls run outside the D-Bus executor.
 - A private-bus test exercises the actual wire methods and credential lookup
   with an inert backend, so no host network, mounts, or LXC state is changed.
+- Root-only `GetProperty(s) -> s` and `SetProperty(ss)` methods use direct,
+  three-second-bounded `lxc-attach --clear-env -- /system/bin/getprop|setprop`.
+  Keys and values are validated before execution, stopped containers are
+  rejected, and a frozen container is thawed then refrozen. The device's
+  installed `lxc-attach ... getprop sys.boot_completed` returned `1` in a
+  read-only check; `setprop` has **not** been exercised on the device.
 
 ## Not parity-complete
 
@@ -50,6 +56,13 @@ reference. Specifically unsupported:
   `Finished()`, or `Interrupted()` signals or Polkit check. The adapter retains
   the old bus/interface names for client compatibility; no renamed
   `org.marathonos.Deckard.Container` API or migration alias exists yet.
+- **User-session property broker**: these property methods intentionally
+  reject non-root D-Bus callers, including the current user session. There is
+  no narrowly scoped authenticated broker or client migration; Python's
+  `waydroid prop get` boot polling remains in production. The native methods
+  also use Android `getprop`/`setprop` rather than the Python `IPlatform`
+  Binder transaction path, so behavioral parity beyond the observed read is
+  not established.
 - **Android Binder HAL `lineageos.waydroid.IHardware` / `waydroidhardware`**:
   transaction 1 `enableNFC`, 2 `enableBluetooth`, 3 `suspend`, 4 `reboot`,
   5 `upgrade` (32-bit timestamps), 6 `upgrade2` (64-bit timestamps), and
