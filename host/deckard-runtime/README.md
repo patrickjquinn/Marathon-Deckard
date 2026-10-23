@@ -30,9 +30,7 @@ Once the container runs, the session:
   through `IPlatform` setprop, then again on each change (what
   `marathon-waydroid-session` did with `waydroid prop set`).
 
-`session export` reruns the launcher export for the current user.
-`prop get KEY` and `prop set KEY VALUE` are root-only `lxc-attach` property
-calls; the user-facing property commands are `deckard-launch prop`.
+Android properties are read and written with `deckard-launch prop`.
 
 Not implemented, because Marathon does not use them: the clipboard bridge
 (Shell keeps its own clipboard and the device has no wl-clipboard for
