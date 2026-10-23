@@ -15,10 +15,16 @@ Wired into the daemon (`main.rs`):
 - IME focus and panel replay to the Shell, packages (app and system routing,
   mutation policy) and notifications (Hub listener, persisted state, actions,
   icons, toasts).
+- Intents (`intents.rs`): `open` routing to Marathon apps, Android focus
+  following the Shell's foreground app, FileChooser portal picks and saves,
+  Marathon Camera captures, with files crossing through `deckard/xfer/<id>/`
+  (no-follow, inside-root opens, 1 GiB per transfer, month-old sweep).
+- Sharing (`sharing.rs`): the Shell-only `org.marathonos.Deckard1.Share`
+  interface (`ShareTargets`, `Share`) and DeckardSystem's `share_out` to
+  `org.sailfishos.share`.
 
 Present as modules but **not wired** into the daemon: media/MPRIS and audio
-(`mpris.rs`, `audio.rs`), intents/file chooser/capture (`intents.rs`) and
-sharing (`sharing.rs`). Their tests include the sources with `#[path]`.
+(`mpris.rs`, `audio.rs`). Their tests include the sources with `#[path]`.
 
 Not ported yet from C++ `deckardd`: Keel and Pilot app providers, permission
 prompts, location, shared storage (ACLs, media indexing), Doze, PSI/cgroup

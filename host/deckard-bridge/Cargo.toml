@@ -16,6 +16,7 @@ deckard-ime = { path = "../deckard-ime" }
 deckard-mpris = { path = "../deckard-mpris" }
 deckard-notifications = { path = "../deckard-notifications" }
 deckard-packages = { path = "../deckard-packages" }
+dirs = "=6.0.0"
 futures-lite.workspace = true
 getrandom = "=0.4.3"
 image.workspace = true
