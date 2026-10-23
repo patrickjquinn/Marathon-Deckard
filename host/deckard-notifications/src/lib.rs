@@ -1,6 +1,7 @@
 //! D-Bus adapter for Deckard's validated Android notification payloads.
 
 mod digest;
+mod timers;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -20,6 +21,8 @@ use zbus::blocking::{Connection, MessageIterator};
 use zbus::message::{Message, Type};
 use zbus::zvariant::Value as Variant;
 
+use crate::timers::{MAX_PENDING_DISMISSALS, TimerQueue};
+
 pub type AdapterError = Box<dyn Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, AdapterError>;
 
@@ -33,6 +36,13 @@ struct Inner {
     state_path: PathBuf,
     icon_dir: PathBuf,
     android_commands: mpsc::Sender<BridgeEvent>,
+    timers: Arc<TimerQueue>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.timers.stop();
+    }
 }
 
 /// A single notification owner. The Android bridge must call these methods in
@@ -63,16 +73,33 @@ impl NotificationAdapter {
             Err(error) if error.kind() == io::ErrorKind::NotFound => NotificationState::default(),
             Err(error) => return Err(error.into()),
         };
-        Ok(Self {
-            inner: Arc::new(Inner {
-                bus,
-                operation: Mutex::new(()),
-                state: Mutex::new(state),
-                state_path,
-                icon_dir: icon_dir.into(),
-                android_commands,
-            }),
-        })
+        let timers = Arc::new(TimerQueue::new(MAX_PENDING_DISMISSALS));
+        let inner = Arc::new(Inner {
+            bus,
+            operation: Mutex::new(()),
+            state: Mutex::new(state),
+            state_path,
+            icon_dir: icon_dir.into(),
+            android_commands,
+            timers: Arc::clone(&timers),
+        });
+        let weak = Arc::downgrade(&inner);
+        thread::Builder::new()
+            .name("deckard-notification-timer".to_owned())
+            .spawn(move || {
+                if let Err(error) = timers.run(|id, token| {
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Err(error) = (NotificationAdapter { inner }).dismiss_due(id, token) {
+                        eprintln!("deckard-notifications dismiss: {error}");
+                    }
+                }) {
+                    eprintln!("deckard-notifications timer worker: {error}");
+                }
+                timers.stop();
+            })?;
+        Ok(Self { inner })
     }
 
     /// Register the Hub signal match before spawning its receiver thread.
@@ -141,6 +168,12 @@ impl NotificationAdapter {
             .map_err(|_| io::Error::other("notification operation lock poisoned").into())
     }
 
+    fn dismiss_due(&self, id: u32, token: u64) -> Result<()> {
+        let _operation = self.operation()?;
+        let commands = self.state()?.dismiss_due(id, token, now_ms());
+        self.execute(commands)
+    }
+
     fn execute(&self, commands: Vec<Command>) -> Result<()> {
         let mut close_error = None;
         for command in commands {
@@ -169,20 +202,10 @@ impl NotificationAdapter {
                     id,
                     token,
                     delay_ms,
-                } => {
-                    let adapter = self.clone();
-                    thread::spawn(move || {
-                        thread::sleep(Duration::from_millis(delay_ms));
-                        let result = adapter.operation().and_then(|_operation| {
-                            let commands = adapter.state()?.dismiss_due(id, token, now_ms());
-                            adapter.execute(commands)
-                        });
-                        match result {
-                            Ok(()) => (),
-                            Err(error) => eprintln!("deckard-notifications dismiss: {error}"),
-                        }
-                    });
-                }
+                } => self
+                    .inner
+                    .timers
+                    .schedule(id, token, Duration::from_millis(delay_ms))?,
                 Command::Send(event) => self.inner.android_commands.send(event).map_err(|_| {
                     io::Error::new(io::ErrorKind::BrokenPipe, "Android command receiver closed")
                 })?,
