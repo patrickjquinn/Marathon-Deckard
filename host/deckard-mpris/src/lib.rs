@@ -2,8 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io;
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -98,7 +97,7 @@ impl Player {
             ("cmd".to_owned(), Value::from(command)),
             ("position".to_owned(), Value::from(position_ms)),
         ]);
-        // A full queue means Android is not draining; the command is dropped.
+        // Past MAX_COMMANDS between two drains, the command is dropped.
         let _ = self.commands.try_send(message);
     }
 
@@ -374,6 +373,7 @@ impl MprisAdapter {
         })
     }
 
+    /// The number of registered players.
     #[must_use]
     pub fn active_players(&self) -> usize {
         self.players.len()

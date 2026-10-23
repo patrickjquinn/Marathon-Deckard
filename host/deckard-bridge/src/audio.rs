@@ -20,7 +20,9 @@ type Relevant = fn(&Message) -> bool;
 /// The policy Android applies: alarms-only Do Not Disturb and alarm volume.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioState {
+    /// Android goes to alarms-only Do Not Disturb.
     pub quiet: bool,
+    /// Android's alarm stream volume, 0..=1.
     pub alarm: f64,
 }
 
