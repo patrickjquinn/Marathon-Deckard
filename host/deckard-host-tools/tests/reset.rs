@@ -115,10 +115,28 @@ esac"#,
     }
 
     fn reset(&self, environment: &[(&str, &str)]) -> Output {
+        // As root, the home must belong to the uid the helper acts for.
+        if rustix::process::getuid().is_root() {
+            own(&self.home(), self.uid);
+        }
         let uid = self.uid.to_string();
         let mut all = vec![("PKEXEC_UID", uid.as_str())];
         all.extend_from_slice(environment);
         self.run(&all, &[])
+    }
+}
+
+/// `chown -R` without following links.
+fn own(path: &Path, uid: u32) {
+    std::os::unix::fs::lchown(path, Some(uid), Some(uid)).expect("own fixture");
+    let is_directory = path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_dir());
+    if is_directory {
+        let entries = fs::read_dir(path).expect("fixture entries");
+        for entry in entries {
+            own(&entry.expect("fixture entry").path(), uid);
+        }
     }
 }
 
