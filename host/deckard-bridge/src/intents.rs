@@ -367,7 +367,7 @@ where
 /// # Errors
 ///
 /// The bus error of the call, or a timeout after 30 seconds.
-pub async fn launch(bus: &zbus::Connection, target: &Target) -> zbus::Result<()> {
+async fn launch(bus: &zbus::Connection, target: &Target) -> zbus::Result<()> {
     let json = |args: &Map<String, Value>| Value::Object(args.clone()).to_string();
     let reply = match target {
         Target::Keel(app, action, args) => {
