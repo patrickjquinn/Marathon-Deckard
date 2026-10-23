@@ -18,9 +18,21 @@ when required, and run bounded `lxc-attach` calls to Android's getprop/setprop.
 They deliberately fail for an unprivileged graphical user: this slice does not
 yet contain an authenticated privileged property broker or Binder adapter.
 
-The upstream user-unlock monitor, app desktop/icon export, package-change
-monitor, optional clipboard bridge, auto-ADB, boot-completion wait, and host
-timezone propagation are **not implemented**. The Python container service,
+After the container starts, the session starts a nonblocking native Android
+catalog export. It waits for boot completion and user 0 credential-encrypted
+storage unlock, reads `IPlatform.getAppsInfo` through libgbinder, and atomically
+updates `waydroid.<package>.desktop` launchers under the graphical user's
+`XDG_DATA_HOME/applications`. Existing localized/custom fields are retained;
+the launcher identity, `waydroid app launch` and app-settings action, categories,
+form factor, system-app visibility, and Android-written icon paths match the
+installed Python exporter. An empty or malformed snapshot leaves existing
+launchers untouched. `deckard-runtime session export` reruns this export for
+the current non-root user; it is useful for a manual repair or isolated test.
+
+The upstream `IUserMonitor` callback and package-change monitor, optional
+clipboard bridge, auto-ADB, session-wide boot-completion wait, and host
+timezone propagation are **not implemented**. The icon PNGs are created by
+Android; this crate references them but does not generate them. The Python container service,
 Android app launch/property Binder client, and image/network lifecycle also
 remain. Replacing the installed wrapper with this binary now would regress
 those functions. Do not activate it until those contracts are implemented and

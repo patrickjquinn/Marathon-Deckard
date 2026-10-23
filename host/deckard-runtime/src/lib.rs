@@ -1,3 +1,9 @@
+#![deny(unsafe_code)]
+
+mod desktop;
+#[allow(unsafe_code)]
+mod platform;
+
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -8,8 +14,9 @@ use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use deckard_launch::binder::{BinderConfig, Platform as PropertyPlatform};
 use nix::unistd::{User, getegid, geteuid};
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use zbus::blocking::{Connection, Proxy};
@@ -217,6 +224,47 @@ fn start_system_container() -> Result<()> {
     Ok(())
 }
 
+fn android_ready(boot: &str, credential_encrypted: &str) -> bool {
+    boot == "1" && credential_encrypted == "true"
+}
+
+fn export_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
+    let config = BinderConfig::from_file(Path::new("/var/lib/waydroid/waydroid.cfg"))?;
+    let properties = PropertyPlatform::connect(&config)?;
+    let catalog = platform::Platform::connect(&config)?;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+        let boot = properties.getprop("sys.boot_completed", "");
+        let unlocked = properties.getprop("sys.user.0.ce_available", "");
+        if let (Ok(boot), Ok(unlocked)) = (boot, unlocked)
+            && android_ready(&boot, &unlocked)
+            && let Ok(apps) = catalog.apps()
+            && !apps.is_empty()
+        {
+            let count = desktop::export(data_home, &apps)?;
+            eprintln!("deckard-runtime: exported {count} Android launchers");
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    if stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    Err(unavailable("Android app catalog did not become ready"))
+}
+
+pub fn export_current_user_apps() -> Result<()> {
+    if geteuid().as_raw() == 0 {
+        return Err(invalid("desktop export must run as the graphical user"));
+    }
+    let user =
+        User::from_uid(geteuid())?.ok_or_else(|| invalid("current user has no passwd entry"))?;
+    let data_home = env_nonempty("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| user.dir.join(".local/share"));
+    export_installed_apps(&data_home, &AtomicBool::new(false))
+}
+
 pub fn session_start() -> Result<()> {
     let (payload, marker) = make_payload()?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -248,6 +296,14 @@ pub fn session_start() -> Result<()> {
     fs::remove_file(&marker)?;
     let system_bus = Connection::system()?;
     start_container(&system_bus, &payload)?;
+
+    let data_home = PathBuf::from(&payload["xdg_data_home"]);
+    let export_stop = Arc::clone(&stop);
+    thread::spawn(move || {
+        if let Err(error) = export_installed_apps(&data_home, &export_stop) {
+            eprintln!("deckard-runtime: Android desktop export failed: {error}");
+        }
+    });
 
     while !stop.load(Ordering::Acquire)
         && !leave_container.load(Ordering::Acquire)
@@ -463,6 +519,13 @@ mod tests {
         assert_eq!(density(None, None)?, "0");
         assert!(density(None, Some("4294967295")).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn export_waits_for_boot_and_user_unlock() {
+        assert!(!android_ready("0", "true"));
+        assert!(!android_ready("1", "false"));
+        assert!(android_ready("1", "true"));
     }
 
     #[test]
