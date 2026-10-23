@@ -6,16 +6,15 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use deckard_core::runtime_state::{
-    BOOT_TIMEOUT_MS, BootCommand, EVIDENCE_TIMEOUT_MS, FollowCommand, SHELL_BUS_NAME,
-    SessionFollower,
+    self, BOOT_TIMEOUT_MS, BootTimer, EVIDENCE_TIMEOUT_MS, SHELL_BUS_NAME, SHELL_SETTLE_MS,
+    SessionFollower, Stall,
 };
-use deckard_core::sync;
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::{MatchRule, message};
 
@@ -25,7 +24,7 @@ const EVIDENCE_POLL: Duration = Duration::from_millis(100);
 
 enum Event {
     ActiveSince(i64),
-    EvidenceFinished(u64),
+    EvidenceFinished,
 }
 
 /// Handle to the boot watchdog thread.
@@ -70,67 +69,61 @@ fn run(
     events: &Receiver<Event>,
     feedback: &SyncSender<Event>,
 ) {
-    let mut watchdog = deckard_core::runtime_state::BootWatchdog::default();
-    let mut timer: Option<(u64, Instant)> = None;
+    let mut watchdog = runtime_state::BootWatchdog::default();
+    let mut timer: Option<Instant> = None;
+    let restart = || {
+        eprintln!("deckard-bridge: restarting the Android session");
+        restart();
+    };
     loop {
         let event = match timer {
-            Some((_, at)) => events.recv_timeout(at.saturating_duration_since(Instant::now())),
+            Some(at) => events.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
-        let commands = match event {
+        match event {
             Ok(Event::ActiveSince(ms)) => {
                 let now = epoch_ms(SystemTime::now()).unwrap_or(0);
-                watchdog.set_active_since(ms, now)
+                match watchdog.set_active_since(ms, now) {
+                    BootTimer::Unchanged => {}
+                    BootTimer::Cancelled => timer = None,
+                    BootTimer::Armed(after) => timer = Some(Instant::now() + after),
+                }
             }
-            Ok(Event::EvidenceFinished(run)) => {
-                watchdog.on_evidence_finished(run, modified_ms(marker))
-            }
-            Err(RecvTimeoutError::Timeout) => match timer.take() {
-                Some((id, _)) => {
-                    watchdog.on_boot_timeout(id, modified_ms(marker), evidence.is_some())
-                }
-                None => Vec::new(),
-            },
-            Err(RecvTimeoutError::Disconnected) => return,
-        };
-        for command in commands {
-            match command {
-                BootCommand::ScheduleBootTimeout {
-                    timer: id,
-                    after_ms,
-                } => {
-                    timer = Some((id, Instant::now() + Duration::from_millis(after_ms)));
-                }
-                BootCommand::CancelBootTimeout { .. } => timer = None,
-                BootCommand::Stalled => eprintln!(
-                    "deckard-bridge: Android has not finished booting {} s after its start",
-                    BOOT_TIMEOUT_MS / 1000
-                ),
-                BootCommand::StartEvidence { run } => {
-                    if let Some(command) = evidence {
-                        collect_evidence(command.to_vec(), run, feedback.clone());
-                    }
-                }
-                BootCommand::RestartUnit => {
-                    eprintln!("deckard-bridge: restarting the Android session");
+            Ok(Event::EvidenceFinished) => {
+                if watchdog.evidence_finished(modified_ms(marker)) {
                     restart();
                 }
-                BootCommand::ScheduleEvidenceTimeout { .. }
-                | BootCommand::CancelEvidenceTimeout { .. }
-                | BootCommand::KillEvidence { .. } => {}
             }
+            Err(RecvTimeoutError::Timeout) => {
+                timer = None;
+                let stall = watchdog.on_boot_timeout(modified_ms(marker), evidence.is_some());
+                if stall != Stall::None {
+                    eprintln!(
+                        "deckard-bridge: Android has not finished booting {} s after its start",
+                        BOOT_TIMEOUT_MS / 1000
+                    );
+                }
+                match (stall, evidence) {
+                    (Stall::Collect, Some(command)) => {
+                        collect_evidence(command.to_vec(), feedback.clone());
+                    }
+                    (Stall::Restart, _) => restart(),
+                    _ => {}
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     }
 }
 
 /// Runs the evidence helper on its own thread, killing it after
 /// `EVIDENCE_TIMEOUT_MS`, and reports back when it is gone.
-fn collect_evidence(command: Vec<OsString>, run: u64, done: SyncSender<Event>) {
+fn collect_evidence(command: Vec<OsString>, done: SyncSender<Event>) {
     thread::spawn(move || {
         if let Err(error) = run_evidence(&command) {
             eprintln!("deckard-bridge: cannot run the boot evidence helper: {error}");
         }
-        let _ = done.send(Event::EvidenceFinished(run));
+        let _ = done.send(Event::EvidenceFinished);
     });
 }
 
@@ -190,7 +183,7 @@ pub fn follow_shell(
         .add_arg(SHELL_BUS_NAME)?
         .build();
     let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
-    let follower = Arc::new(Mutex::new(SessionFollower::default()));
+    let mut follower = SessionFollower::default();
     let restart = Arc::new(restart);
     let start = Instant::now();
     for signal in signals {
@@ -199,22 +192,12 @@ pub fn follow_shell(
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let commands = sync::lock(&follower).on_name_owner_changed(&name, !owner.is_empty(), now);
-        for command in commands {
-            let FollowCommand::ScheduleSettle { timer, after_ms } = command else {
-                continue;
-            };
-            let follower = Arc::clone(&follower);
+        if follower.on_name_owner_changed(&name, !owner.is_empty(), now) {
             let restart = Arc::clone(&restart);
             thread::spawn(move || {
-                thread::sleep(Duration::from_millis(after_ms));
-                let settled = sync::lock(&follower).on_settle_timeout(timer);
-                if settled.contains(&FollowCommand::RestartUnit) {
-                    eprintln!(
-                        "deckard-bridge: the Shell restarted; restarting the Android session"
-                    );
-                    restart();
-                }
+                thread::sleep(Duration::from_millis(SHELL_SETTLE_MS));
+                eprintln!("deckard-bridge: the Shell restarted; restarting the Android session");
+                restart();
             });
         }
     }
