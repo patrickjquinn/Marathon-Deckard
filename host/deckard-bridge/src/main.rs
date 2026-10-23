@@ -73,20 +73,18 @@ fn serve_session(
         .is_err()
     {
         manage.disconnect(generation);
+        let _ = peers.packages.disconnected(BridgeRoute::System);
+        peers.keel.set_connected(BridgeRoute::System, false);
         if runtime.set_connected(manage.connected()) {
             emit_runtime(&bus, &runtime)
         }
         return;
     }
-    loop {
+    'session: loop {
         while let Ok(message) = outgoing.try_recv() {
             if let Err(error) = session.send_message(&message) {
                 eprintln!("deckard-bridge: system bridge write failed: {error}");
-                manage.disconnect(generation);
-                if runtime.set_connected(manage.connected()) {
-                    emit_runtime(&bus, &runtime)
-                }
-                return;
+                break 'session;
             }
         }
         match session.read_message() {
