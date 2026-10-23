@@ -2,7 +2,7 @@ use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
@@ -10,9 +10,7 @@ use deckard_bridge::Outbound;
 use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
 use deckard_bridge::app_channel::{AppChannel, ChannelEvent, ChannelHandle};
 use deckard_bridge::audio::{self, AudioWake};
-use deckard_bridge::ime::{
-    ImeController, ShellBus, ShellEvent, listen_shell, send_shell_calls, watch_shell_owner,
-};
+use deckard_bridge::ime;
 use deckard_bridge::intents::{Intents, SendSystem};
 use deckard_bridge::keel::KeelApps;
 use deckard_bridge::location::LocationSync;
@@ -284,72 +282,6 @@ fn serve_app(events: Receiver<ChannelEvent>, app: App) {
     }
 }
 
-fn serve_ime(events: Receiver<ChannelEvent>, handle: ChannelHandle, bus: Connection) {
-    let (shell_sender, shell_events) = mpsc::channel();
-    let signal_bus = bus.clone();
-    let signal_sender = shell_sender.clone();
-    thread::spawn(move || {
-        if let Err(error) = listen_shell(signal_bus, signal_sender) {
-            eprintln!("deckard-bridge: IME signal listener failed: {error}");
-        }
-    });
-    let owner_bus = bus.clone();
-    thread::spawn(move || {
-        if let Err(error) = watch_shell_owner(owner_bus, shell_sender) {
-            eprintln!("deckard-bridge: Shell owner watch failed: {error}");
-        }
-    });
-    let shell = ShellBus::new(bus);
-    let mut controller = ImeController::default();
-    let mut current = None;
-    loop {
-        match events.recv_timeout(Duration::from_millis(10)) {
-            Ok(ChannelEvent::Connected(generation)) => {
-                if current.replace(generation).is_some() {
-                    let calls = controller.disconnected();
-                    let _ = send_shell_calls(&shell, &calls);
-                }
-                if let Err(error) = shell.register() {
-                    eprintln!("deckard-bridge: IME register failed: {error}");
-                }
-            }
-            Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
-                let effects = controller.android_message(&message);
-                if let Err(error) = send_shell_calls(&shell, &effects.shell_calls) {
-                    eprintln!("deckard-bridge: IME Shell call failed: {error}");
-                }
-                if let Some(reply) = effects.to_android {
-                    let _ = handle.send_to(generation, reply);
-                }
-            }
-            Ok(ChannelEvent::Disconnected(generation)) if current == Some(generation) => {
-                current = None;
-                let calls = controller.disconnected();
-                let _ = send_shell_calls(&shell, &calls);
-            }
-            Ok(_) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-        loop {
-            match shell_events.try_recv() {
-                Ok(ShellEvent::Listening | ShellEvent::Appeared) => {
-                    if let Err(error) = shell.register() {
-                        eprintln!("deckard-bridge: IME register failed: {error}");
-                    }
-                }
-                Ok(ShellEvent::Signal(signal)) => {
-                    if let Some(message) = controller.shell_signal(signal) {
-                        let _ = handle.send(message);
-                    }
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return,
-            }
-        }
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let data = data_dir()?;
     if !data.is_dir() {
@@ -516,7 +448,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     thread::spawn(move || listen_system(listener, system));
     let ime_bus = bus.clone();
-    thread::spawn(move || serve_ime(ime_events, ime_handle, ime_bus));
+    thread::spawn(move || ime::serve(&ime_events, &ime_handle, &ime_bus));
     thread::spawn(move || {
         if let Err(error) = ime_channel.run() {
             eprintln!("deckard-bridge: IME socket failed: {error}");

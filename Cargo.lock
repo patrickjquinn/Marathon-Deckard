@@ -278,7 +278,6 @@ dependencies = [
  "blocking",
  "deckard-core",
  "deckard-host-tools",
- "deckard-ime",
  "deckard-mpris",
  "deckard-notifications",
  "deckard-packages",
@@ -351,16 +350,6 @@ dependencies = [
  "regex",
  "sha2",
  "tempfile",
-]
-
-[[package]]
-name = "deckard-ime"
-version = "0.4.0"
-dependencies = [
- "deckard-core",
- "serde_json",
- "tempfile",
- "zbus",
 ]
 
 [[package]]

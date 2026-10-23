@@ -6,7 +6,6 @@ members = [
     "host/deckard-container",
     "host/deckard-fonts-sync",
     "host/deckard-host-tools",
-    "host/deckard-ime",
     "host/deckard-launch",
     "host/deckard-mpris",
     "host/deckard-notifications",

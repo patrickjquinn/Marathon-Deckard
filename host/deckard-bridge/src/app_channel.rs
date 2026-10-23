@@ -47,10 +47,6 @@ impl ChannelHandle {
             .map(|active| active.generation)
     }
 
-    pub fn is_current(&self, generation: u64) -> bool {
-        self.generation() == Some(generation)
-    }
-
     pub fn send(&self, message: Map<String, Value>) -> io::Result<()> {
         let generation = self.generation().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotConnected, "Android bridge is offline")
