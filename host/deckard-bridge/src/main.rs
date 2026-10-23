@@ -145,6 +145,7 @@ fn listen_system(mut listener: BridgeListener, system: System) {
     loop {
         match listener.accept() {
             Ok(session) => {
+                eprintln!("deckard-bridge: org.marathonos.deckard.system connected");
                 let (tx, rx) = async_channel::bounded(64);
                 let generation = system.manage.connect(tx);
                 system.intents.connected(generation);

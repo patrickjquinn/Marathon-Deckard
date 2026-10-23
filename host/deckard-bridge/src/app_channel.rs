@@ -87,6 +87,7 @@ impl ChannelHandle {
 
 pub struct AppChannel {
     listener: BridgeListener,
+    package: PackageName,
     active: Arc<Mutex<Option<Active>>>,
     events: SyncSender<ChannelEvent>,
 }
@@ -97,7 +98,7 @@ impl AppChannel {
         packages_list: impl AsRef<Path>,
         package: PackageName,
     ) -> io::Result<(Self, ChannelHandle, Receiver<ChannelEvent>)> {
-        let listener = BridgeListener::bind(socket_path, packages_list, package)?;
+        let listener = BridgeListener::bind(socket_path, packages_list, package.clone())?;
         let active = Arc::new(Mutex::new(None));
         let (events, receiver) = mpsc::sync_channel(INBOUND_CAPACITY);
         let handle = ChannelHandle {
@@ -106,6 +107,7 @@ impl AppChannel {
         Ok((
             Self {
                 listener,
+                package,
                 active,
                 events,
             },
@@ -126,6 +128,7 @@ impl AppChannel {
                 }
             };
             let generation = session.generation();
+            eprintln!("deckard-bridge: {} connected", self.package.as_str());
             let (outbound, receiver) = mpsc::sync_channel(OUTBOUND_CAPACITY);
             let stop = Arc::new(AtomicBool::new(false));
             {
