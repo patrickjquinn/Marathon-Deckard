@@ -316,9 +316,9 @@ pub fn request_id(id: &str) -> bool {
 
 /// The last component of `path`, fit to be a file name in `xfer/<id>/`.
 pub fn safe_name(path: &str) -> String {
-    let base = validate::clean_text(path.rsplit('/').next().unwrap_or(""), 200);
-    let clean: String = base.chars().filter(|c| !"\n\t\\".contains(*c)).collect();
-    match clean.trim() {
+    let base = path.rsplit('/').next().unwrap_or("");
+    let kept: String = base.chars().filter(|c| *c >= ' ' && *c != '\\').collect();
+    match text::truncate(&kept, 200).trim() {
         "" | "." | ".." => "file".into(),
         name => name.into(),
     }

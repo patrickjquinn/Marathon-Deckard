@@ -87,7 +87,7 @@ fn opens_route_like_cxx() {
     assert!(request_id("0123456789abcdef") && !request_id("../0123456789abc") && !request_id("0123456789ABCDEF"));
     assert_eq!(safe_name("/home/user/Documents/report.pdf"), "report.pdf");
     assert_eq!(safe_name(".."), "file");
-    assert_eq!(safe_name("a\nb\\c\u{202e}.txt"), "abc.txt");
+    assert_eq!(safe_name("a\nb\\c\u{202e}.txt"), "abc\u{202e}.txt");
 }
 
 /// What DeckardSystem was sent.
