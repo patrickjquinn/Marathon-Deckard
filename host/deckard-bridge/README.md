@@ -1,65 +1,52 @@
-# deckard-bridge (not yet selected)
+# deckard-bridge
 
-The Rust user-session replacement for C++ `deckardd`. It is built and tested
-but no unit starts it: C++ `deckardd` remains the live bridge until this one
-reaches parity. Both claim `org.marathonos.Deckard` and the same sockets, so
-they must never run together.
+Marathon's end of the Deckard bridge (`protocol/bridge.md`): the user-session
+daemon that owns `org.marathonos.Deckard` on the session bus and the
+`bridge.sock`, `system.sock` and `ime.sock` sockets in
+`~/.local/share/waydroid/data/deckard/`. It replaces the C++/Qt `deckardd`
+with the same bus names, object paths, interfaces, socket messages and file
+paths. Only one owner of `org.marathonos.Deckard` can run.
 
-Wired into the daemon (`main.rs`):
+## Where each `deckardd` responsibility lives
 
-- The `org.marathonos.Deckard1` Settings API, with caller authorization and
-  the authenticated `system.sock` Manage channel (generation-aware).
-- The authenticated app and IME channels, using `deckard-core`'s
-  packages.list UID check, bounded length-prefixed JSON decoder, rate limiter
-  and bounded writer.
-- IME focus and panel replay to the Shell, packages (app and system routing,
-  mutation policy) and notifications (Hub listener, persisted state, actions,
-  icons, toasts).
-- The session unit followed through systemd's `PropertiesChanged`, the boot
-  watchdog (`/data/deckard/booted`, `deckard-boot-evidence`) and the Shell
-  follower (`TryRestartUnit` when `org.marathonos.Shell` returns).
-- Memory reclaim from the container's `memory.events` and PSI triggers
-  (`reclaim.rs`), and the ambience palette and Doze written to
-  `/data/deckard/palette` and `/data/deckard/doze` (`shell_sync.rs`).
-- Media sessions as MPRIS players (`deckard-mpris`), cleared whenever the app
-  channel connects or drops, and Marathon's audio policy (`audio.rs`) sent on
-  connect and on Shell changes.
-- Keel and Pilot app providers (`keel.rs`, model in `deckard-core::keel`):
-  `waydroid.<pkg>` serving `org.shipwright.Keel.Actions` per app on its own
-  connection, the `apps.json` catalogue, shortcuts and secure-window checks
-  over the system channel. Its private-bus test is `tests/keel_contract.rs`.
+| C++ (`host/deckardd/src`) | Rust |
+|---|---|
+| `main.cpp`: data, cache and state paths, `org.marathonos.Deckard` (do-not-queue), the three sockets, wiring | `src/main.rs` |
+| `bridge.{h,cpp}`: `SO_PEERCRED` + `packages.list` UID check, length-prefixed JSON, rate limit, bounded writes | `deckard-core::{transport, framing}`, `src/app_channel.rs` (bounded inbound and outbound queues) |
+| `validate.{h,cpp}` | `deckard-core::{validate, messages, ids, text}` |
+| `images.{h,cpp}`: bounded decode and re-encode of icons and art | `deckard-core::png_guard` |
+| `callers.{h,cpp}`: D-Bus caller to Marathon app id via the Shell | `src/auth.rs` |
+| `settingsapi.{h,cpp}`: `org.marathonos.Deckard1` (runtime, per-app settings, special access, Google services, reset), `RuntimeChanged`, `AppChanged` | `src/api.rs` |
+| `manage.{h,cpp}`: DeckardSystem request/reply by id, per generation | `src/manage.rs` |
+| `runtime.{h,cpp}`: runtime state, start at login, `UnitWatch` on `deckard-session.service` | `src/runtime.rs` (systemd `PropertiesChanged`), `deckard-core::runtime_state` |
+| `bootwatchdog.{h,cpp}`: `/data/deckard/booted`, `deckard-boot-evidence`, one restart | `src/watchdog.rs`, `deckard-core::runtime_state::BootWatchdog` |
+| `sessionfollower.{h,cpp}`: `TryRestartUnit` when `org.marathonos.Shell` returns | `src/watchdog.rs` `follow_shell` |
+| `reclaimer.{h,cpp}`: `memory.events` and PSI triggers, `reclaim`/`reclaimed` | `src/reclaim.rs`, `deckard-core::pressure` |
+| `doze.{h,cpp}`: `/data/deckard/doze` from `Power1.StateChanged` | `src/shell_sync.rs` `sync_doze` |
+| `palette.{h,cpp}`: `/data/deckard/palette` from the ambience highlight | `src/shell_sync.rs` `sync_palette`, `deckard-core::palette` |
+| `packages.{h,cpp}`: `org.marathonos.Deckard1.Packages`, install staging, mutation policy | `deckard-packages`, `src/packages.rs` |
+| `notifications.{h,cpp}`: Hub posts, actions, icons, toasts, `notifications.json` | `deckard-notifications`, `src/notifications.rs`, `deckard-core::notification_state` |
+| `mpris.{h,cpp}`: one MPRIS2 player per media session, album art | `deckard-mpris`, routed in `main.rs` `serve_app` |
+| `audio.{h,cpp}`: `{t:audio,quiet,alarm}` from the Shell's profile, DND and alarm volume | `src/audio.rs` |
+| `ime.{h,cpp}`: IME channel, `ShellTextInput` | `deckard-ime`, `src/ime.rs` |
+| `intents.{h,cpp}`: `open` routing, FileChooser picks and saves, camera capture, transfers, focus | `src/intents.rs` |
+| `share.{h,cpp}`: `org.marathonos.Deckard1.Share`, `share_out` | `src/sharing.rs` |
+| `keelapps.{h,cpp}`: `waydroid.<pkg>` Keel Actions providers, `apps.json`, shortcuts, secure windows | `src/keel.rs`, `deckard-core::keel` |
+| `permissionprompts.{h,cpp}`, `permissionmap.{h,cpp}` | `src/prompts.rs`, `src/contract.rs` |
+| `location.{h,cpp}`: one GeoClue client while Android asks | `src/location.rs` |
+| `sharedstorage.{h,cpp}`: `media_rw` ACLs, `media_scan` | `src/storage.rs`, `deckard-core::acl`, `deckard-host-tools::shared_folders::host_folders` |
 
-Present as modules but **not wired** into the daemon: intents/file
-chooser/capture (`intents.rs`) and sharing (`sharing.rs`). Their tests include
-the sources with `#[path]`.
-- Intents (`intents.rs`): `open` routing to Marathon apps, Android focus
-  following the Shell's foreground app, FileChooser portal picks and saves,
-  Marathon Camera captures, with files crossing through `deckard/xfer/<id>/`
-  (no-follow, inside-root opens, 1 GiB per transfer, month-old sweep).
-- Sharing (`sharing.rs`): the Shell-only `org.marathonos.Deckard1.Share`
-  interface (`ShareTargets`, `Share`) and DeckardSystem's `share_out` to
-  `org.sailfishos.share`.
-- Permission prompts (`perm_ask` to the Shell's `Permissions1.PromptAndroid`,
-  with Android's own dialog as the fallback), location (one GeoClue client on
-  the system bus while Android asks) and shared storage (media_rw ACLs and
-  `media_scan` indexing of the user's folders).
+The C++ tests are carried over as unit tests in those crates and as the
+private-bus tests in `tests/`.
 
-Present as modules but **not wired** into the daemon: media/MPRIS and audio
-(`mpris.rs`, `audio.rs`). Their tests include the sources with `#[path]`.
+## Known differences from `deckardd`
 
-Not ported yet from C++ `deckardd`: Keel and Pilot app providers, permission
-prompts, location and shared storage (ACLs, media indexing). Each app
-channel's incoming queue holds one rate-limiter burst; past that, messages are
-dropped, and a peer that keeps flooding is disconnected.
-Not ported yet from C++ `deckardd`: permission prompts, location, shared
-storage (ACLs, media indexing), Doze, PSI/cgroup reclamation, palette sync and
-the boot watchdog. Runtime unit state is polled once per second rather than
-subscribed to systemd property changes. The app channel's incoming event queue
-is unbounded.
-Not ported yet from C++ `deckardd`: Keel and Pilot app providers, Doze,
-PSI/cgroup reclamation, palette sync and the boot watchdog. Runtime unit state is polled
-once per second rather than subscribed to systemd property changes. The app
-channel's incoming event queue is unbounded.
+- The FileChooser titles are the untranslated "Open" and "Save".
+- A picked host file that is itself a symlink is refused rather than followed.
+- The boot watchdog does not log "the restarted session stalled too" or "the
+  shell is restarting repeatedly"; the behaviour is unchanged.
+- Failing to set up MPRIS art, audio sync or Keel at start stops the daemon
+  (systemd restarts it), where `deckardd` carried on without them.
 
 Run the private-bus tests with:
 

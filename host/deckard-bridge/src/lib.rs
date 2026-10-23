@@ -1,4 +1,4 @@
-//! Inactive Rust user-session Deckard daemon slice.
+//! Marathon's user-session Deckard daemon (replaces C++ deckardd).
 pub mod api;
 pub mod app_channel;
 pub mod audio;
