@@ -1,9 +1,8 @@
 # Deckard Packages adapter
 
-Inactive Rust replacement for `host/deckardd/src/packages.{cpp,h}`. It uses
+Rust replacement for the removed C++ `deckardd` packages.{cpp,h}. It uses
 `deckard-core` for package identities, bridge frame limits, text cleaning and
-bounded base64 decoding. It does not claim `org.marathonos.Deckard`, change a
-unit, or replace the running daemon.
+bounded base64 decoding. `deckard-bridge` serves it on the name it owns.
 
 The live Pi exposes `org.marathonos.Deckard1.Packages` at
 `/org/marathonos/Deckard`:

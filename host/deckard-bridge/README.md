@@ -15,7 +15,7 @@ must match the installed binary.
 
 ## Where each `deckardd` responsibility lives
 
-| C++ (`host/deckardd/src`) | Rust |
+| C++ (`host/deckardd/src`, removed) | Rust |
 |---|---|
 | `main.cpp`: data, cache and state paths, `org.marathonos.Deckard` (do-not-queue), the three sockets, wiring | `src/main.rs` |
 | `bridge.{h,cpp}`: `SO_PEERCRED` + `packages.list` UID check, length-prefixed JSON, rate limit, bounded writes | `deckard-core::{transport, framing}`, `src/app_channel.rs` (bounded inbound and outbound queues) |

@@ -26,7 +26,8 @@ Android app ──notify()──▶ NotificationManagerService
   through the listener's `getActiveSessions` grant. Android starts it at boot
   (`android:persistent`, priv-app), and binds it as a listener once the init
   rc has run `cmd notification allow_listener`.
-- **deckardd** (`host/deckardd`, C++/Qt 6, Apache-2.0) owns the socket, the
+- **deckard-bridge** (`host/deckard-bridge`, Rust, Apache-2.0; it replaced the
+  C++/Qt deckardd) owns the socket, the
   Hub client, the MPRIS players and the audio sync. The keyboard agent's IME
   channel runs on a second socket in the same daemon.
 
@@ -554,7 +555,7 @@ as the possible cause of the real hang.
 | DeckardBridge.apk | `image/overlay/system/priv-app/DeckardBridge/`, prebuilt and committed (Alpine has no Android SDK; `image/tools/build-apk.sh`, signed with the Deckard key in `~/.marathon-secrets/deckard`) |
 | privapp permissions | `image/overlay/system/etc/permissions/privapp-permissions-deckard-bridge.xml` (`MEDIA_CONTENT_CONTROL`, `START_ACTIVITIES_FROM_BACKGROUND`). The image enforces privapp permissions (`ro.control_privapp_permissions=enforce`). |
 | Boot settings | `image/overlay/system/etc/init/deckard-bridge.rc`, on `sys.boot_completed=1`: listener access, notification-policy access, no heads-up, no touch sounds or haptics, no notification assistant |
-| deckardd | `deckardd.service` (user), started by the deckard drop-in on `marathon-waydroid.service` (`Wants=`, and `PartOf=` back) |
+| deckard-bridge | `deckard-bridge.service` (user), `/usr/libexec/deckard-bridge`, wanted by `graphical-session.target` |
 | Overlay sync | `deckard-overlay-sync`, `ExecStartPre` of `waydroid-container.service`: copies `/usr/share/deckard/overlay` into `/var/lib/waydroid/overlay` and removes files a previous version shipped |
 | Image | Marathon-Shell `packaging/packages/deckard` (aport), `scripts/qemu/lib/build-deckard-apk.sh`, pipeline patch 0044 (HackberryPi) |
 

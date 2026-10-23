@@ -3,8 +3,8 @@
 The system bridge between Android (inside the Waydroid container) and
 Marathon. On the Android side a privileged app, DeckardBridge
 (`image/apps/DeckardBridge`, package `org.marathonos.deckard.bridge`), listens
-to notifications and media sessions. On the host, `deckardd`
-(`host/deckardd`) posts them to Marathon's Hub (`org.freedesktop.Notifications`)
+to notifications and media sessions. On the host, `deckard-bridge`
+(`host/deckard-bridge`) posts them to Marathon's Hub (`org.freedesktop.Notifications`)
 and as MPRIS2 players, and sends the user's taps, actions, replies,
 dismissals and media commands back.
 
@@ -41,8 +41,8 @@ of UTF-8 JSON. The JSON is an object with a string field `t`, the message type.
 
 ## Trust
 
-Everything from the container is untrusted. deckardd bounds and cleans every
-field before it reaches a Marathon service (`host/deckardd/src/validate.cpp`):
+Everything from the container is untrusted. deckard-bridge bounds and cleans every
+field before it reaches a Marathon service (`host/deckard-core/src/validate.rs`):
 
 | Field | Rule |
 |---|---|
@@ -179,7 +179,7 @@ them as they use Marathon apps. Most messages share the bridge socket.
 Launcher shortcuts and secure windows go over the system channel (below),
 because only DeckardSystem's uid may read them.
 
-deckardd (`host/deckardd/src/keelapps.cpp`) owns the session bus name
+deckard-bridge (`host/deckard-bridge/src/keel.rs`) owns the session bus name
 `waydroid.<pkg>` for each launchable app, on a bus connection of its own,
 and serves `org.shipwright.Keel.Actions` at `/org/shipwright/Keel/Actions`.
 This is the app id Waydroid gives the app's window and desktop file, and the
@@ -316,8 +316,8 @@ highest priority, above DeckardPalette). Lines that don't match
 
 Marathon's keyboard in Android apps. DeckardIme (`image/apps/DeckardIme`,
 package `org.marathonos.deckard.ime`, `/system/app` in the overlay) is
-Android's only input method; it draws nothing. deckardd's `Ime`
-(`host/deckardd/src/ime.cpp`) relays between it and the shell's
+Android's only input method; it draws nothing. deckard-bridge's IME channel
+(`host/deckard-bridge/src/ime.rs`, `host/deckard-ime`) relays between it and the shell's
 `org.marathonos.Shell.TextInput1`.
 
 Transport: the same framing, limits and `SO_PEERCRED` check as the bridge, on
@@ -381,8 +381,8 @@ Intents that Marathon apps answer, for an Android trimmed to a runtime
 package `org.marathonos.deckard.system`, `/system/priv-app`) is signed with
 AOSP's platform test key and runs as `android.uid.system`. Its activities
 take links, `tel:`/`sms:`/`mailto:`/`geo:` URIs, settings pages, the file
-pickers and the camera intents. deckardd's `SystemIntents`
-(`host/deckardd/src/intents.cpp`) hands each one to a Marathon app.
+pickers and the camera intents. deckard-bridge's intents
+(`host/deckard-bridge/src/intents.rs`) hands each one to a Marathon app.
 
 Transport: the same framing, limits and `SO_PEERCRED` check, on
 `/data/deckard/system.sock`, accepting the uid `packages.list` gives
@@ -579,7 +579,7 @@ after a change to an app succeeded.
 
 Permissions use Marathon's names (Marathon-Shell
 `schemas/marathon-permissions-v1.json`, whose labels and descriptions Settings
-and the permission prompts show). `host/deckardd/src/permissionmap.cpp` is the
+and the permission prompts show). `host/deckard-bridge/src/contract.rs` is the
 one table from those names to Android's runtime permissions:
 
 | Marathon | Android (`android.permission.`) |

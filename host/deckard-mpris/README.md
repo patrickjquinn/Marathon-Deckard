@@ -1,6 +1,6 @@
 # deckard-mpris
 
-Rust replacement for `host/deckardd/src/mpris.cpp`. Each Android MediaSession
+Rust replacement for the removed C++ `deckardd` mpris.cpp. Each Android MediaSession
 (`media`/`media_gone` on the app channel) becomes an MPRIS2 player on its own
 session-bus connection; controls come back as `media_cmd` messages from
 `take_commands`. Art is re-encoded through `deckard_core::png_guard` into a

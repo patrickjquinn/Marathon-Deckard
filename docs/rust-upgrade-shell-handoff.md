@@ -244,7 +244,7 @@ Record performance against the same image/device/workload, separating daemon PSS
 | Repository | Sources |
 |---|---|
 | Deckard | `Cargo.toml`, `Cargo.lock`, `host/deckard-core/`, `host/deckard-host-tools/`, `image/deckard-image-tools/` |
-| Deckard | `host/deckardd/src/main.cpp`, `protocol/bridge.md`, `host/deckardd/CMakeLists.txt` |
+| Deckard | `host/deckard-bridge/src/main.rs`, `protocol/bridge.md`, `Cargo.toml` |
 | Deckard | `image/tools/build-chrome.sh`, `image/tools/patch-permissioncontroller.sh`, `host/packaging/` |
 | Deckard | `docs/verification-2026-10-19.md`, `docs/composer-crash.md`, `docs/microg.md` |
 | Shell | `crates/marathon-app-native/src/android.rs`, `crates/marathon-store-handler/src/fdroid.rs` |

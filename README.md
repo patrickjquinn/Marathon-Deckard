@@ -7,7 +7,7 @@ Android chrome. It builds on Waydroid.
 | Directory | Licence | Contents |
 |---|---|---|
 | `image/` | GPL-3.0 | Android side: privileged apps, overlays and the files mounted over Android's system partition (`image/overlay`, the layout of Waydroid's `/var/lib/waydroid/overlay`) |
-| `host/` | Apache-2.0 | Host daemons (`host/deckardd`) and packaging helpers |
+| `host/` | Apache-2.0 | Host daemons (Rust workspace in `host/`, the user bridge `host/deckard-bridge`) and packaging helpers |
 | `protocol/` | | Wire protocols (`protocol/bridge.md`) |
 | `docs/` | | Design notes and measured findings |
 
