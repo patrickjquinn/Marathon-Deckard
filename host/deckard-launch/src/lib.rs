@@ -11,12 +11,6 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 pub trait Backend {
     fn ready(&mut self, start_session: bool) -> Result<bool>;
     fn unfreeze(&mut self) -> Result<()>;
-    fn unfreeze_for_launch(&mut self) -> Result<()> {
-        if let Err(err) = self.unfreeze() {
-            eprintln!("deckard-launch: container unfreeze failed; trying launch: {err}");
-        }
-        Ok(())
-    }
     fn freeze(&mut self) -> Result<()>;
     fn setprop(&mut self, key: &str, value: &str) -> Result<()>;
     fn getprop(&mut self, key: &str, fallback: &str) -> Result<String>;
@@ -39,8 +33,9 @@ pub fn launch_app<B: Backend>(backend: &mut B, package: &str) -> Result<()> {
     if package.is_empty() || package.contains(char::is_whitespace) {
         return Err("invalid package name".into());
     }
-    backend.ready(true)?;
-    backend.unfreeze_for_launch()?;
+    if backend.ready(true)? {
+        backend.unfreeze()?;
+    }
     backend.setprop("waydroid.active_apps", package)?;
     backend.show_android_app(package)?;
     backend.launch_app(package)?;
@@ -51,8 +46,9 @@ pub fn launch_intent<B: Backend>(backend: &mut B, action: &str, uri: &str) -> Re
     if action.is_empty() || uri.is_empty() {
         return Err("action and URI must not be empty".into());
     }
-    backend.ready(true)?;
-    backend.unfreeze_for_launch()?;
+    if backend.ready(true)? {
+        backend.unfreeze()?;
+    }
     let package = backend.launch_intent(action, uri)?;
     if package.is_empty() {
         return Ok(());
@@ -176,7 +172,6 @@ mod tests {
             fake.calls,
             [
                 "ready:true",
-                "unfreeze",
                 "set:waydroid.active_apps:org.example.app",
                 "show:org.example.app",
                 "app:org.example.app",
@@ -200,19 +195,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            fake.calls[2],
+            fake.calls[1],
             "intent:android.intent.action.VIEW:https://example.org"
         );
-        assert_eq!(fake.calls[3], "set:waydroid.active_apps:org.example.app");
-        assert_eq!(fake.calls[4], "show:org.example.app");
-        assert_eq!(fake.calls[6], "settings:2:policy_control:immersive.full=*");
+        assert_eq!(fake.calls[2], "set:waydroid.active_apps:org.example.app");
+        assert_eq!(fake.calls[3], "show:org.example.app");
+        assert_eq!(fake.calls[5], "settings:2:policy_control:immersive.full=*");
     }
 
     #[test]
     fn unresolved_intent_does_not_change_active_app() {
         let mut fake = Fake::default();
         launch_intent(&mut fake, "VIEW", "content://example").unwrap();
-        assert_eq!(fake.calls.len(), 3);
+        assert_eq!(fake.calls.len(), 2);
     }
 
     #[test]
@@ -222,7 +217,7 @@ mod tests {
             ..Fake::default()
         };
         launch_intent(&mut fake, "VIEW", "package:org.example").unwrap();
-        assert_eq!(fake.calls[3], "set:waydroid.active_apps:Waydroid");
+        assert_eq!(fake.calls[2], "set:waydroid.active_apps:Waydroid");
         assert!(!fake.calls.iter().any(|call| call.starts_with("show:")));
     }
 
@@ -248,16 +243,14 @@ mod tests {
     }
 
     #[test]
-    fn launch_tolerates_unfreeze_failure_but_property_does_not() {
+    fn launch_only_unfreezes_when_needed_and_stops_on_failure() {
         let mut launch = Fake {
+            frozen: true,
             fail_unfreeze: true,
             ..Fake::default()
         };
-        launch_app(&mut launch, "org.example.app").unwrap();
-        assert!(launch
-            .calls
-            .iter()
-            .any(|call| call == "app:org.example.app"));
+        assert!(launch_app(&mut launch, "org.example.app").is_err());
+        assert_eq!(launch.calls, ["ready:true", "unfreeze"]);
 
         let mut property = Fake {
             frozen: true,

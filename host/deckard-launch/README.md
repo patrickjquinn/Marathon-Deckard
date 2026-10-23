@@ -27,8 +27,10 @@ Inspected on the Hackberry Pi from `/usr/lib/waydroid/tools/actions/app_manager.
 `/usr/lib/waydroid/tools/services/user_manager.py`:
 
 - Launch first checks the session name on the user bus, starts a session if
-  absent, asks the system-bus container manager to `Unfreeze`, then resolves
-  `waydroidplatform` on the configured Binder node/protocol.
+  absent, reads the authenticated system-bus container state, and asks it to
+  `Unfreeze` only when frozen. A denied or failed required unfreeze aborts
+  before Binder. It then resolves `waydroidplatform` on the configured Binder
+  node/protocol.
 - `IPlatform` Binder transactions are `getprop=1`, `setprop=2`, `launchApp=7`,
   `settingsPutString=9`, and `launchIntent=13` under interface
   `lineageos.waydroid.IPlatform`. The arguments are UTF-16 Binder strings.

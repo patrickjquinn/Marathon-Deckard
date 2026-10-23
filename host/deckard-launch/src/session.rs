@@ -143,10 +143,8 @@ impl Backend for NativeBackend {
         if start_session {
             // The bus name can be owned before Android has booted or unlocked.
             self.wait_for_user_ready()?;
-            Ok(false)
-        } else {
-            self.container_frozen()
         }
+        self.container_frozen()
     }
 
     fn unfreeze(&mut self) -> Result<()> {
