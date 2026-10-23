@@ -5,6 +5,8 @@
 on init
     # Waydroid's hwcomposer maps no window for DeckardHome (Launcher3 is built in).
     setprop waydroid.blacklist_apps org.marathonos.deckard.home
+    # Not "none": every app task has a window from boot, before any launch.
+    setprop waydroid.active_apps all
 
 on property:sys.boot_completed=1
     exec_background - root root -- /system/bin/cmd uimode night yes
