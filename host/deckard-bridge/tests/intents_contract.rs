@@ -135,7 +135,7 @@ fn start(xfer: &Path, camera: &Path) -> (Connection, Intents, Sent) {
         sink.0.lock().unwrap().push(message);
         true
     });
-    let intents = Intents::start(bus.inner().clone(), send, xfer.into(), camera.into()).unwrap();
+    let intents = Intents::start(bus.inner().clone(), send, xfer.into(), camera.into());
     intents.connected(7);
     assert_eq!(sent.next(), map(json!({"t":"focus","pkg":""})));
     (bus, intents, sent)

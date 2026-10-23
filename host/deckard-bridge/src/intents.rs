@@ -596,17 +596,15 @@ pub(crate) fn lock<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Intents {
     /// Makes and sweeps `xfer`, and follows the Shell's foreground app.
     /// `camera` is Marathon Camera's folder.
-    ///
-    /// # Errors
-    ///
-    /// When `xfer` cannot be created.
     pub fn start(
         bus: zbus::Connection,
         send: Arc<SendSystem>,
         xfer: PathBuf,
         camera: PathBuf,
-    ) -> io::Result<Self> {
-        fs::create_dir_all(&xfer)?;
+    ) -> Self {
+        if let Err(error) = fs::create_dir_all(&xfer) {
+            eprintln!("deckard-bridge: cannot make {}: {error}", xfer.display());
+        }
         sweep(&xfer);
         let state = Arc::default();
         let intents = Self {
@@ -622,7 +620,7 @@ impl Intents {
                 eprintln!("deckard-bridge: foreground watch failed: {error}");
             }
         });
-        Ok(intents)
+        intents
     }
 
     fn spawn(&self, name: &str, task: impl Future<Output = ()> + Send + 'static) {

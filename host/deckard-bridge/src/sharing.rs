@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io;
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -81,18 +80,15 @@ pub struct Sharing {
 }
 
 impl Sharing {
-    /// # Errors
-    ///
-    /// When `xfer` cannot be created.
-    pub fn new(bus: zbus::Connection, send: Arc<SendSystem>, xfer: PathBuf) -> io::Result<Self> {
-        fs::create_dir_all(&xfer)?;
+    /// Shares through `xfer/<id>/`.
+    pub fn new(bus: zbus::Connection, send: Arc<SendSystem>, xfer: PathBuf) -> Self {
         let state = Arc::default();
-        Ok(Self {
+        Self {
             bus,
             send,
             xfer,
             state,
-        })
+        }
     }
 
     /// DeckardSystem (re)connected: older requests fail.

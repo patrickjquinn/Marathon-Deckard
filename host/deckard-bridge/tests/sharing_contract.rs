@@ -93,7 +93,7 @@ fn start(xfer: &Path) -> (Connection, Sharing, Sent, Proxy<'static>) {
         true
     });
     let bus = Connection::session().unwrap();
-    let sharing = Sharing::new(bus.inner().clone(), send, xfer.into()).unwrap();
+    let sharing = Sharing::new(bus.inner().clone(), send, xfer.into());
     bus.object_server()
         .at("/org/marathonos/Deckard", sharing.clone())
         .unwrap();

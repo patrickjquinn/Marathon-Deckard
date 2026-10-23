@@ -408,8 +408,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         intents_send.clone(),
         xfer.clone(),
         camera,
-    )?;
-    let sharing = Sharing::new(bus.inner().clone(), intents_send, xfer)?;
+    );
+    let sharing = Sharing::new(bus.inner().clone(), intents_send, xfer);
     bus.object_server().at(OBJECT_PATH, sharing.clone())?;
     let app_packages = packages.clone();
     let app_intents = intents.clone();
