@@ -7,21 +7,25 @@
 //! authorization for `id.waydro.Initializer.Init`; unlike upstream there is
 //! no exemption for the default channels, because Init restarts the session.
 
-use crate::Result;
-use crate::command::ProcessRunner;
-use crate::dbus::{Caller, ContainerService, caller};
-use crate::drivers;
-use crate::initializer::{Host, Images, Init, Instance, PREINSTALLED};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use serde::Serialize;
 use zbus::connection::Connection;
 use zbus::fdo;
 use zbus::message::Header;
-use zbus::zvariant::Value;
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::{DynamicType, Value};
+
+use crate::Result;
+use crate::command::ProcessRunner;
+use crate::dbus::{Caller, ContainerService};
+use crate::drivers;
+use crate::initializer::{Host, Images, Init, Instance, PREINSTALLED};
 
 pub const OBJECT_PATH: &str = "/Initializer";
 pub const INTERFACE: &str = "id.waydro.Initializer";
@@ -48,6 +52,10 @@ pub struct InitializerService {
     job: Arc<Job>,
 }
 
+fn poisoned<T>(_: T) -> fdo::Error {
+    fdo::Error::Failed("initializer state poisoned".into())
+}
+
 impl InitializerService {
     pub fn new(job: Arc<Job>) -> Self {
         Self {
@@ -58,6 +66,7 @@ impl InitializerService {
 
     /// Initializes `/var/lib/waydroid`, stopping and restarting `container`'s
     /// session around it.
+    #[must_use]
     pub fn production(container: ContainerService) -> Self {
         Self::new(Arc::new(move |progress, cancelled| {
             container.with_stopped(|| initialize(progress, cancelled))
@@ -70,7 +79,7 @@ impl InitializerService {
             cancelled: Arc::new(AtomicBool::new(false)),
         });
         {
-            let mut current = self.active.lock().map_err(|_| poisoned())?;
+            let mut current = self.active.lock().map_err(poisoned)?;
             if current.is_some() {
                 return Err(fdo::Error::Failed(
                     "initialization already in progress".into(),
@@ -84,9 +93,7 @@ impl InitializerService {
         let spawned = thread::Builder::new()
             .name("deckard-init".into())
             .spawn(move || {
-                let progress = |message: &str| {
-                    let _ = emit(&conn, "ProgressChanged", &(message,));
-                };
+                let progress = |message: &str| emit(&conn, "ProgressChanged", &(message,));
                 let signal = match job(&progress, &worker.cancelled) {
                     Ok(()) => "Finished",
                     Err(error) => {
@@ -101,10 +108,10 @@ impl InitializerService {
                 {
                     *current = None;
                 }
-                let _ = emit(&conn, signal, &());
+                emit(&conn, signal, &());
             });
         if let Err(error) = spawned {
-            *self.active.lock().map_err(|_| poisoned())? = None;
+            *self.active.lock().map_err(poisoned)? = None;
             return Err(fdo::Error::Failed(format!(
                 "unable to start initializer: {error}"
             )));
@@ -113,7 +120,7 @@ impl InitializerService {
     }
 
     fn cancel_authorized(&self, who: Caller) -> fdo::Result<()> {
-        let current = self.active.lock().map_err(|_| poisoned())?;
+        let current = self.active.lock().map_err(poisoned)?;
         let Some(active) = current.as_ref() else {
             return Ok(());
         };
@@ -128,8 +135,9 @@ impl InitializerService {
     }
 }
 
-fn poisoned() -> fdo::Error {
-    fdo::Error::Failed("initializer state poisoned".into())
+fn emit(conn: &Connection, signal: &str, body: &(impl Serialize + DynamicType)) {
+    let _ =
+        async_io::block_on(conn.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, signal, body));
 }
 
 fn initialize(progress: &Progress<'_>, cancelled: &AtomicBool) -> Result<()> {
@@ -145,49 +153,35 @@ fn initialize(progress: &Progress<'_>, cancelled: &AtomicBool) -> Result<()> {
     if matches!(images, Images::Installed(_)) {
         progress("Image download is not supported; keeping the installed images");
     }
-    Init {
+    let init = Init {
         instance: &instance,
         images,
         host,
-    }
-    .run(cancelled, Some(Instant::now() + DEADLINE))?
-    .commit()
-}
-
-fn emit<B: serde::ser::Serialize + zbus::zvariant::DynamicType>(
-    conn: &Connection,
-    signal: &str,
-    body: &B,
-) -> zbus::Result<()> {
-    async_io::block_on(conn.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, signal, body))
+    };
+    init.run(cancelled, Some(Instant::now() + DEADLINE))
 }
 
 /// Accepts upstream's three-field request with the default channels.
 fn validate_request(params: &HashMap<String, String>) -> fdo::Result<()> {
     let field = |key: &str| {
-        params
-            .get(key)
-            .filter(|value| value.len() <= 2048 && !value.chars().any(char::is_control))
-            .ok_or_else(|| fdo::Error::InvalidArgs(format!("missing or invalid {key}")))
+        let valid = |value: &&String| value.len() <= 2048 && !value.chars().any(char::is_control);
+        let value = params.get(key).filter(valid);
+        value.ok_or_else(|| fdo::Error::InvalidArgs(format!("missing or invalid {key}")))
     };
     if params.len() != 3 {
-        return Err(fdo::Error::InvalidArgs(
-            "Init takes system_channel, vendor_channel and system_type".into(),
-        ));
+        let message = "Init takes system_channel, vendor_channel and system_type";
+        return Err(fdo::Error::InvalidArgs(message.into()));
     }
-    let channels = (
-        field("system_channel")?.trim_end_matches('/'),
-        field("vendor_channel")?.trim_end_matches('/'),
-    );
+    let system = field("system_channel")?.trim_end_matches('/');
+    let vendor = field("vendor_channel")?.trim_end_matches('/');
     if !SYSTEM_TYPES.contains(&field("system_type")?.as_str()) {
         return Err(fdo::Error::InvalidArgs(
             "system_type must be VANILLA or GAPPS".into(),
         ));
     }
-    if channels != (SYSTEM_CHANNEL, VENDOR_CHANNEL) {
-        return Err(fdo::Error::NotSupported(
-            "custom OTA channels are not supported: Deckard does not download images".into(),
-        ));
+    if (system, vendor) != (SYSTEM_CHANNEL, VENDOR_CHANNEL) {
+        let message = "custom OTA channels are not supported: Deckard does not download images";
+        return Err(fdo::Error::NotSupported(message.into()));
     }
     Ok(())
 }
@@ -197,6 +191,7 @@ async fn authorize(conn: &Connection, header: &Header<'_>, who: Caller) -> fdo::
     if who.uid == 0 {
         return Ok(());
     }
+    let denied = |error: zbus::Error| fdo::Error::AccessDenied(format!("polkit: {error}"));
     let sender = header
         .sender()
         .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".into()))?;
@@ -220,18 +215,15 @@ async fn authorize(conn: &Connection, header: &Header<'_>, who: Caller) -> fdo::
     };
     let reply = futures_lite::future::or(call, timeout)
         .await
-        .map_err(|error| fdo::Error::AccessDenied(format!("polkit: {error}")))?;
-    let (authorized, _, _): (bool, bool, HashMap<String, String>) = reply
-        .body()
-        .deserialize()
-        .map_err(|error| fdo::Error::AccessDenied(format!("polkit: {error}")))?;
-    if authorized {
-        Ok(())
-    } else {
-        Err(fdo::Error::AccessDenied(
+        .map_err(denied)?;
+    let (authorized, _, _): (bool, bool, HashMap<String, String>) =
+        reply.body().deserialize().map_err(denied)?;
+    if !authorized {
+        return Err(fdo::Error::AccessDenied(
             "polkit: not authorized to initialize Android".into(),
-        ))
+        ));
     }
+    Ok(())
 }
 
 #[zbus::interface(name = "id.waydro.Initializer")]
@@ -242,7 +234,7 @@ impl InitializerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let who = caller(conn, &header).await?;
+        let who = Caller::of(conn, &header).await?;
         validate_request(&params)?;
         authorize(conn, &header, who).await?;
         self.start(who, conn.clone())
@@ -253,20 +245,17 @@ impl InitializerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        self.cancel_authorized(caller(conn, &header).await?)
+        self.cancel_authorized(Caller::of(conn, &header).await?)
     }
 
     #[zbus(signal)]
-    async fn progress_changed(
-        context: &zbus::object_server::SignalEmitter<'_>,
-        message: &str,
-    ) -> zbus::Result<()>;
+    async fn progress_changed(context: &SignalEmitter<'_>, message: &str) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn finished(context: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
+    async fn finished(context: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn interrupted(context: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
+    async fn interrupted(context: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -274,13 +263,12 @@ mod tests {
     use super::*;
     use crate::dbus::BUS_NAME;
     use futures_lite::{StreamExt, future};
-    use std::error::Error as StdError;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
     use zbus::connection::Builder;
     use zbus::zvariant::OwnedValue;
 
-    type TestResult = std::result::Result<(), Box<dyn StdError>>;
+    type TestResult = Result<()>;
 
     struct Bus(Child);
 
@@ -291,7 +279,7 @@ mod tests {
         }
     }
 
-    fn private_bus() -> std::result::Result<(Bus, String), Box<dyn StdError>> {
+    fn private_bus() -> Result<(Bus, String)> {
         let mut child = Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
             .stdin(Stdio::null())
@@ -369,7 +357,7 @@ mod tests {
                 .is_ok()
         );
         let cancelled = Arc::new(AtomicBool::new(false));
-        *service.active.lock().map_err(|_| poisoned())? = Some(Arc::new(Active {
+        *service.active.lock().map_err(poisoned)? = Some(Arc::new(Active {
             owner: 1000,
             cancelled: Arc::clone(&cancelled),
         }));
@@ -479,9 +467,7 @@ mod tests {
         )?;
         served(
             true,
-            Arc::new(|_: &Progress<'_>, _: &AtomicBool| {
-                Err(crate::Error::Invalid("images missing".into()))
-            }),
+            Arc::new(|_: &Progress<'_>, _: &AtomicBool| Err("images missing".into())),
         )
     }
 

@@ -6,10 +6,8 @@ package's `id.waydro.Container.service` D-Bus activation names that unit. It
 runs the Android container on the HackberryPi. It never executes the Waydroid
 Python CLI, its network script or anything under `/usr/lib/waydroid`.
 
-Modes: `--production-run` serves the `/var/lib/waydroid` instance (and keeps
-serving `Init` while it is uninitialized); `--experimental-run` a scratch
-`/var/lib/deckard` instance without Binder setup or the hardware service. The
-read-only `--audit-production` checks the session config, Android properties
+`--production-run` serves the `/var/lib/waydroid` instance (and keeps serving
+`Init` while it is uninitialized). The read-only `--audit-production` checks the session config, Android properties
 and Binder nodes against the running manager; `--audit-hardware` probes the
 Binder service manager without registering anything.
 
@@ -86,9 +84,10 @@ request shapes `InvalidArgs`, and the default channels select nothing.
   keys are kept. No images: an explicit error.
 - The LXC `config` comes from the templates in `lxc/` (upstream's
   `config_base`/`config_3`/`config_4` with Marathon's `cgroup:rw` and its two
-  hooks, and `waydroid.seccomp`), compiled in. `config_nodes`, `waydroid.cfg`
-  and `waydroid_base.prop` follow upstream's `generate_nodes_lxc_config`,
-  `setup_config` and `make_base_props`; `[properties]` overrides apply;
+  hooks, and `waydroid.seccomp`), compiled in. `config_nodes` is rendered from
+  `lxc/config_nodes`, upstream's `generate_nodes_lxc_config` as a template
+  (`?path` lines are mounted when the host has the path). `waydroid.cfg` and
+  `waydroid_base.prop` follow upstream's `setup_config` and `make_base_props`; `[properties]` overrides apply;
   `overlay_rw` and `overlay_work` are dropped as upstream does. Everything is
   published in one transaction that restores its predecessors on failure.
 - Non-root callers need polkit `id.waydro.Initializer.Init` (asked for the
@@ -103,7 +102,7 @@ request shapes `InvalidArgs`, and the default channels select nothing.
 ## Hardware service
 
 `waydroidhardware` (`lineageos.waydroid.IHardware`), served through the shared
-libgbinder binding in `deckard_launch::binder` while the container runs:
+rsbinder binding in `deckard_launch::binder` while the container runs:
 
 - `suspend` freezes (or stops, with `suspend_action = stop`), `reboot` restarts
   LXC, `shutdownRequest` stops, or restarts for a reason starting with `1`;

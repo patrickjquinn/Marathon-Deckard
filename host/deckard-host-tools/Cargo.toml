@@ -10,8 +10,6 @@ license = "Apache-2.0"
 nix.workspace = true
 rustix.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true
 
 [lints]

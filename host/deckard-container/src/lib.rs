@@ -1,4 +1,6 @@
-//! Root-side LXC, image mount, and network primitives. Not a production service.
+//! Deckard's root container manager, upstream Waydroid's `container`
+//! service: LXC lifecycle, image mounts, networking, session files, the
+//! hardware service and image initialization.
 
 pub mod command;
 pub mod config;
@@ -8,40 +10,18 @@ pub mod hardware;
 pub mod initializer;
 pub mod initializer_dbus;
 pub mod lxc;
-pub mod manager;
 pub mod mounts;
 pub mod network;
 pub mod properties;
 pub mod session_config;
 
-use std::fmt;
-use std::io;
+pub use deckard_launch::Result;
 
-#[derive(Debug)]
-pub enum Error {
-    Io(io::Error),
-    Invalid(String),
-    Command(String),
-    Timeout(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "{error}"),
-            Self::Invalid(message) | Self::Command(message) | Self::Timeout(message) => {
-                f.write_str(message)
-            }
-        }
+/// `Ok` when `valid`, else an error carrying `message`.
+pub(crate) fn ensure(valid: bool, message: impl std::fmt::Display) -> Result<()> {
+    if valid {
+        Ok(())
+    } else {
+        Err(message.to_string().into())
     }
 }
-
-impl std::error::Error for Error {}
-
-impl From<io::Error> for Error {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-pub type Result<T> = std::result::Result<T, Error>;

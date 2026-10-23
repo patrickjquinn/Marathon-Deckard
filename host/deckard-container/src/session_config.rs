@@ -9,18 +9,20 @@
 //! root-owned stage under the daemon's runtime directory; `config_session`
 //! names only the stage.
 
-use crate::mounts::owner_controlled;
-use crate::{Error, Result};
-use rustix::fd::OwnedFd;
-use rustix::fs::{CWD, FileType, Mode, OFlags, ResolveFlags, fstat, openat2};
-use rustix::mount::{MoveMountFlags, OpenTreeFlags, UnmountFlags, move_mount, open_tree, unmount};
-use rustix::process::geteuid;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use deckard_host_tools::files;
+use rustix::fd::OwnedFd;
+use rustix::fs::{CWD, FileType, Mode, OFlags, ResolveFlags};
+use rustix::io::Errno;
+use rustix::mount::{MoveMountFlags, OpenTreeFlags, UnmountFlags};
+
+use crate::Result;
+use crate::mounts;
 
 /// Where the pinned session sources are mounted for LXC.
 pub struct Stage {
@@ -29,6 +31,7 @@ pub struct Stage {
 
 impl Stage {
     /// The stage under the daemon's runtime directory.
+    #[must_use]
     pub fn new(runtime: &Path) -> Self {
         Self {
             root: runtime.join("session"),
@@ -47,22 +50,19 @@ impl Stage {
         self.root.join("data")
     }
 
-    fn targets(&self) -> [PathBuf; 3] {
-        [self.wayland(), self.pulse(), self.data()]
-    }
-
     /// Unmounts whatever a previous session left on the stage.
     ///
     /// # Errors
     /// A stage mount cannot be removed.
     pub fn release(&self) -> Result<()> {
-        for target in self.targets() {
+        for target in [self.wayland(), self.pulse(), self.data()] {
             // Bounded: a stage target holds at most a few stacked mounts.
             for _ in 0..8 {
-                match unmount(&target, UnmountFlags::DETACH | UnmountFlags::NOFOLLOW) {
-                    Ok(()) => continue,
-                    Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOENT) => break,
-                    Err(error) => return Err(std::io::Error::from(error).into()),
+                match rustix::mount::unmount(&target, UnmountFlags::DETACH | UnmountFlags::NOFOLLOW)
+                {
+                    Ok(()) => {}
+                    Err(Errno::INVAL | Errno::NOENT) => break,
+                    Err(error) => return Err(error.into()),
                 }
             }
         }
@@ -74,7 +74,7 @@ impl Stage {
             .recursive(true)
             .mode(0o700)
             .create(&self.root)?;
-        owner_controlled(&self.root)?;
+        mounts::owner_controlled(&self.root)?;
         if fs::symlink_metadata(self.data()).is_err() {
             DirBuilder::new().mode(0o700).create(self.data())?;
         }
@@ -87,71 +87,61 @@ impl Stage {
                     .open(&socket)?;
             }
         }
-        for target in self.targets() {
-            owner_controlled(&target)?;
+        for target in [self.wayland(), self.pulse(), self.data()] {
+            mounts::owner_controlled(&target)?;
         }
         Ok(())
     }
 }
 
 fn field<'a>(fields: &'a HashMap<String, String>, key: &str) -> Result<&'a str> {
-    fields
+    let value = fields
         .get(key)
-        .map(String::as_str)
-        .ok_or_else(|| Error::Invalid(format!("missing session field: {key}")))
+        .ok_or(format!("missing session field: {key}"))?;
+    Ok(value)
 }
 
 fn safe_path(path: &Path) -> Result<()> {
     let value = path.to_string_lossy();
-    if !path.is_absolute() || value.chars().any(char::is_whitespace) || value.contains('\0') {
-        return Err(Error::Invalid(format!("unsafe LXC mount path: {value}")));
-    }
-    Ok(())
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Socket,
-    Directory,
+    let safe =
+        path.is_absolute() && !value.chars().any(char::is_whitespace) && !value.contains('\0');
+    crate::ensure(safe, format!("unsafe LXC mount path: {value}"))
 }
 
 /// `path` resolved once, then opened without following any link and checked
-/// on the descriptor: owned by `uid` and of the expected kind.
-fn pin(path: &Path, uid: u32, kind: Kind) -> Result<(PathBuf, OwnedFd)> {
+/// on the descriptor: owned by `uid` and of the `expected` type.
+fn pin(path: &Path, uid: u32, expected: FileType) -> Result<(PathBuf, OwnedFd)> {
     safe_path(path)?;
     let canonical = fs::canonicalize(path)?;
     safe_path(&canonical)?;
     let fd = open_without_links(&canonical)?;
-    let stat = fstat(&fd).map_err(std::io::Error::from)?;
-    let actual = FileType::from_raw_mode(stat.st_mode);
-    let expected = match kind {
-        Kind::Socket => FileType::Socket,
-        Kind::Directory => FileType::Directory,
+    let stat = rustix::fs::fstat(&fd)?;
+    let kind = if expected == FileType::Socket {
+        "socket"
+    } else {
+        "directory"
     };
-    if stat.st_uid != uid || actual != expected {
-        return Err(Error::Invalid(format!(
-            "session path is not a {} owned by UID {uid}: {}",
-            if kind == Kind::Socket {
-                "socket"
-            } else {
-                "directory"
-            },
+    let matches = stat.st_uid == uid && FileType::from_raw_mode(stat.st_mode) == expected;
+    crate::ensure(
+        matches,
+        format!(
+            "session path is not a {kind} owned by UID {uid}: {}",
             path.display()
-        )));
-    }
+        ),
+    )?;
     Ok((canonical, fd))
 }
 
 fn open_without_links(path: &Path) -> Result<OwnedFd> {
-    let fd = openat2(
+    let flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let resolve = ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+    Ok(rustix::fs::openat2(
         CWD,
         path,
-        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        flags,
         Mode::empty(),
-        ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
-    )
-    .map_err(std::io::Error::from)?;
-    Ok(fd)
+        resolve,
+    )?)
 }
 
 struct Sources {
@@ -163,41 +153,34 @@ struct Sources {
 fn sources(fields: &HashMap<String, String>, uid: u32, runtime_root: &Path) -> Result<Sources> {
     let runtime = runtime_root.join(uid.to_string());
     safe_path(&runtime)?;
-    if Path::new(field(fields, "xdg_runtime_dir")?) != runtime {
-        return Err(Error::Invalid("unexpected XDG runtime directory".into()));
-    }
-    if runtime.metadata()?.uid() != uid {
-        return Err(Error::Invalid(
-            "XDG runtime directory has wrong owner".into(),
-        ));
-    }
+    let expected = Path::new(field(fields, "xdg_runtime_dir")?) == runtime;
+    crate::ensure(expected, "unexpected XDG runtime directory")?;
+    crate::ensure(
+        runtime.metadata()?.uid() == uid,
+        "XDG runtime directory has wrong owner",
+    )?;
     let display = field(fields, "wayland_display")?;
-    if display.is_empty() || display.contains('/') || display.chars().any(char::is_whitespace) {
-        return Err(Error::Invalid("invalid Wayland display name".into()));
-    }
-    let (wayland_path, wayland) = pin(&runtime.join(display), uid, Kind::Socket)?;
-    if !wayland_path.starts_with(&runtime) {
-        return Err(Error::Invalid(
-            "Wayland socket escapes runtime directory".into(),
-        ));
-    }
+    let plain =
+        !display.is_empty() && !display.contains('/') && !display.chars().any(char::is_whitespace);
+    crate::ensure(plain, "invalid Wayland display name")?;
+    let (wayland_path, wayland) = pin(&runtime.join(display), uid, FileType::Socket)?;
+    crate::ensure(
+        wayland_path.starts_with(&runtime),
+        "Wayland socket escapes runtime directory",
+    )?;
     let pulse_path = Path::new(field(fields, "pulse_runtime_path")?).join("native");
     let pulse = if pulse_path.exists() {
-        let (canonical, fd) = pin(&pulse_path, uid, Kind::Socket)?;
-        if !canonical.starts_with(&runtime) {
-            return Err(Error::Invalid(
-                "Pulse socket escapes runtime directory".into(),
-            ));
-        }
+        let (canonical, fd) = pin(&pulse_path, uid, FileType::Socket)?;
+        crate::ensure(
+            canonical.starts_with(&runtime),
+            "Pulse socket escapes runtime directory",
+        )?;
         Some(fd)
     } else {
         None
     };
-    let (_, data) = pin(
-        Path::new(field(fields, "waydroid_data")?),
-        uid,
-        Kind::Directory,
-    )?;
+    let data = Path::new(field(fields, "waydroid_data")?);
+    let (_, data) = pin(data, uid, FileType::Directory)?;
     Ok(Sources {
         wayland,
         pulse,
@@ -206,6 +189,7 @@ fn sources(fields: &HashMap<String, String>, uid: u32, runtime_root: &Path) -> R
 }
 
 /// The `config_session` text for a stage.
+#[must_use]
 pub fn render(stage: &Stage, pulse: bool) -> String {
     let mut config = format!(
         "lxc.mount.entry = tmpfs /run/xdg none create=dir 0 0\n\
@@ -213,15 +197,19 @@ pub fn render(stage: &Stage, pulse: bool) -> String {
         stage.wayland().display()
     );
     if pulse {
-        config.push_str(&format!(
-            "lxc.mount.entry = {} run/xdg/pulse/native none rbind,create=file 0 0\n",
-            stage.pulse().display()
-        ));
+        let pulse = stage.pulse();
+        let pulse = pulse.display();
+        let _ = writeln!(
+            config,
+            "lxc.mount.entry = {pulse} run/xdg/pulse/native none rbind,create=file 0 0"
+        );
     }
-    config.push_str(&format!(
-        "lxc.mount.entry = {} data none rbind 0 0\n",
-        stage.data().display()
-    ));
+    let data = stage.data();
+    let _ = writeln!(
+        config,
+        "lxc.mount.entry = {} data none rbind 0 0",
+        data.display()
+    );
     config
 }
 
@@ -241,16 +229,28 @@ pub fn write(
     let sources = sources(fields, uid, runtime_root)?;
     let config = render(stage, sources.pulse.is_some());
     let directory = fs::symlink_metadata(lxc_instance)?;
-    if !directory.is_dir() || directory.uid() != geteuid().as_raw() || directory.mode() & 0o022 != 0
-    {
-        return Err(Error::Invalid("untrusted LXC instance directory".into()));
-    }
+    let trusted = directory.is_dir()
+        && directory.uid() == rustix::process::geteuid().as_raw()
+        && directory.mode() & 0o022 == 0;
+    crate::ensure(trusted, "untrusted LXC instance directory")?;
     stage.release()?;
     stage.prepare()?;
     let binds = [
-        (Some(&sources.wayland), stage.wayland(), false),
-        (sources.pulse.as_ref(), stage.pulse(), false),
-        (Some(&sources.data), stage.data(), true),
+        (
+            Some(&sources.wayland),
+            stage.wayland(),
+            OpenTreeFlags::empty(),
+        ),
+        (
+            sources.pulse.as_ref(),
+            stage.pulse(),
+            OpenTreeFlags::empty(),
+        ),
+        (
+            Some(&sources.data),
+            stage.data(),
+            OpenTreeFlags::AT_RECURSIVE,
+        ),
     ];
     for (source, target, recursive) in binds {
         if let Some(source) = source
@@ -260,49 +260,27 @@ pub fn write(
             return Err(error);
         }
     }
-    publish(lxc_instance, &config)
+    Ok(files::replace(
+        &lxc_instance.join("config_session"),
+        config.as_bytes(),
+        0o644,
+    )?)
 }
 
-fn attach(source: &OwnedFd, target: &Path, recursive: bool) -> Result<()> {
-    let mut flags = OpenTreeFlags::OPEN_TREE_CLONE
+fn attach(source: &OwnedFd, target: &Path, recursive: OpenTreeFlags) -> Result<()> {
+    let flags = OpenTreeFlags::OPEN_TREE_CLONE
         | OpenTreeFlags::OPEN_TREE_CLOEXEC
-        | OpenTreeFlags::AT_EMPTY_PATH;
-    if recursive {
-        flags |= OpenTreeFlags::AT_RECURSIVE;
-    }
-    let tree = open_tree(source, "", flags).map_err(std::io::Error::from)?;
-    move_mount(
+        | OpenTreeFlags::AT_EMPTY_PATH
+        | recursive;
+    let tree = rustix::mount::open_tree(source, "", flags)?;
+    rustix::mount::move_mount(
         &tree,
         "",
         CWD,
         target,
         MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
-    )
-    .map_err(std::io::Error::from)?;
+    )?;
     Ok(())
-}
-
-fn publish(lxc_instance: &Path, config: &str) -> Result<()> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| Error::Invalid(error.to_string()))?
-        .as_nanos();
-    let temporary = lxc_instance.join(format!(".config_session.{}-{nonce}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(&temporary)?;
-    let result: Result<()> = (|| {
-        file.write_all(config.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temporary, lxc_instance.join("config_session"))?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
 }
 
 /// Whether the session's sources pass the checks `write` applies, and the
@@ -313,16 +291,14 @@ fn publish(lxc_instance: &Path, config: &str) -> Result<()> {
 pub fn check(fields: &HashMap<String, String>, uid: u32, runtime_root: &Path) -> Result<bool> {
     Ok(sources(fields, uid, runtime_root)?.pulse.is_some())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::error::Error as StdError;
     use std::os::unix::fs::symlink;
     use std::os::unix::net::UnixListener;
 
-    fn session(root: &Path) -> std::result::Result<HashMap<String, String>, Box<dyn StdError>> {
-        let uid = geteuid().as_raw();
+    fn session(root: &Path) -> Result<HashMap<String, String>> {
+        let uid = rustix::process::geteuid().as_raw();
         let runtime = root.join("run").join(uid.to_string());
         fs::create_dir_all(runtime.join("pulse"))?;
         fs::create_dir_all(root.join("data"))?;
@@ -356,9 +332,9 @@ mod tests {
     }
 
     #[test]
-    fn sources_are_pinned_without_following_links() -> std::result::Result<(), Box<dyn StdError>> {
+    fn sources_are_pinned_without_following_links() -> Result<()> {
         let root = tempfile::tempdir()?;
-        let uid = geteuid().as_raw();
+        let uid = rustix::process::geteuid().as_raw();
         let mut fields = session(root.path())?;
         let run = root.path().join("run");
         assert!(check(&fields, uid, &run)?);
@@ -369,14 +345,14 @@ mod tests {
         fs::create_dir(root.path().join("elsewhere"))?;
         fs::remove_dir(root.path().join("data"))?;
         symlink(root.path().join("elsewhere"), root.path().join("data"))?;
-        let (canonical, _) = pin(&root.path().join("data"), uid, Kind::Directory)?;
+        let (canonical, _) = pin(&root.path().join("data"), uid, FileType::Directory)?;
         assert_eq!(canonical, root.path().join("elsewhere"));
         fs::create_dir(root.path().join("elsewhere/inner"))?;
         assert!(open_without_links(&root.path().join("data/inner")).is_err());
         assert!(open_without_links(&root.path().join("elsewhere/inner")).is_ok());
-        assert!(pin(&root.path().join("elsewhere"), uid, Kind::Socket).is_err());
+        assert!(pin(&root.path().join("elsewhere"), uid, FileType::Socket).is_err());
         let socket = run.join(uid.to_string()).join("marathon-wayland-0");
-        assert!(pin(&socket, uid, Kind::Directory).is_err());
+        assert!(pin(&socket, uid, FileType::Directory).is_err());
         Ok(())
     }
 }

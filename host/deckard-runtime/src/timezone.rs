@@ -6,48 +6,53 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use deckard_launch::binder::{BinderConfig, Platform};
-use zbus::blocking::{Connection, Proxy};
+use zbus::blocking::Connection;
 
-use crate::{Result, invalid};
+use crate::Result;
 
 const PROPERTY: &str = "persist.sys.timezone";
 const MAX_VALUE_BYTES: usize = 91;
 
+#[zbus::proxy(
+    interface = "org.freedesktop.timedate1",
+    default_service = "org.freedesktop.timedate1",
+    default_path = "/org/freedesktop/timedate1"
+)]
+trait Timedate {
+    #[zbus(property)]
+    fn timezone(&self) -> zbus::Result<String>;
+}
+
 /// An IANA zone name that fits an Android property value.
 fn valid(zone: &str) -> bool {
+    let plain = zone
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'+'));
     !zone.is_empty()
         && zone.len() <= MAX_VALUE_BYTES
         && !zone.starts_with('/')
         && !zone.contains("..")
-        && zone
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'+'))
+        && plain
 }
 
 fn apply(config: &BinderConfig, zone: &str) -> Result<()> {
     if !valid(zone) {
-        return Err(invalid(format!("unusable host time zone {zone:?}")));
+        return Err(format!("unusable host time zone {zone:?}").into());
     }
     Platform::connect(config)?.setprop(PROPERTY, zone)
 }
 
 fn follow(config: &BinderConfig, stop: &AtomicBool) -> Result<()> {
-    let bus = Connection::system()?;
-    let timedate = Proxy::new(
-        &bus,
-        "org.freedesktop.timedate1",
-        "/org/freedesktop/timedate1",
-        "org.freedesktop.timedate1",
-    )?;
-    let changes = timedate.receive_property_changed::<String>("Timezone");
-    apply(config, &timedate.get_property::<String>("Timezone")?)?;
+    let timedate = TimedateProxyBlocking::new(&Connection::system()?)?;
+    let changes = timedate.receive_timezone_changed();
+    apply(config, &timedate.timezone()?)?;
     for change in changes {
         if stop.load(Ordering::Acquire) {
             break;
         }
         if let Err(error) = change
             .get()
-            .map_err(crate::Error::from)
+            .map_err(Into::into)
             .and_then(|zone| apply(config, &zone))
         {
             eprintln!("deckard-runtime: time zone update failed: {error}");
@@ -67,7 +72,6 @@ pub fn propagate(config: &BinderConfig, stop: &Arc<AtomicBool>) {
         }
     });
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

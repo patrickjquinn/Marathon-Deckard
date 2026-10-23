@@ -2,14 +2,16 @@
 //! `tools/helpers/drivers.py`, `container_manager.set_permissions` and
 //! `tools/helpers/protocol.py`).
 
-use crate::command::{CommandSpec, Runner};
-use crate::config;
-use crate::{Error, Result};
-use rustix::mount::{MountFlags, mount};
-use std::fs::{self, File};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
+use std::fs::{self, File, Permissions};
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use deckard_host_tools::{cfg, files};
+
+use crate::Result;
+use crate::command::{Command, Runner};
+use crate::config;
 
 /// Binder node names, most preferred last (upstream's order: the last one
 /// that exists wins).
@@ -38,26 +40,20 @@ impl DriverNodes {
 
     fn parse(text: &str) -> Result<Self> {
         let setting = |name: &str| {
-            config::get(text, name)
-                .map(str::to_owned)
-                .ok_or_else(|| Error::Invalid(format!("missing {name} in waydroid.cfg")))
+            let value = cfg::get(text, name).ok_or(format!("missing {name} in waydroid.cfg"))?;
+            let plain = value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
+            if value.is_empty() || value.len() > 64 || !plain {
+                return Err("invalid Binder node name".to_owned());
+            }
+            Ok(value.to_owned())
         };
-        let nodes = Self {
+        Ok(Self {
             binder: setting("binder")?,
             vndbinder: setting("vndbinder")?,
             hwbinder: setting("hwbinder")?,
-        };
-        for name in nodes.names() {
-            if name.is_empty()
-                || name.len() > 64
-                || !name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            {
-                return Err(Error::Invalid("invalid Binder node name".into()));
-            }
-        }
-        Ok(nodes)
+        })
     }
 
     /// The installed nodes, preferring upstream's choice per kind.
@@ -66,12 +62,13 @@ impl DriverNodes {
     /// A kind has no node under `dev_root`.
     pub fn discover(dev_root: &Path) -> Result<Self> {
         let pick = |candidates: &[&str; 4]| {
-            candidates
+            let found = candidates
                 .iter()
                 .rev()
-                .find(|name| dev_root.join(name).exists())
+                .find(|name| dev_root.join(name).exists());
+            found
                 .map(|name| (*name).to_owned())
-                .ok_or_else(|| Error::Invalid(format!("Binder node {} not found", candidates[3])))
+                .ok_or(format!("Binder node {} not found", candidates[3]))
         };
         Ok(Self {
             binder: pick(&BINDER)?,
@@ -80,48 +77,45 @@ impl DriverNodes {
         })
     }
 
-    fn names(&self) -> [&str; 3] {
-        [&self.binder, &self.vndbinder, &self.hwbinder]
+    #[must_use]
+    pub fn paths(&self, dev_root: &Path) -> [PathBuf; 3] {
+        [&self.binder, &self.vndbinder, &self.hwbinder].map(|name| dev_root.join(name))
     }
 
     fn open_devices(&self, dev_root: &Path) -> Result<Vec<File>> {
         let mut devices = Vec::with_capacity(3);
-        for name in self.names() {
-            let path = dev_root.join(name);
+        for path in self.paths(dev_root) {
             let resolved = fs::canonicalize(&path)?;
             if !resolved.starts_with(dev_root) {
-                return Err(Error::Invalid(format!(
-                    "Binder node is not a device under {}: {}",
-                    dev_root.display(),
-                    path.display()
-                )));
+                let dev_root = dev_root.display();
+                let path = path.display();
+                return Err(format!("Binder node is not a device under {dev_root}: {path}").into());
             }
             let device = File::open(&resolved)?;
             if !device.metadata()?.file_type().is_char_device() {
-                return Err(Error::Invalid(format!(
-                    "Binder node is not a character device: {}",
-                    path.display()
-                )));
+                let path = path.display();
+                return Err(format!("Binder node is not a character device: {path}").into());
             }
             devices.push(device);
         }
         Ok(devices)
     }
 
+    /// # Errors
+    /// A node escapes `dev_root` or is not a character device.
     pub fn audit(&self, dev_root: &Path) -> Result<()> {
-        self.open_devices(dev_root).map(|_| ())
+        self.open_devices(dev_root).map(drop)
     }
 
     /// Makes the nodes usable by Android: mode 0666.
+    ///
+    /// # Errors
+    /// As for [`audit`](Self::audit), or a mode cannot be set.
     pub fn prepare(&self, dev_root: &Path) -> Result<()> {
         for device in self.open_devices(dev_root)? {
-            device.set_permissions(fs::Permissions::from_mode(0o666))?;
+            device.set_permissions(Permissions::from_mode(0o666))?;
         }
         Ok(())
-    }
-
-    pub fn paths(&self, dev_root: &Path) -> [PathBuf; 3] {
-        self.names().map(|name| dev_root.join(name))
     }
 }
 
@@ -142,18 +136,16 @@ pub fn ensure_binder_nodes(runner: &mut impl Runner) -> Result<()> {
     let defaults = [BINDER[3], VNDBINDER[3], HWBINDER[3]];
     if !binderfs_supported(&fs::read_to_string("/proc/filesystems")?) {
         let devices = format!("devices={}", defaults.join(","));
-        runner.run(
-            CommandSpec::new("modprobe", ["binder_linux", devices.as_str()])
-                .with_timeout(Duration::from_secs(10)),
-        )?;
+        let modprobe = Command::new(["modprobe", "binder_linux", &devices]);
+        runner.run(modprobe.timeout(Duration::from_secs(10)))?;
     }
     let binderfs = dev.join("binderfs");
     if !binderfs.is_dir() {
         fs::create_dir(&binderfs)?;
     }
     if !mounted_binderfs(&fs::read_to_string("/proc/self/mountinfo")?, &binderfs) {
-        mount("binder", &binderfs, "binder", MountFlags::empty(), None)
-            .map_err(std::io::Error::from)?;
+        let flags = rustix::mount::MountFlags::empty();
+        rustix::mount::mount("binder", &binderfs, "binder", flags, None)?;
     }
     link_nodes(&binderfs, dev, &defaults)
 }
@@ -167,10 +159,8 @@ fn binderfs_supported(filesystems: &str) -> bool {
 fn mounted_binderfs(mountinfo: &str, target: &Path) -> bool {
     mountinfo.lines().any(|line| {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let fstype = fields
-            .iter()
-            .position(|field| *field == "-")
-            .and_then(|separator| fields.get(separator + 1));
+        let separator = fields.iter().position(|field| *field == "-");
+        let fstype = separator.and_then(|separator| fields.get(separator + 1));
         fields
             .get(4)
             .is_some_and(|point| Path::new(point) == target)
@@ -182,13 +172,12 @@ fn link_nodes(binderfs: &Path, dev: &Path, names: &[&str]) -> Result<()> {
     for name in names {
         let source = binderfs.join(name);
         if !source.exists() {
-            return Err(Error::Invalid(format!(
-                "binderfs has no {name} device; binder-control allocation is not supported"
-            )));
+            let reason = "binder-control allocation is not supported";
+            return Err(format!("binderfs has no {name} device; {reason}").into());
         }
         let link = dev.join(name);
         if fs::symlink_metadata(&link).is_err() {
-            symlink(&source, &link)?;
+            std::os::unix::fs::symlink(&source, &link)?;
         }
     }
     Ok(())
@@ -200,38 +189,33 @@ fn link_nodes(binderfs: &Path, dev: &Path, names: &[&str]) -> Result<()> {
 /// # Errors
 /// A present node cannot be listed or changed.
 pub fn open_device_access(dev: &Path, debug_sync: &Path) -> Result<()> {
-    let mut nodes: Vec<PathBuf> = [
+    let fixed = [
         "ashmem", "sw_sync", "Vcodec", "MTK_SMI", "mdp_sync", "mtk_cmdq", "pvr_sync", "ion",
-    ]
-    .iter()
-    .map(|name| dev.join(name))
-    .collect();
+    ];
+    let mut nodes: Vec<PathBuf> = fixed.iter().map(|name| dev.join(name)).collect();
     nodes.push(debug_sync.to_owned());
-    nodes.extend(matching(&dev.join("dri"), "renderD")?);
-    nodes.extend(matching(dev, "fb")?);
-    nodes.extend(matching(dev, "video")?);
-    nodes.extend(matching(&dev.join("dma_heap"), "")?);
+    for (directory, prefix) in [
+        (dev.join("dri"), "renderD"),
+        (dev.to_owned(), "fb"),
+        (dev.to_owned(), "video"),
+        (dev.join("dma_heap"), ""),
+    ] {
+        nodes.extend(matching(&directory, prefix)?);
+    }
     let graphics = dev.join("graphics");
     if graphics.is_dir() {
         nodes.extend(matching(&graphics, "")?);
         nodes.push(graphics);
     }
     for node in nodes {
-        match fs::set_permissions(&node, fs::Permissions::from_mode(0o777)) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(error.into());
-            }
-            _ => {}
-        }
+        files::found(fs::set_permissions(&node, Permissions::from_mode(0o777)))?;
     }
     Ok(())
 }
 
 fn matching(directory: &Path, prefix: &str) -> Result<Vec<PathBuf>> {
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
+    let Some(entries) = files::found(fs::read_dir(directory))? else {
+        return Ok(Vec::new());
     };
     let mut paths = Vec::new();
     for entry in entries {
@@ -245,13 +229,15 @@ fn matching(directory: &Path, prefix: &str) -> Result<Vec<PathBuf>> {
 }
 
 /// Binder and service-manager protocols for the image's `ro.build.version.sdk`.
+#[must_use]
 pub fn protocols(build_prop: &str) -> (&'static str, &'static str) {
-    let sdk: u32 = build_prop
-        .lines()
-        .filter_map(|line| line.trim().split_once('='))
-        .find_map(|(key, value)| (key == "ro.build.version.sdk").then(|| value.parse().ok()))
-        .flatten()
-        .unwrap_or(0);
+    let mut sdk = 0;
+    for line in build_prop.lines() {
+        if let Some(("ro.build.version.sdk", value)) = line.trim().split_once('=') {
+            sdk = value.parse().unwrap_or(0);
+            break;
+        }
+    }
     match sdk {
         0..28 => ("aidl", "aidl"),
         28..30 => ("aidl2", "aidl2"),
@@ -272,21 +258,17 @@ pub fn record_protocols(config_path: &Path, rootfs: &Path) -> Result<()> {
     let build_prop = fs::read_to_string(rootfs.join("system/build.prop"))?;
     let (binder, manager) = protocols(&build_prop);
     let text = config::read(config_path)?;
-    if config::get(&text, "binder_protocol") == Some(binder)
-        && config::get(&text, "service_manager_protocol") == Some(manager)
+    if cfg::get(&text, "binder_protocol") == Some(binder)
+        && cfg::get(&text, "service_manager_protocol") == Some(manager)
     {
         return Ok(());
     }
-    let updated = config::set(
-        &text,
-        &[
-            ("binder_protocol", binder),
-            ("service_manager_protocol", manager),
-        ],
-    )?;
-    config::write(config_path, &updated)
+    let updates = [
+        ("binder_protocol", binder),
+        ("service_manager_protocol", manager),
+    ];
+    config::write(config_path, &config::set(&text, &updates)?)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,17 +11,13 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::mpsc::SyncSender;
 
-use deckard_launch::binder::{
-    self, BAD_VALUE, BinderConfig, INVALID_OPERATION, ParcelRead, Reply, UNKNOWN_TRANSACTION,
-    WOULD_BLOCK,
-};
+use deckard_launch::binder::{self, BinderConfig, Reply, Service};
+use rsbinder::{Parcel, StatusCode};
 
-use crate::{Error, Result};
+use crate::Result;
 
-pub const SERVICE: &str = "waydroidhardware";
-pub const INTERFACE: &str = "lineageos.waydroid.IHardware";
 /// Requests waiting for the daemon; Android gets `WOULD_BLOCK` beyond this.
 pub const QUEUE_DEPTH: usize = 16;
 
@@ -48,151 +44,147 @@ enum Admission {
     Queue(HardwareRequest),
 }
 
-/// `(system_zip, system_time, vendor_zip, vendor_time)`, the times being
-/// int32 for `upgrade` and int64 for `upgrade2`.
-fn read_upgrade(parcel: &mut impl ParcelRead, wide: bool) -> deckard_launch::Result<()> {
+/// `(system_zip, system_time, vendor_zip, vendor_time)`; the times are int32
+/// for `upgrade` and int64 for `upgrade2`.
+fn read_upgrade(parcel: &mut Parcel, code: u32) -> Result<()> {
     for _ in 0..2 {
-        parcel.string()?;
-        if wide {
-            parcel.long()?;
+        binder::string(parcel)?;
+        if code == UPGRADE2 {
+            parcel.read::<i64>()?;
         } else {
-            parcel.int()?;
+            parcel.read::<i32>()?;
         }
     }
     Ok(())
 }
 
-fn admit(code: u32, parcel: &mut impl ParcelRead) -> Admission {
-    let bad = || Admission::Answer(Reply::Status(BAD_VALUE));
+fn admit(code: u32, parcel: &mut Parcel) -> Admission {
+    let bad = Admission::Answer(Reply::Status(StatusCode::BadValue));
     match code {
-        ENABLE_NFC | ENABLE_BLUETOOTH => match parcel.int() {
+        ENABLE_NFC | ENABLE_BLUETOOTH => match parcel.read::<i32>() {
             Ok(_) => Admission::Answer(Reply::Words(&[0, 0])),
-            Err(_) => bad(),
+            Err(_) => bad,
         },
         SUSPEND => Admission::Queue(HardwareRequest::Suspend),
         REBOOT => Admission::Queue(HardwareRequest::Reboot),
-        UPGRADE | UPGRADE2 => match read_upgrade(parcel, code == UPGRADE2) {
+        UPGRADE | UPGRADE2 => match read_upgrade(parcel, code) {
             Ok(()) => {
                 eprintln!("deckard-containerd: refused Android image upgrade request");
-                Admission::Answer(Reply::Status(INVALID_OPERATION))
+                Admission::Answer(Reply::Status(StatusCode::InvalidOperation))
             }
-            Err(_) => bad(),
+            Err(_) => bad,
         },
-        SHUTDOWN_REQUEST => match parcel.string() {
+        SHUTDOWN_REQUEST => match binder::string(parcel) {
             Ok(reason) => Admission::Queue(HardwareRequest::ShutdownRequest(reason)),
-            Err(_) => bad(),
+            Err(_) => bad,
         },
-        _ => Admission::Answer(Reply::Status(UNKNOWN_TRANSACTION)),
+        _ => Admission::Answer(Reply::Status(StatusCode::UnknownTransaction)),
     }
 }
 
-/// Registers `waydroidhardware` and serves it on the calling thread until
-/// `stop` is set. Admitted requests go to `requests`; success replies
-/// acknowledge admission, not completion.
+struct Hardware(SyncSender<HardwareRequest>);
+
+impl Service for Hardware {
+    const NAME: &'static str = "waydroidhardware";
+    const INTERFACE: &'static str = "lineageos.waydroid.IHardware";
+
+    fn transact(&self, code: u32, request: &mut Parcel) -> Reply {
+        match admit(code, request) {
+            Admission::Answer(reply) => reply,
+            Admission::Queue(request) => match self.0.try_send(request) {
+                Ok(()) => Reply::Words(&[0]),
+                Err(_) => Reply::Status(StatusCode::WouldBlock),
+            },
+        }
+    }
+}
+
+/// Registers `waydroidhardware` and serves it until `stop` is set. Admitted
+/// requests go to `requests`; success replies acknowledge admission, not
+/// completion.
 ///
 /// # Errors
-/// libgbinder or the service manager is unavailable.
+/// The Binder device cannot be opened.
 pub fn run(
     config: &BinderConfig,
     requests: SyncSender<HardwareRequest>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
-    let handler =
-        Box::new(
-            move |code, parcel: &mut binder::Parcel<'_>| match admit(code, parcel) {
-                Admission::Answer(reply) => reply,
-                Admission::Queue(request) => match requests.try_send(request) {
-                    Ok(()) => Reply::Words(&[0]),
-                    Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                        Reply::Status(WOULD_BLOCK)
-                    }
-                },
-            },
-        );
-    binder::serve(config, SERVICE, INTERFACE, handler, stop)
-        .map_err(|error| Error::Invalid(error.to_string()))
+    binder::serve(config, Hardware(requests), stop)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
 
-    struct Values(VecDeque<&'static str>);
-
-    impl ParcelRead for Values {
-        fn int(&mut self) -> deckard_launch::Result<i32> {
-            Ok(self.string()?.parse()?)
-        }
-        fn long(&mut self) -> deckard_launch::Result<i64> {
-            Ok(self.string()?.parse()?)
-        }
-        fn string(&mut self) -> deckard_launch::Result<String> {
-            self.0
-                .pop_front()
-                .map(str::to_owned)
-                .ok_or_else(|| "truncated".into())
-        }
+    enum Value {
+        Int(i32),
+        Long(i64),
+        Text(&'static str),
     }
 
-    fn admitted(code: u32, values: &[&'static str]) -> Admission {
-        admit(code, &mut Values(values.iter().copied().collect()))
-    }
-
-    #[test]
-    fn radio_toggles_are_upstream_no_ops_that_answer_false() {
-        for code in [ENABLE_NFC, ENABLE_BLUETOOTH] {
-            for enable in ["0", "1"] {
-                assert_eq!(
-                    admitted(code, &[enable]),
-                    Admission::Answer(Reply::Words(&[0, 0]))
-                );
+    fn admitted(code: u32, values: &[Value]) -> rsbinder::Result<Admission> {
+        let mut parcel = Parcel::new();
+        for value in values {
+            match value {
+                Value::Int(value) => parcel.write(value)?,
+                Value::Long(value) => parcel.write(value)?,
+                Value::Text(value) => parcel.write(*value)?,
             }
-            assert_eq!(
-                admitted(code, &[]),
-                Admission::Answer(Reply::Status(BAD_VALUE))
-            );
         }
+        parcel.set_data_position(0);
+        Ok(admit(code, &mut parcel))
     }
 
     #[test]
-    fn lifecycle_requests_are_queued() {
+    fn radio_toggles_are_upstream_no_ops_that_answer_false() -> rsbinder::Result<()> {
+        for code in [ENABLE_NFC, ENABLE_BLUETOOTH] {
+            let answer = Admission::Answer(Reply::Words(&[0, 0]));
+            assert_eq!(admitted(code, &[Value::Int(1)])?, answer);
+            let bad = Admission::Answer(Reply::Status(StatusCode::BadValue));
+            assert_eq!(admitted(code, &[])?, bad);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lifecycle_requests_are_queued() -> rsbinder::Result<()> {
         assert_eq!(
-            admitted(SUSPEND, &[]),
+            admitted(SUSPEND, &[])?,
             Admission::Queue(HardwareRequest::Suspend)
         );
         assert_eq!(
-            admitted(REBOOT, &[]),
+            admitted(REBOOT, &[])?,
             Admission::Queue(HardwareRequest::Reboot)
         );
         assert_eq!(
-            admitted(SHUTDOWN_REQUEST, &["1reboot"]),
+            admitted(SHUTDOWN_REQUEST, &[Value::Text("1reboot")])?,
             Admission::Queue(HardwareRequest::ShutdownRequest("1reboot".into()))
         );
-        assert_eq!(
-            admitted(SHUTDOWN_REQUEST, &[]),
-            Admission::Answer(Reply::Status(BAD_VALUE))
-        );
+        Ok(())
     }
 
     #[test]
-    fn upgrades_are_refused_and_never_queued() {
-        let refused = Admission::Answer(Reply::Status(INVALID_OPERATION));
-        assert_eq!(
-            admitted(UPGRADE, &["/data/system.zip", "7", "/data/vendor.zip", "8"]),
-            refused
-        );
-        assert_eq!(
-            admitted(UPGRADE2, &["/s.zip", "1790477549", "/v.zip", "1790486210"]),
-            refused
-        );
-        assert_eq!(
-            admitted(UPGRADE, &["/s.zip", "7"]),
-            Admission::Answer(Reply::Status(BAD_VALUE))
-        );
-        assert_eq!(
-            admitted(99, &[]),
-            Admission::Answer(Reply::Status(UNKNOWN_TRANSACTION))
-        );
+    fn upgrades_are_refused_and_never_queued() -> rsbinder::Result<()> {
+        let refused = Admission::Answer(Reply::Status(StatusCode::InvalidOperation));
+        let upgrade = [
+            Value::Text("/s.zip"),
+            Value::Int(7),
+            Value::Text("/v.zip"),
+            Value::Int(8),
+        ];
+        assert_eq!(admitted(UPGRADE, &upgrade)?, refused);
+        let upgrade2 = [
+            Value::Text("/s.zip"),
+            Value::Long(1_790_477_549),
+            Value::Text("/v.zip"),
+            Value::Long(1_790_486_210),
+        ];
+        assert_eq!(admitted(UPGRADE2, &upgrade2)?, refused);
+        let short = Admission::Answer(Reply::Status(StatusCode::BadValue));
+        assert_eq!(admitted(UPGRADE, &upgrade[..2])?, short);
+        let unknown = Admission::Answer(Reply::Status(StatusCode::UnknownTransaction));
+        assert_eq!(admitted(99, &[])?, unknown);
+        Ok(())
     }
 }

@@ -1,26 +1,23 @@
 [package]
 name = "deckard-container"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license = "GPL-3.0-or-later"
-publish = false
 
 [dependencies]
-async-io = "2"
+async-io.workspace = true
 blocking = "=1.7.0"
+deckard-host-tools = { path = "../deckard-host-tools" }
 deckard-launch = { path = "../deckard-launch" }
-futures-lite = "=2.6.1"
-rustix = { version = "=1.1.5", features = ["fs", "mount", "process"] }
-serde = { workspace = true }
-signal-hook = { workspace = true }
-zbus = { version = "=5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+futures-lite.workspace = true
+rsbinder.workspace = true
+rustix.workspace = true
+serde.workspace = true
+signal-hook.workspace = true
+tempfile.workspace = true
+zbus = { workspace = true, features = ["blocking-api"] }
 
-[lints.rust]
-unsafe_code = "deny"
-
-[lints.clippy]
-unwrap_used = "warn"
-expect_used = "warn"
-
-[dev-dependencies]
-tempfile = { workspace = true }
+[lints]
+workspace = true

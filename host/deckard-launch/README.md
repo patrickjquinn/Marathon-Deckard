@@ -56,17 +56,22 @@ Inspected on the Hackberry Pi from `/usr/lib/waydroid/tools/actions/app_manager.
   apps while Android was starting. Intent launch can only request the handoff
   after Binder returns the resolved package.
 
-`src/binder.rs` is the one libgbinder binding of the host binaries: this
-`IPlatform` client (also `getAppsInfo`/`getAppInfo` for the session's launcher
-export) and the local services Android calls, `waydroidhardware` in
-`deckard-containerd` and `waydroidusermonitor` in `deckard-runtime`. It loads
-the device's `libgbinder.so.1` and `libglib-2.0.so.0` at run time and does not
-invoke `waydroid`, Python, `am start`, or a shell. The ABI declarations were
-checked against the [upstream libgbinder headers](https://github.com/mer-hybris/libgbinder/tree/master/include).
+`src/binder.rs` is the one Binder client of the host binaries, in pure Rust
+over [rsbinder](https://crates.io/crates/rsbinder): this `IPlatform` client
+(also `getAppsInfo`/`getAppInfo` for the session's launcher export) and the
+local services Android calls, `waydroidhardware` in `deckard-containerd` and
+`waydroidusermonitor` in `deckard-runtime`. It does not invoke `waydroid`,
+Python, `am start`, or a shell, and needs neither libgbinder nor GLib.
 
-On Alpine, **do not ship Rust's default static-musl output**: static musl
-cannot `dlopen` the Binder shared library. The crate deliberately rejects
-that target configuration. Build an AArch64 dynamic-musl executable with:
+Requests are written as libgbinder's `aidl3` protocol wrote them: the
+strict-mode word `0x400000`, work source `-1` and the `SYST` header before the
+interface name, and Android 11's service-manager codes (`checkService` 2,
+`addService` 3). rsbinder's own service-manager hub is not used, because on
+Linux it speaks Android 16's codes. `waydroid.cfg` naming a protocol other than
+`aidl3` is refused. Local services register again when the service manager
+dies.
+
+Build an AArch64 dynamic-musl executable as the package does:
 
 ```sh
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
@@ -75,18 +80,14 @@ RUSTFLAGS='-C target-feature=-crt-static' cargo build \
   --target aarch64-unknown-linux-musl --release --frozen
 ```
 
-Verify that `readelf -l` reports `/lib/ld-musl-aarch64.so.1` rather than the
-glibc loader; otherwise the build is not deployable to Alpine even though the
-Rust target name says musl. The package must keep `libgbinder.so.1` and
-`libglib-2.0.so.0` installed.
-
 ## Tests
 
 Run `cargo test -p deckard-launch --locked` and
 `cargo clippy -p deckard-launch --all-targets --locked -- -D warnings`.
 Unit tests use an injected backend to verify Binder operation order, intent
 return behavior, immersive policy, frozen property behavior, config parsing,
-and Wayland path validation. They do not prove device Binder round trips.
+the `getAppInfo` parcel layout and Wayland path validation. They do not prove
+device Binder round trips.
 
 ## Cutover gaps
 
