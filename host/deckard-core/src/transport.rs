@@ -307,7 +307,7 @@ impl BridgeSession {
         })
     }
 
-    pub fn close(&self) {
+    fn close(&self) {
         let _ = self.stream.shutdown(Shutdown::Both);
     }
 }

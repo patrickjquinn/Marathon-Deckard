@@ -233,7 +233,7 @@ pub fn shortcuts(list: &[Value]) -> Vec<Shortcut> {
 }
 
 /// The Keel action a shortcut becomes: `shortcut.<word>`, unique in `taken`.
-pub fn shortcut_action(id: &str, taken: &[String]) -> String {
+fn shortcut_action(id: &str, taken: &[String]) -> String {
     let mut word = String::new();
     for character in id.to_lowercase().chars() {
         if character.is_ascii_lowercase() || character.is_ascii_digit() {
@@ -528,7 +528,7 @@ pub fn screen(message: &Map<String, Value>) -> Option<Screen> {
 }
 
 /// The role `screen.read` gives a node.
-pub fn role(node: &Node) -> &'static str {
+fn role(node: &Node) -> &'static str {
     let class = node.class.rsplit('.').next().unwrap_or("");
     if node.flags & flags::EDITABLE != 0 || class.contains("EditText") {
         return "field";

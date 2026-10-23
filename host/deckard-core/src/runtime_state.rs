@@ -50,8 +50,7 @@ pub struct RuntimeState {
     android_version: String,
     start_at_login: Option<bool>,
     has_android_apps: bool,
-    reset: Option<u64>,
-    next_request: u64,
+    resetting: bool,
 }
 
 impl Default for RuntimeState {
@@ -63,8 +62,7 @@ impl Default for RuntimeState {
             android_version: String::new(),
             start_at_login: None,
             has_android_apps: false,
-            reset: None,
-            next_request: 0,
+            resetting: false,
         }
     }
 }
@@ -150,27 +148,23 @@ impl RuntimeState {
         changed
     }
 
-    /// Starts a reset; its id goes to [`Self::finish_reset`].
+    /// Starts a reset, which its caller ends with [`Self::finish_reset`].
     ///
     /// # Errors
     /// A reset is under way, or there is no helper.
-    pub fn request_reset(&mut self, helper_available: bool) -> Result<u64, ResetError> {
-        if self.reset.is_some() {
+    pub fn request_reset(&mut self, helper_available: bool) -> Result<(), ResetError> {
+        if self.resetting {
             return Err(ResetError::AlreadyResetting);
         }
         if !helper_available {
             return Err(ResetError::Unavailable);
         }
-        self.next_request = self.next_request.wrapping_add(1);
-        self.reset = Some(self.next_request);
-        Ok(self.next_request)
+        self.resetting = true;
+        Ok(())
     }
 
-    /// Ends reset `request`, whatever its outcome; a stale id is ignored.
-    pub fn finish_reset(&mut self, request: u64) {
-        if self.reset == Some(request) {
-            self.reset = None;
-        }
+    pub fn finish_reset(&mut self) {
+        self.resetting = false;
     }
 }
 
@@ -331,21 +325,6 @@ mod tests {
         assert!(runtime.at_login());
         runtime.set_start_at_login(false);
         assert!(!runtime.at_login());
-    }
-
-    #[test]
-    fn reset_guard_ignores_stale_ids() {
-        let mut runtime = RuntimeState::default();
-        assert_eq!(runtime.request_reset(false), Err(ResetError::Unavailable));
-        let first = runtime.request_reset(true);
-        assert_eq!(
-            runtime.request_reset(true),
-            Err(ResetError::AlreadyResetting)
-        );
-        runtime.finish_reset(first.map_or(0, |id| id + 1));
-        assert!(runtime.request_reset(true).is_err());
-        runtime.finish_reset(first.unwrap_or(0));
-        assert!(runtime.request_reset(true).is_ok());
     }
 
     #[test]

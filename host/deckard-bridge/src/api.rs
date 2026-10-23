@@ -444,8 +444,7 @@ impl SettingsApi {
         } else {
             Vec::new()
         };
-        let request = self
-            .runtime
+        self.runtime
             .request_reset(!helper.is_empty())
             .map_err(|error| {
                 failed(match error {
@@ -455,13 +454,13 @@ impl SettingsApi {
             })?;
         if self.runtime.state() != State::Stopped {
             if let Err(error) = runtime::call_unit(&self.bus, UnitCall::Stop).await {
-                self.runtime.finish_reset(request);
+                self.runtime.finish_reset();
                 return Err(failed(error.to_string()));
             }
             let deadline = Instant::now() + Duration::from_secs(90);
             while self.runtime.state() != State::Stopped {
                 if Instant::now() >= deadline {
-                    self.runtime.finish_reset(request);
+                    self.runtime.finish_reset();
                     return Err(failed("Android didn't stop"));
                 }
                 async_io::Timer::after(Duration::from_millis(100)).await;
@@ -488,7 +487,7 @@ impl SettingsApi {
             let _ = tx.send_blocking(result.unwrap_or(false));
         });
         let success = rx.recv().await.unwrap_or(false);
-        self.runtime.finish_reset(request);
+        self.runtime.finish_reset();
         if success {
             Ok(())
         } else {

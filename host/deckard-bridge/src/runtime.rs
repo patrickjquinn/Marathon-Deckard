@@ -104,12 +104,12 @@ impl Runtime {
         self.lock().state()
     }
 
-    pub fn request_reset(&self, available: bool) -> Result<u64, ResetError> {
+    pub fn request_reset(&self, available: bool) -> Result<(), ResetError> {
         self.lock().request_reset(available)
     }
 
-    pub fn finish_reset(&self, request: u64) {
-        self.lock().finish_reset(request);
+    pub fn finish_reset(&self) {
+        self.lock().finish_reset();
     }
 
     pub fn at_login(&self) -> bool {
