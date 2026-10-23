@@ -8,6 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Inputs for the preinstalled/local-image branch of `waydroid init`.
@@ -209,7 +210,29 @@ impl LocalImageInit {
     /// Publish a new, offline LXC config directory. A failed write is removed;
     /// `RENAME_NOREPLACE` prevents replacing a concurrent or existing instance.
     pub fn prepare_local(&self, inventory: &NodeInventory) -> Result<PathBuf> {
+        self.prepare_local_cancellable(inventory, &AtomicBool::new(false), None)
+    }
+
+    /// Cancellation and deadline are checked before each write and publication.
+    /// They cannot interrupt a filesystem operation already in progress.
+    pub fn prepare_local_cancellable(
+        &self,
+        inventory: &NodeInventory,
+        cancelled: &AtomicBool,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<PathBuf> {
+        let check = || {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(Error::Invalid("local initialization cancelled".into()));
+            }
+            if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+                return Err(Error::Timeout("local initialization timed out".into()));
+            }
+            Ok(())
+        };
+        check()?;
         let rendered = self.render(inventory)?;
+        check()?;
         let parent = self.work.join("lxc");
         let destination = parent.join(&self.name);
         let metadata = fs::symlink_metadata(&parent)?;
@@ -228,12 +251,17 @@ impl LocalImageInit {
         fs::create_dir(&staging)?;
         let result = (|| -> Result<()> {
             fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
+            check()?;
             write_new(&staging.join("config"), rendered.config.as_bytes())?;
+            check()?;
             write_new(&staging.join("config_nodes"), rendered.nodes.as_bytes())?;
+            check()?;
             write_new(&staging.join("config_session"), b"")?;
+            check()?;
             write_new(&staging.join("waydroid.seccomp"), &rendered.seccomp)?;
             File::open(&staging)?.sync_all()?;
             fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))?;
+            check()?;
             renameat_with(CWD, &staging, CWD, &destination, RenameFlags::NOREPLACE)
                 .map_err(std::io::Error::from)?;
             File::open(&parent)?.sync_all()?;
@@ -409,7 +437,17 @@ fn read_regular(path: &Path) -> Result<Vec<u8>> {
             path.display()
         )));
     }
-    Ok(fs::read(path)?)
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(Error::Invalid(format!(
+            "oversized LXC template: {}",
+            path.display()
+        )));
+    }
+    Ok(bytes)
 }
 
 fn validate_ext_image(path: &Path) -> Result<()> {
@@ -574,6 +612,36 @@ mod tests {
         init.bridge = "deckard0".into();
         fs::write(init.templates.join("config_base"), b"lxc.arch = LXCARCH\n")?;
         assert!(init.prepare_local(&NodeInventory::default()).is_err());
+        assert_eq!(fs::read_dir(init.work.join("lxc"))?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_local_init_never_publishes() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let cancelled = AtomicBool::new(true);
+        let init = fixture.init();
+        assert!(
+            init.prepare_local_cancellable(&NodeInventory::default(), &cancelled, None)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(init.work.join("lxc"))?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn expired_local_init_never_publishes() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let cancelled = AtomicBool::new(false);
+        let init = fixture.init();
+        assert!(
+            init.prepare_local_cancellable(
+                &NodeInventory::default(),
+                &cancelled,
+                Some(std::time::Instant::now()),
+            )
+            .is_err()
+        );
         assert_eq!(fs::read_dir(init.work.join("lxc"))?.count(), 0);
         Ok(())
     }

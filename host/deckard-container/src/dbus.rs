@@ -1,12 +1,17 @@
 //! Uninstalled system-bus adapter for the installed ContainerManager contract.
 
 use crate::command::ProcessRunner;
+use crate::initializer_dbus::{InitializerService, OBJECT_PATH as INITIALIZER_PATH};
 use crate::lxc::{State, validate_property_key, validate_property_value};
 use crate::manager::ContainerManager;
 use crate::{Error, Result};
 use rustix::fd::OwnedFd;
 use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, PathBuf};
 use std::sync::{Arc, Mutex};
 use zbus::connection::{Builder, Connection};
 use zbus::fdo::{self, DBusProxy};
@@ -25,6 +30,110 @@ pub struct Caller {
 struct SessionIdentity {
     uid: u32,
     pid: u32,
+}
+
+#[derive(Clone)]
+struct LauncherPolicy {
+    executable: PathBuf,
+    trust_root: PathBuf,
+    proc_root: PathBuf,
+    executable_owner: u32,
+}
+
+impl LauncherPolicy {
+    fn production() -> Self {
+        Self {
+            executable: PathBuf::from("/opt/deckard/bin/deckard-launch"),
+            trust_root: PathBuf::from("/opt"),
+            proc_root: PathBuf::from("/proc"),
+            executable_owner: 0,
+        }
+    }
+
+    fn permits(&self, caller: Caller, session: SessionIdentity) -> bool {
+        if caller.uid != session.uid || caller.pid == session.pid {
+            return false;
+        }
+        let Ok(executable) = fs::metadata(&self.executable) else {
+            return false;
+        };
+        let Ok(executable_entry) = fs::symlink_metadata(&self.executable) else {
+            return false;
+        };
+        if executable_entry.file_type().is_symlink()
+            || !self.executable.starts_with(&self.trust_root)
+            || self
+                .executable
+                .components()
+                .any(|component| component == Component::ParentDir)
+        {
+            return false;
+        }
+        let mut directory = self.executable.parent();
+        let mut trusted_directories = false;
+        while let Some(path) = directory {
+            let Ok(metadata) = fs::symlink_metadata(path) else {
+                return false;
+            };
+            if !metadata.is_dir()
+                || metadata.file_type().is_symlink()
+                || metadata.uid() != self.executable_owner
+                || metadata.mode() & 0o022 != 0
+            {
+                return false;
+            }
+            if path == self.trust_root {
+                trusted_directories = true;
+                break;
+            }
+            directory = path.parent();
+        }
+        if !trusted_directories
+            || !executable.is_file()
+            || executable.uid() != self.executable_owner
+            || executable.mode() & 0o022 != 0
+            || executable.mode() & 0o111 == 0
+        {
+            return false;
+        }
+        let process = self.proc_root.join(caller.pid.to_string());
+        if !fs::metadata(&process).is_ok_and(|metadata| metadata.uid() == caller.uid) {
+            return false;
+        }
+        let Ok(running_executable) = fs::metadata(process.join("exe")) else {
+            return false;
+        };
+        if executable.dev() != running_executable.dev()
+            || executable.ino() != running_executable.ino()
+        {
+            return false;
+        }
+        let root = format!(
+            "/user.slice/user-{}.slice/user@{}.service/",
+            session.uid, session.uid
+        );
+        let in_user_manager = |pid: u32| -> bool {
+            let path = self.proc_root.join(pid.to_string()).join("cgroup");
+            let Ok(mut file) = File::open(path) else {
+                return false;
+            };
+            let mut cgroup = String::new();
+            if file
+                .by_ref()
+                .take(16 * 1024 + 1)
+                .read_to_string(&mut cgroup)
+                .is_err()
+                || cgroup.len() > 16 * 1024
+            {
+                return false;
+            }
+            cgroup.lines().any(|line| {
+                line.strip_prefix("0::")
+                    .is_some_and(|path| path.starts_with(&root))
+            })
+        };
+        in_user_manager(session.pid) && in_user_manager(caller.pid)
+    }
 }
 
 impl SessionIdentity {
@@ -117,6 +226,7 @@ struct ServiceState {
 #[derive(Clone)]
 pub struct ContainerService {
     state: Arc<Mutex<ServiceState>>,
+    launcher_policy: LauncherPolicy,
 }
 
 impl ContainerService {
@@ -125,32 +235,17 @@ impl ContainerService {
     }
 
     fn with_backend(backend: Box<dyn Backend>) -> Self {
+        Self::with_backend_and_policy(backend, LauncherPolicy::production())
+    }
+
+    fn with_backend_and_policy(backend: Box<dyn Backend>, launcher_policy: LauncherPolicy) -> Self {
         Self {
             state: Arc::new(Mutex::new(ServiceState {
                 backend,
                 session: None,
             })),
+            launcher_policy,
         }
-    }
-
-    async fn caller(conn: &Connection, header: &Header<'_>) -> fdo::Result<Caller> {
-        let sender = header
-            .sender()
-            .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".into()))?;
-        let name = zbus::names::BusName::try_from(sender.as_str())
-            .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
-        let proxy = DBusProxy::new(conn)
-            .await
-            .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
-        let uid = proxy
-            .get_connection_unix_user(name.clone())
-            .await
-            .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
-        let pid = proxy
-            .get_connection_unix_process_id(name)
-            .await
-            .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
-        Ok(Caller { uid, pid })
     }
 
     async fn start_authorized(
@@ -205,11 +300,16 @@ impl ContainerService {
 
     async fn change_freeze(&self, freeze: bool, caller: Caller) -> fdo::Result<()> {
         let state = self.state.clone();
+        let launcher_policy = self.launcher_policy.clone();
         blocking::unblock(move || {
             let mut state = state
                 .lock()
                 .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
-            authorize_control(state.session.as_ref(), caller)?;
+            if freeze {
+                authorize_control(state.session.as_ref(), caller)?;
+            } else {
+                authorize_session_read(state.session.as_ref(), caller, &launcher_policy)?;
+            }
             if freeze {
                 state.backend.freeze()
             } else {
@@ -222,6 +322,7 @@ impl ContainerService {
 
     async fn get_session_authorized(&self, caller: Caller) -> fdo::Result<HashMap<String, String>> {
         let state = self.state.clone();
+        let launcher_policy = self.launcher_policy.clone();
         blocking::unblock(move || {
             let mut state = state
                 .lock()
@@ -229,7 +330,7 @@ impl ContainerService {
             let Some(session) = state.session.as_ref() else {
                 return Ok(HashMap::new());
             };
-            session.identity.authorize_control(caller)?;
+            authorize_session_read(Some(session), caller, &launcher_policy)?;
             let mut fields = session.fields.clone();
             let status = state.backend.status().map_err(service_error)?;
             fields.insert("state".into(), format!("{status:?}").to_uppercase());
@@ -274,6 +375,26 @@ impl ContainerService {
     }
 }
 
+fn authorize_session_read(
+    session: Option<&Session>,
+    caller: Caller,
+    launcher_policy: &LauncherPolicy,
+) -> fdo::Result<()> {
+    if caller.uid == 0 {
+        return Ok(());
+    }
+    let session = session.ok_or_else(|| fdo::Error::AccessDenied("no session owner".into()))?;
+    if session.identity.authorize_control(caller).is_ok()
+        || launcher_policy.permits(caller, session.identity)
+    {
+        Ok(())
+    } else {
+        Err(fdo::Error::AccessDenied(
+            "caller is neither session owner nor trusted session launcher".into(),
+        ))
+    }
+}
+
 fn authorize_root(caller: Caller) -> fdo::Result<()> {
     if caller.uid == 0 {
         Ok(())
@@ -310,7 +431,7 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = Self::caller(conn, &header).await?;
+        let caller = caller(conn, &header).await?;
         self.start_authorized(session, caller).await
     }
 
@@ -320,7 +441,7 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = Self::caller(conn, &header).await?;
+        let caller = caller(conn, &header).await?;
         self.stop_authorized(quit_session, caller).await
     }
 
@@ -329,7 +450,7 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = Self::caller(conn, &header).await?;
+        let caller = caller(conn, &header).await?;
         self.change_freeze(true, caller).await
     }
 
@@ -338,7 +459,7 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = Self::caller(conn, &header).await?;
+        let caller = caller(conn, &header).await?;
         self.change_freeze(false, caller).await
     }
 
@@ -347,7 +468,7 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<HashMap<String, String>> {
-        let caller = Self::caller(conn, &header).await?;
+        let caller = caller(conn, &header).await?;
         self.get_session_authorized(caller).await
     }
 
@@ -357,7 +478,7 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<String> {
-        let caller = Self::caller(conn, &header).await?;
+        let caller = caller(conn, &header).await?;
         self.get_property_authorized(key, caller).await
     }
 
@@ -368,7 +489,7 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = Self::caller(conn, &header).await?;
+        let caller = caller(conn, &header).await?;
         self.set_property_authorized(key, value, caller).await
     }
 }
@@ -377,8 +498,29 @@ pub async fn serve_system_bus(manager: ContainerManager) -> zbus::Result<Connect
     Builder::system()?
         .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, ContainerService::new(manager))?
+        .serve_at(INITIALIZER_PATH, InitializerService::new())?
         .build()
         .await
+}
+
+pub(crate) async fn caller(conn: &Connection, header: &Header<'_>) -> fdo::Result<Caller> {
+    let sender = header
+        .sender()
+        .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".into()))?;
+    let name = zbus::names::BusName::try_from(sender.as_str())
+        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
+    let proxy = DBusProxy::new(conn)
+        .await
+        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
+    let uid = proxy
+        .get_connection_unix_user(name.clone())
+        .await
+        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
+    let pid = proxy
+        .get_connection_unix_process_id(name)
+        .await
+        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
+    Ok(Caller { uid, pid })
 }
 
 #[cfg(test)]
@@ -386,7 +528,9 @@ mod tests {
     use super::*;
     use std::error::Error as StdError;
     use std::io::{BufRead, BufReader};
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::process::{Child, Command, Stdio};
+    use std::time::{SystemTime, UNIX_EPOCH};
     use zbus::object_server::Interface;
 
     struct BusProcess(Child);
@@ -530,6 +674,152 @@ mod tests {
             ["start", "freeze", "unfreeze", "stop"]
         );
         drop(bus);
+        Ok(())
+    }
+
+    #[test]
+    fn private_bus_allows_trusted_launcher_but_not_another_same_uid_process()
+    -> std::result::Result<(), Box<dyn StdError>> {
+        let uid = rustix::process::geteuid().as_raw();
+        if uid == 0 {
+            return Ok(());
+        }
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let fixture = std::env::temp_dir().join(format!(
+            "deckard-launch-policy-{}-{nonce}",
+            std::process::id()
+        ));
+        let proc_root = fixture.join("proc");
+        let binary = fixture.join("bin/deckard-launch");
+        fs::create_dir_all(binary.parent().ok_or("launcher binary has no parent")?)?;
+        fs::create_dir(&proc_root)?;
+        fs::write(&binary, b"trusted executable identity")?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
+        let session_process = BusProcess(Command::new("sleep").arg("30").spawn()?);
+        let session_pid = session_process.0.id();
+        let launcher_pid = std::process::id();
+        let cgroup = format!(
+            "0::/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/marathon-waydroid.service\n"
+        );
+        let launcher_cgroup = format!(
+            "0::/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/marathon-shell.service\n"
+        );
+        for (pid, text) in [(session_pid, cgroup), (launcher_pid, launcher_cgroup)] {
+            let process = proc_root.join(pid.to_string());
+            fs::create_dir(&process)?;
+            fs::write(process.join("cgroup"), text)?;
+        }
+        symlink(
+            &binary,
+            proc_root.join(launcher_pid.to_string()).join("exe"),
+        )?;
+        let policy = LauncherPolicy {
+            executable: binary,
+            trust_root: fixture.clone(),
+            proc_root,
+            executable_owner: uid,
+        };
+        assert!(policy.permits(
+            Caller {
+                uid,
+                pid: launcher_pid
+            },
+            SessionIdentity {
+                uid,
+                pid: session_pid
+            }
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let service = ContainerService::with_backend_and_policy(
+            Box::new(RecordingBackend(calls.clone())),
+            policy,
+        );
+        let session_identity = SessionIdentity {
+            uid,
+            pid: session_pid,
+        };
+        let pidfd = pidfd_open(
+            Pid::from_raw(session_pid as i32).ok_or("invalid test session PID")?,
+            PidfdFlags::empty(),
+        )?;
+        service
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned")?
+            .session = Some(Session {
+            fields: HashMap::from([
+                ("user_id".into(), uid.to_string()),
+                ("pid".into(), session_pid.to_string()),
+            ]),
+            identity: session_identity,
+            pidfd,
+        });
+
+        let mut child = Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("dbus-daemon stdout unavailable")?;
+        let bus = BusProcess(child);
+        let mut address = String::new();
+        BufReader::new(stdout).read_line(&mut address)?;
+        let address = address.trim().to_owned();
+        if address.is_empty() {
+            return Err("dbus-daemon did not provide an address".into());
+        }
+        async_io::block_on(async {
+            let server = Builder::address(address.as_str())?
+                .name(BUS_NAME)?
+                .serve_at(OBJECT_PATH, service)?
+                .build()
+                .await?;
+            let client = Builder::address(address.as_str())?.build().await?;
+            let proxy =
+                zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, "id.waydro.ContainerManager")
+                    .await?;
+            let session: HashMap<String, String> = proxy.call("GetSession", &()).await?;
+            assert_eq!(session.get("pid"), Some(&session_pid.to_string()));
+            let _: () = proxy.call("Unfreeze", &()).await?;
+            let denied_freeze: zbus::Result<()> = proxy.call("Freeze", &()).await;
+            assert!(denied_freeze.is_err());
+            let denied_stop: zbus::Result<()> = proxy.call("Stop", &(false,)).await;
+            assert!(denied_stop.is_err());
+            let address_for_call = address.clone();
+            let unrelated = blocking::unblock(move || {
+                Command::new("busctl")
+                    .arg(format!("--address={address_for_call}"))
+                    .args([
+                        "call",
+                        BUS_NAME,
+                        OBJECT_PATH,
+                        "id.waydro.ContainerManager",
+                        "GetSession",
+                    ])
+                    .output()
+            })
+            .await?;
+            assert!(!unrelated.status.success());
+            assert!(
+                String::from_utf8_lossy(&unrelated.stderr).contains("Access denied"),
+                "unexpected busctl error: {}",
+                String::from_utf8_lossy(&unrelated.stderr)
+            );
+            drop(client);
+            drop(server);
+            Ok::<(), Box<dyn StdError>>(())
+        })?;
+        assert_eq!(
+            *calls.lock().map_err(|_| "record lock poisoned")?,
+            ["unfreeze"]
+        );
+        drop(bus);
+        drop(session_process);
+        fs::remove_dir_all(fixture)?;
         Ok(())
     }
 
