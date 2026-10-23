@@ -106,5 +106,13 @@ fn follows_unit_property_changes_without_polling() -> TestResult {
     changes.recv_timeout(Duration::from_secs(2))?;
     assert_eq!(runtime.state(), State::Stopping);
     assert_eq!(runtime.active_since_ms(), 0);
+
+    // A burst of signals while a GetAll is in flight never wedges the bus.
+    for _ in 0..64 {
+        change(&systemd, &unit, "deactivating", 0)?;
+    }
+    change(&systemd, &unit, "inactive", 0)?;
+    changes.recv_timeout(Duration::from_secs(2))?;
+    assert_eq!(runtime.state(), State::Stopped);
     Ok(())
 }
