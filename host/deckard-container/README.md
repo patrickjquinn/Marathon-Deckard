@@ -1,11 +1,12 @@
-# deckard-container prototype
+# deckard-container
 
-This is a root-side Rust **prototype** in the root Cargo workspace. No systemd
-unit is installed, and it must not replace the Python manager until the parity
-gaps below are closed and tested on the device. `deckard-containerd` requires
-root and an explicit `--experimental-run` or `--production-run` argument; neither
-is selected by a service. `--production-run` targets the initialized
-`/var/lib/waydroid` instance and refuses missing configuration. The read-only
+The root-side Rust container manager that replaces Waydroid's Python one.
+`deckard-container.service` runs `deckard-containerd --production-run`, and
+the package's `id.waydro.Container.service` D-Bus activation names that unit
+(replacing Waydroid's, which ran the Python manager). It runs the Android
+container on the HackberryPi today; the gaps below remain before full parity.
+`--production-run` targets the initialized `/var/lib/waydroid` instance and
+refuses missing configuration; `--experimental-run` is for scratch instances. The read-only
 `--audit-production` mode checks its generated session config and properties
 against the running manager. `--audit-hardware` probes the configured Binder
 service manager without registering a service. It never executes the Waydroid
@@ -35,8 +36,8 @@ Python CLI or network script.
   density retains the image default. The read-only audit matched both installed
   files on the Hackberry Pi on 2026-10-23. `SIGTERM`/`SIGINT` stop a session
   started by this daemon, but do not stop an unowned existing container.
-- An inactive zbus 5.19.0 system-bus adapter owns `id.waydro.Container` at
-  `/ContainerManager` when explicitly run. It implements the installed
+- The zbus 5.19.0 system-bus adapter owns `id.waydro.Container` at
+  `/ContainerManager`. It implements the installed
   `id.waydro.ContainerManager` `Start(a{ss})`, `Stop(b)`, `Freeze()`,
   `Unfreeze()`, and `GetSession() -> a{ss}` signatures. Credentials come from
   the D-Bus daemon for the unique sender name, never from caller-supplied
@@ -55,8 +56,7 @@ Python CLI or network script.
   other CLI executables or a launcher from another user manager.
   The Pi initially had UID 1000-owned `/usr` and `/usr/libexec` directories;
   the user-session cutover repaired these parent owners and installs the
-  launcher at the trusted path. The prototype policy still requires a live
-  root-container activation test before replacing the Python manager.
+  launcher at the trusted path.
   `Stop(true)` signals the original session through a retained Linux pidfd.
   Blocking LXC/mount/network calls run outside the D-Bus executor.
 - Private-bus tests exercise the actual wire methods and credential lookup
@@ -77,14 +77,17 @@ Python CLI or network script.
   `config_session` as one new LXC instance directory. It refuses to replace
   an existing instance. The only CLI entry is root-only
   `--experimental-prepare-local`; it does not start, stop, or mount anything.
-- The same **uninstalled experimental** bus server now exposes `/Initializer`
+- The same bus server exposes `/Initializer`
   with the installed `id.waydro.Initializer` wire contract:
   `Init(a{ss})`, `Cancel()`, `ProgressChanged(s)`, `Finished()`, and
   `Interrupted()`. Credentials are resolved from the unique D-Bus sender.
   Both methods require root; unlike upstream, the default-channel exemption
   and interactive Polkit authorization are deliberately unsupported.
-  Upstream's three-field `Init` request fails with `NotSupported` and performs
-  no work. The only accepted extension is `mode=prepare-local-scratch` plus
+  Upstream's three-field `Init` request runs the local-image initializer on
+  the production instance: `system.img` and `vendor.img` must already be in
+  one of the Waydroid image directories, and the container must be stopped.
+  Its channel and type fields are validated but select nothing (no OTA). The
+  only other accepted request is `mode=prepare-local-scratch` plus
   exactly `work`, `images`, `templates`, `name`, `bridge`, `arch`, `lxc_major`,
   `binder`, `vndbinder`, and `hwbinder`. `work` must be an existing direct child
   of a real `/tmp/deckard-init-scratch` directory, with `work/lxc` present.
@@ -109,11 +112,9 @@ The installed Python source at `/usr/lib/waydroid/tools/actions/container_manage
 `tools/interfaces/IHardware.py`, and `data/scripts/waydroid-net.sh` is the
 reference. Specifically unsupported:
 
-- **Production initialization and rename**: the installed GUI's standard
-  three-field `Init` remains unsupported, including default and custom OTA
-  channels, `system_type` selection, URL fetch/hash verification, replacing
-  images, config/property/driver generation, stopped or running container
-  coordination, and restart. There is no Polkit check or authorization path
+- **Production initialization and rename**: `Init` prepares local images only:
+  no default or custom OTA channels, `system_type` selection, URL fetch/hash
+  verification, image replacement or running-container coordination. There is no Polkit check or authorization path
   for non-root callers. The adapter retains the old bus/interface names for
   client compatibility; no renamed
   `org.marathonos.Deckard.Container` API or migration alias exists yet.
@@ -125,12 +126,12 @@ reference. Specifically unsupported:
   Binder transaction path, so behavioral parity beyond the observed read is
   not established.
 - **Android Binder HAL `lineageos.waydroid.IHardware` / `waydroidhardware`**:
-  the inactive `hardware` module decodes all seven transaction codes and
-  handles Binder registration and bounded request queueing, but it is not
-  integrated into the container lifecycle. Host action callbacks, including
-  safe image upgrade and shutdown handling, are missing; the live Binder
-  service-manager probe passed, but no transaction test has been run. It must
-  not be activated until these are complete.
+  the `hardware` module decodes all seven transaction codes, registers with
+  Binder, queues requests boundedly and is started with the container
+  lifecycle. `Upgrade` is refused (Android image upgrade is not
+  implemented). NFC and Bluetooth requests answer success without toggling
+  anything on the host; their intended behavior is still to be defined. The
+  service-manager probe passes; not every transaction has been exercised.
 - Binder/ashmem driver probing and permissions, host permissions,
   `waydroid_base.prop` generation, AIDL selection,
   optional host EGL/ODM binds, NFC and sensor process handling,

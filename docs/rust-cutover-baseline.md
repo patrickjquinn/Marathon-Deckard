@@ -1,5 +1,12 @@
 # Rust cutover baseline (Hackberry Pi, 2026-10-23)
 
+> **Superseded for the root and user session.** Since this baseline the Pi
+> runs the Rust root manager (`deckard-containerd`, `deckard-container.service`,
+> owning `id.waydro.Container`) and the Rust session (`deckard-runtime`,
+> `deckard-session.service`); desktop entries run `deckard-launch`. C++
+> `deckardd` is still the bridge. The sections below are the chronological
+> record, including the Python-era contract this started from.
+
 This records the production contract before replacing either running service.
 Measurements are a single warm snapshot, not cold-boot or peak values.
 
