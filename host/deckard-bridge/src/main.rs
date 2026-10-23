@@ -381,7 +381,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let watch_bus = bus.clone();
     let watch_runtime = runtime.clone();
     thread::spawn(move || {
-        if let Err(error) = watch_unit(&watch_bus, &watch_runtime) {
+        let changed = || emit_runtime(&watch_bus, &watch_runtime);
+        if let Err(error) = watch_unit(&watch_bus, &watch_runtime, changed) {
             eprintln!("deckard-bridge: unit watch failed: {error}")
         }
     });

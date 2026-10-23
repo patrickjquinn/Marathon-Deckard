@@ -1,16 +1,23 @@
+//! The Android session unit as Settings shows it, followed through systemd.
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use deckard_core::runtime_state::{ResetError, RuntimeState, State, UnitCall};
 use serde_json::Value;
-use zbus::zvariant::{OwnedValue, Str};
+use zbus::blocking::{Connection, MessageIterator, Proxy};
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
+use zbus::{MatchRule, message};
 
 pub const UNIT: &str = "deckard-session.service";
 pub const MANAGER: &str = "org.freedesktop.systemd1.Manager";
 pub const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
+const SYSTEMD: &str = "org.freedesktop.systemd1";
+const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
 
 #[derive(Clone)]
 pub struct Runtime {
@@ -21,6 +28,15 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// # Panics
+    /// If a thread panicked while holding the state, which leaves it unknown.
+    fn lock(&self) -> MutexGuard<'_, RuntimeState> {
+        match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => panic!("runtime state lock poisoned"),
+        }
+    }
+
     pub fn new(policy: PathBuf, applications: PathBuf, memory: PathBuf) -> Self {
         let mut state = RuntimeState::default();
         if let Some(enabled) = fs::read(&policy)
@@ -40,7 +56,7 @@ impl Runtime {
     }
 
     pub fn snapshot(&self) -> HashMap<String, OwnedValue> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.lock();
         state.set_has_android_apps(has_apps(&self.applications));
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -71,59 +87,44 @@ impl Runtime {
     }
 
     pub fn set_connected(&self, connected: bool) -> bool {
-        !self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_android_connected(connected)
-            .is_empty()
+        !self.lock().set_android_connected(connected).is_empty()
     }
 
     pub fn set_version(&self, version: &str) -> bool {
-        !self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_android_version(version)
-            .is_empty()
+        !self.lock().set_android_version(version).is_empty()
     }
 
     pub fn set_unit(&self, active: &str, entered_ms: i64) -> bool {
-        !self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_unit(active, entered_ms)
-            .is_empty()
+        !self.lock().set_unit(active, entered_ms).is_empty()
+    }
+
+    /// When the session unit became active, ms since the epoch; 0 while it isn't.
+    pub fn active_since_ms(&self) -> i64 {
+        self.lock().active_since_ms()
     }
 
     pub fn state(&self) -> State {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).state()
+        self.lock().state()
     }
 
     pub fn request_reset(&self, available: bool) -> Result<u64, ResetError> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        self.lock()
             .request_reset(available)
             .map(|(request, _)| request)
     }
 
     pub fn reset_timeout(&self, request: u64) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.lock();
         state.on_stop_timeout(request);
         state.on_reset_helper_failed_to_start(request);
     }
 
     pub fn reset_finished(&self, request: u64, success: bool) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .on_reset_helper_finished(request, success);
+        self.lock().on_reset_helper_finished(request, success);
     }
 
     pub fn at_login(&self) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.lock();
         state.set_has_android_apps(has_apps(&self.applications));
         !state.at_login().is_empty()
     }
@@ -142,10 +143,7 @@ impl Runtime {
             .with_extension(format!("json.{}", std::process::id()));
         fs::write(&tmp, serde_json::to_vec(&policy)?)?;
         fs::rename(tmp, &self.policy)?;
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_start_at_login(enabled);
+        self.lock().set_start_at_login(enabled);
         Ok(())
     }
 }
@@ -169,49 +167,78 @@ fn has_apps(path: &Path) -> bool {
     })
 }
 
+async fn manager_call(bus: &zbus::Connection, method: &str) -> zbus::Result<()> {
+    let proxy = zbus::Proxy::new(bus, SYSTEMD, MANAGER_PATH, MANAGER).await?;
+    let _: OwnedObjectPath = proxy.call(method, &(UNIT, "replace")).await?;
+    Ok(())
+}
+
 pub async fn call_unit(bus: &zbus::Connection, call: UnitCall) -> zbus::Result<()> {
-    let proxy = zbus::Proxy::new(bus, "org.freedesktop.systemd1", MANAGER_PATH, MANAGER).await?;
     let method = match call {
         UnitCall::Start => "StartUnit",
         UnitCall::Stop => "StopUnit",
         UnitCall::Restart => "RestartUnit",
     };
-    let _: zbus::zvariant::OwnedObjectPath = proxy.call(method, &(UNIT, "replace")).await?;
-    Ok(())
+    manager_call(bus, method).await
 }
 
-pub fn watch_unit(bus: &zbus::blocking::Connection, runtime: &Runtime) -> zbus::Result<()> {
-    let manager =
-        zbus::blocking::Proxy::new(bus, "org.freedesktop.systemd1", MANAGER_PATH, MANAGER)?;
-    let path: zbus::zvariant::OwnedObjectPath = manager.call("LoadUnit", &(UNIT,))?;
-    loop {
-        let props = zbus::blocking::Proxy::new(
-            bus,
-            "org.freedesktop.systemd1",
-            path.as_str(),
-            "org.freedesktop.DBus.Properties",
-        )?;
-        let values: HashMap<String, OwnedValue> =
-            props.call("GetAll", &("org.freedesktop.systemd1.Unit",))?;
-        let active = values
-            .get("ActiveState")
-            .and_then(|v| <&str>::try_from(v).ok())
-            .unwrap_or("inactive");
-        let entered_us = values
-            .get("ActiveEnterTimestamp")
-            .and_then(|v| u64::try_from(v).ok())
-            .unwrap_or(0);
-        if runtime.set_unit(active, (entered_us / 1000) as i64) {
-            let _ = bus.emit_signal(
-                None::<&str>,
-                "/org/marathonos/Deckard",
-                "org.marathonos.Deckard1",
-                "RuntimeChanged",
-                &(runtime.snapshot(),),
-            );
-        }
-        std::thread::sleep(Duration::from_secs(1));
+/// Restarts the session only while it runs.
+pub async fn try_restart_unit(bus: &zbus::Connection) -> zbus::Result<()> {
+    manager_call(bus, "TryRestartUnit").await
+}
+
+fn refresh(properties: &Proxy<'_>, runtime: &Runtime) -> zbus::Result<bool> {
+    let values: HashMap<String, OwnedValue> = properties.call("GetAll", &(UNIT_INTERFACE,))?;
+    let active = values
+        .get("ActiveState")
+        .and_then(|v| <&str>::try_from(v).ok())
+        .unwrap_or("inactive");
+    let entered_us = values
+        .get("ActiveEnterTimestamp")
+        .and_then(|v| u64::try_from(v).ok())
+        .unwrap_or(0);
+    let entered_ms = i64::try_from(entered_us / 1000).unwrap_or(i64::MAX);
+    Ok(runtime.set_unit(active, entered_ms))
+}
+
+/// Follows the session unit's `PropertiesChanged` and calls `changed` each
+/// time its state moves. Runs on a dedicated thread.
+///
+/// # Errors
+/// Returns the D-Bus error that prevented the subscription.
+pub fn watch_unit(
+    bus: &Connection,
+    runtime: &Runtime,
+    mut changed: impl FnMut(),
+) -> zbus::Result<()> {
+    let manager = Proxy::new(bus, SYSTEMD, MANAGER_PATH, MANAGER)?;
+    let path: OwnedObjectPath = manager.call("LoadUnit", &(UNIT,))?;
+    let rule = MatchRule::builder()
+        .msg_type(message::Type::Signal)
+        .sender(SYSTEMD)?
+        .path(path.as_str())?
+        .interface(PROPERTIES)?
+        .member("PropertiesChanged")?
+        .add_arg(UNIT_INTERFACE)?
+        .build();
+    let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
+    if let Err(error) = manager.call::<_, _, ()>("Subscribe", &()) {
+        eprintln!("deckard-bridge: systemd Subscribe failed: {error}");
     }
+    let properties = Proxy::new(bus, SYSTEMD, path.as_str(), PROPERTIES)?;
+    let mut update = || match refresh(&properties, runtime) {
+        Ok(true) => changed(),
+        Ok(false) => {}
+        Err(error) => eprintln!("deckard-bridge: reading {UNIT} failed: {error}"),
+    };
+    update();
+    for signal in signals {
+        match signal {
+            Ok(_) => update(),
+            Err(error) => eprintln!("deckard-bridge: {UNIT} signal failed: {error}"),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
