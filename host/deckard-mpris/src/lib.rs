@@ -11,6 +11,7 @@ use std::time::Instant;
 use deckard_core::messages::{self, Media};
 use deckard_core::png_guard;
 use serde_json::{Map, Value};
+use tempfile::TempPath;
 use zbus::blocking::Connection;
 use zbus::blocking::connection::Builder;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value as Variant};
@@ -320,22 +321,15 @@ impl Player {
     }
 }
 
+/// A player's connection, and its art, which is deleted with it.
 struct ActivePlayer {
     connection: Connection,
-    art: Option<PathBuf>,
+    art: Option<TempPath>,
 }
 
-impl Drop for ActivePlayer {
-    fn drop(&mut self) {
-        if let Some(path) = &self.art {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
-fn art_url(path: &Option<PathBuf>) -> Option<String> {
-    path.as_ref()
-        .map(|path| format!("file://{}", path.display()))
+fn art_url(path: &Option<TempPath>) -> Option<String> {
+    let path = path.as_deref()?;
+    Some(format!("file://{}", path.display()))
 }
 
 /// Owns every player of one Android connection and the art cache directory.
@@ -357,9 +351,10 @@ impl MprisAdapter {
     /// The art directory cannot be emptied or created.
     pub fn new(address: Option<&str>, art_dir: impl Into<PathBuf>) -> io::Result<Self> {
         let art_dir = art_dir.into();
-        match fs::remove_dir_all(&art_dir) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
+        if let Err(error) = fs::remove_dir_all(&art_dir)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            return Err(error);
         }
         fs::create_dir_all(&art_dir)?;
         let (sender, commands) = mpsc::sync_channel(MAX_COMMANDS);
@@ -442,15 +437,7 @@ impl MprisAdapter {
             art_url: art_url(&art),
             commands: self.sender.clone(),
         };
-        let connection = match self.connect(&name, root, player) {
-            Ok(connection) => connection,
-            Err(error) => {
-                if let Some(path) = art {
-                    let _ = fs::remove_file(path);
-                }
-                return Err(error);
-            }
-        };
+        let connection = self.connect(&name, root, player)?;
         self.players.insert(sid, ActivePlayer { connection, art });
         Ok(())
     }
@@ -477,10 +464,8 @@ impl MprisAdapter {
             return Ok(());
         };
         let url = art.as_ref().map(art_url);
-        if let Some(path) = art
-            && let Some(old) = std::mem::replace(&mut active.art, path)
-        {
-            let _ = fs::remove_file(old);
+        if let Some(art) = art {
+            active.art = art;
         }
         let server = active.connection.object_server();
         *server.interface::<_, Root>(PATH)?.get_mut() = Root::new(&media);
@@ -504,7 +489,7 @@ impl MprisAdapter {
     }
 
     /// Writes bounded, re-encoded art; `None` when the PNG is empty or unsafe.
-    fn write_art(&mut self, sid: i32, png: &[u8]) -> io::Result<Option<PathBuf>> {
+    fn write_art(&mut self, sid: i32, png: &[u8]) -> io::Result<Option<TempPath>> {
         let Ok(png) = png_guard::sanitize(png, MAX_ART_BYTES, ART_SIDE) else {
             return Ok(None);
         };
@@ -516,6 +501,6 @@ impl MprisAdapter {
             .tempfile_in(&self.art_dir)?;
         file.write_all(&png)?;
         file.persist(&path).map_err(|error| error.error)?;
-        Ok(Some(path))
+        Ok(Some(TempPath::try_from_path(path)?))
     }
 }
