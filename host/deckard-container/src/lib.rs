@@ -2,6 +2,7 @@
 
 pub mod command;
 pub mod dbus;
+pub mod initializer;
 pub mod lxc;
 pub mod manager;
 pub mod mounts;

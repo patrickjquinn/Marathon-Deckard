@@ -43,6 +43,14 @@ never executes the Waydroid Python CLI or network script.
   rejected, and a frozen container is thawed then refrozen. The device's
   installed `lxc-attach ... getprop sys.boot_completed` returned `1` in a
   read-only check; `setprop` has **not** been exercised on the device.
+- An offline local-image initializer now validates existing ext-format
+  `system.img` and `vendor.img`, renders the installed LXC base/v3/v4
+  templates for an explicit work directory, container name, bridge, arch,
+  and binder drivers, discovers static host device nodes, copies the seccomp
+  profile, and publishes `config`, `config_nodes`, and an empty
+  `config_session` as one new LXC instance directory. It refuses to replace
+  an existing instance. The only CLI entry is root-only
+  `--experimental-prepare-local`; it does not start, stop, or mount anything.
 
 ## Not parity-complete
 
@@ -68,11 +76,17 @@ reference. Specifically unsupported:
   5 `upgrade` (32-bit timestamps), 6 `upgrade2` (64-bit timestamps), and
   7 `shutdownRequest` are all unimplemented. Binder presence/re-registration
   and replies are also absent.
-- Binder/ashmem driver probing and permissions, LXC static/node/session config
-  generation, session-owned Wayland/Pulse/data binds, host permissions,
+- Binder/ashmem driver probing and permissions, session-owned LXC config
+  generation and Wayland/Pulse/data binds, host permissions,
   `waydroid_base.prop` generation, `waydroid.prop` bind, AIDL selection,
   optional host EGL/ODM binds, NFC and sensor process handling,
   init/OTA/image replacement, and image hash verification are not implemented.
+  The static generator only covers the local-image MAINLINE branch, uses
+  existing trusted LXC templates, and requires a pre-existing `WORK/lxc`
+  directory. It does not create rootfs/overlay directories, select or verify
+  downloaded OTA images, update `waydroid.cfg`, or coordinate a running
+  container. The generated `config_session` is intentionally empty until a
+  separate authenticated session builder exists; the output is not boot-ready.
 - Network supports the installed IPv4 iptables path only, not nftables,
   iptables implementations without `-w`, optional IPv6, bridge interface
   attachment policy, SELinux `restorecon`, or network coexistence. It uses a
