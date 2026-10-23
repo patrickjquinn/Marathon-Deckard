@@ -514,6 +514,7 @@ fn save(xfer: &Path, id: &str, target: &Path) -> io::Result<()> {
     };
     let mut part = OsString::from(name);
     part.push(".deckard-part");
+    let parent = parent.canonicalize()?;
     let parent = open_at(CWD, parent, OFlags::RDONLY | OFlags::DIRECTORY, 0)?;
     let _ = rustix::fs::unlinkat(&parent, &part, AtFlags::empty());
     let size = file_size(input.as_fd()).unwrap_or(0).min(MAX_BYTES);
