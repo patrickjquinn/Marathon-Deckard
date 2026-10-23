@@ -1,16 +1,9 @@
 //! Bounded, typed payloads received from Android's untrusted bridge sockets.
 
-use regex::Regex;
 use serde_json::{Map, Value, json};
-use std::sync::LazyLock;
 
 use crate::ids::PackageName;
-use crate::validate::{action_id, base64_png, clean_text, notification_key};
-
-static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:waydroid|lineageos|lineage os)\b")
-        .unwrap_or_else(|error| panic!("invalid fixed runtime-name pattern: {error}"))
-});
+use crate::validate::{self, action_id, base64_png, clean_text, notification_key};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageError {
@@ -87,9 +80,7 @@ fn integer(message: &Map<String, Value>, name: &str, min: i64, max: i64, fallbac
 }
 
 fn label(message: &Map<String, Value>, package: &PackageName) -> String {
-    let raw = text(message, "label", 128);
-    let renamed = RUNTIME_NAME.replace_all(&raw, "Android");
-    let compact = renamed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = validate::label(string(message, "label"));
     if compact.is_empty() {
         package.as_str().to_owned()
     } else {

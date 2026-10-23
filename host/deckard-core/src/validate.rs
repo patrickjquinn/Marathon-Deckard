@@ -1,4 +1,7 @@
+use std::sync::LazyLock;
+
 use base64::{Engine, prelude::BASE64_STANDARD};
+use regex::Regex;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::Error;
@@ -19,6 +22,23 @@ pub fn clean_text(value: &str, max_units: usize) -> String {
             units <= max_units
         })
         .collect()
+}
+
+static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:waydroid|lineageos|lineage os)\b")
+        .unwrap_or_else(|error| panic!("invalid fixed runtime-name pattern: {error}"))
+});
+
+/// Collapses every run of whitespace to one space and trims the ends.
+pub fn simplified(value: &str) -> String {
+    let words: Vec<&str> = value.split_whitespace().collect();
+    words.join(" ")
+}
+
+/// An Android app label: clean, at most 128 UTF-16 units, the runtime named
+/// "Android", whitespace simplified. Empty when nothing usable is left.
+pub fn label(value: &str) -> String {
+    simplified(&RUNTIME_NAME.replace_all(&clean_text(value, 128), "Android"))
 }
 
 pub fn notification_key(value: &str) -> Result<&str, Error> {
