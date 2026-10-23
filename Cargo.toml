@@ -5,6 +5,7 @@ members = [
     "host/deckard-fonts-sync",
     "host/deckard-host-tools",
     "host/deckard-overlay-sync",
+    "host/deckard-runtime",
     "image/deckard-image-tools",
 ]
 
@@ -22,6 +23,7 @@ regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["fs", "mount", "net", "process"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+signal-hook = "=0.3.18"
 tempfile = "=3.27.0"
 unicode-general-category = "=1.1.0"
 zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
