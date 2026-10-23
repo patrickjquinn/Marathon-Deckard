@@ -148,8 +148,14 @@ mod tests {
     fn command_output_does_not_block_exit() {
         let mut runner = ProcessRunner;
         let result = runner.run(
-            CommandSpec::new("head", ["-c", "1048576", "/dev/zero"])
-                .with_timeout(Duration::from_millis(500)),
+            CommandSpec::new(
+                "sh",
+                [
+                    "-c",
+                    "head -c 1048576 /dev/zero >&2; head -c 1048576 /dev/zero",
+                ],
+            )
+            .with_timeout(Duration::from_millis(500)),
         );
         assert_eq!(result.map(|output| output.len()).ok(), Some(1_048_576));
     }
