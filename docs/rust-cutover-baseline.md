@@ -143,6 +143,14 @@ launch restored a visible Feeder window. This stop-and-immediate-reopen race
 needs a separate Shell task/window invalidation fix; it is not a root-container
 or Binder transport failure.
 
+A cold Pi reboot then preserved the cutover: `deckard-session.service` started
+from `/usr/lib/systemd/user`, `marathon-waydroid.service` remained masked,
+LXC became ready (`sys.boot_completed=1`, user 0 CE available), and the
+retargeted C++ bridge reported `state=running`. Tapping Feeder's icon in the
+Shell app grid opened a visibly rendered Feeder window in the device
+screenshot. This qualifies the normal boot-and-grid-launch path, not the
+explicit stop-and-immediate-reopen edge above.
+
 This is a **user-session and desktop launcher cutover**, not a full Deckard
 cutover. `waydroid-container.service` still runs the Python root manager and
 `deckardd` remains C++. The Rust session does not yet implement the upstream
