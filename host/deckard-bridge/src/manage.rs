@@ -89,7 +89,7 @@ impl Manage {
         op: &str,
         mut args: Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
-        let (tx, rx) = async_channel::bounded(1);
+        let (sender, rx) = async_channel::bounded(1);
         let id = {
             let mut inner = self.inner();
             let outbound = inner.outbound.clone().ok_or("Android isn't running")?;
@@ -102,13 +102,9 @@ impl Manage {
             args.insert("id".into(), Value::String(id.clone()));
             args.insert("op".into(), Value::String(op.into()));
             let generation = inner.generation;
-            inner.pending.insert(
-                id.clone(),
-                Pending {
-                    generation,
-                    sender: tx,
-                },
-            );
+            inner
+                .pending
+                .insert(id.clone(), Pending { generation, sender });
             if outbound.try_send(args).is_err() {
                 inner.pending.remove(&id);
                 return Err("Android stopped".into());

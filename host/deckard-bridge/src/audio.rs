@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread;
 
+use deckard_core::runtime_state::SHELL_BUS_NAME;
 use serde_json::{Map, Value, json};
 use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::zvariant::OwnedValue;
@@ -11,7 +12,6 @@ use zbus::{MatchRule, Message};
 
 use crate::app_channel::ChannelHandle;
 
-const SHELL: &str = "org.marathonos.Shell";
 const SETTINGS_PATH: &str = "/org/marathonos/Shell/Settings";
 const SETTINGS_INTERFACE: &str = "org.marathonos.Shell.Settings1";
 
@@ -72,15 +72,15 @@ pub fn spawn(bus: Connection, channel: ChannelHandle) -> zbus::Result<AudioWake>
     let (sender, wakes) = mpsc::sync_channel(1);
     let wake = AudioWake(sender);
     let audio = crate::signals(
-        SHELL,
+        SHELL_BUS_NAME,
         "/org/marathonos/Shell/Audio",
         "org.marathonos.Shell.Audio1",
     );
-    let settings = crate::signals(SHELL, SETTINGS_PATH, SETTINGS_INTERFACE)?;
+    let settings = crate::signals(SHELL_BUS_NAME, SETTINGS_PATH, SETTINGS_INTERFACE)?;
     let rules: [(MatchRule<'static>, Relevant); 3] = [
         (audio?.member("StateChanged")?.build(), |_| true),
         (settings.member("PropertyChanged")?.build(), setting_changed),
-        (crate::owner_changes(SHELL)?, crate::gained_owner),
+        (crate::owner_changes(SHELL_BUS_NAME)?, crate::gained_owner),
     ];
     for (rule, relevant) in rules {
         let messages = MessageIterator::for_match_rule(rule, &bus, Some(16))?;
@@ -109,7 +109,7 @@ fn setting_changed(message: &Message) -> bool {
 }
 
 fn read_shell(bus: &Connection) -> zbus::Result<AudioState> {
-    let proxy = Proxy::new(bus, SHELL, SETTINGS_PATH, SETTINGS_INTERFACE)?;
+    let proxy = Proxy::new(bus, SHELL_BUS_NAME, SETTINGS_PATH, SETTINGS_INTERFACE)?;
     let state: HashMap<String, OwnedValue> = proxy.call("GetState", &())?;
     Ok(AudioState::from_shell(&state))
 }

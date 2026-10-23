@@ -12,7 +12,6 @@ use deckard_core::sync;
 use serde_json::{Map, Value};
 use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
-use zbus::{MatchRule, message};
 
 pub const UNIT: &str = "deckard-session.service";
 pub const MANAGER: &str = "org.freedesktop.systemd1.Manager";
@@ -55,10 +54,8 @@ impl Runtime {
     pub fn snapshot(&self) -> HashMap<String, OwnedValue> {
         let mut state = self.lock();
         state.set_has_android_apps(has_apps(&self.applications));
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH);
+        let now_ms = i64::try_from(now.unwrap_or_default().as_millis()).unwrap_or(i64::MAX);
         let memory = fs::read_to_string(&self.memory)
             .ok()
             .and_then(|s| s.trim().parse().ok())
@@ -240,14 +237,8 @@ pub fn watch_unit(
 ) -> zbus::Result<()> {
     let manager = Proxy::new(bus, SYSTEMD, MANAGER_PATH, MANAGER)?;
     let path: OwnedObjectPath = manager.call("LoadUnit", &(UNIT,))?;
-    let rule = MatchRule::builder()
-        .msg_type(message::Type::Signal)
-        .sender(SYSTEMD)?
-        .path(path.as_str())?
-        .interface(PROPERTIES)?
-        .member("PropertiesChanged")?
-        .add_arg(UNIT_INTERFACE)?
-        .build();
+    let rule = crate::signals(SYSTEMD, path.as_str(), PROPERTIES)?.member("PropertiesChanged")?;
+    let rule = rule.add_arg(UNIT_INTERFACE)?.build();
     let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
     if let Err(error) = manager.call::<_, _, ()>("Subscribe", &()) {
         eprintln!("deckard-bridge: systemd Subscribe failed: {error}");

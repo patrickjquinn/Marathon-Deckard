@@ -6,6 +6,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use deckard_core::ids::PackageName;
+use deckard_core::runtime_state::SHELL_BUS_NAME;
 use deckard_core::sync;
 use deckard_core::text;
 use serde_json::{Map, Value, json};
@@ -15,7 +16,6 @@ use zbus::blocking::{Connection, MessageIterator, Proxy};
 use crate::app_channel::{ChannelEvent, ChannelHandle};
 
 pub const APP_ID_PREFIX: &str = "waydroid.";
-pub const SHELL_NAME: &str = "org.marathonos.Shell";
 pub const TEXT_INPUT_PATH: &str = "/org/marathonos/Shell/TextInput";
 pub const TEXT_INPUT_INTERFACE: &str = "org.marathonos.Shell.TextInput1";
 const MAX_TEXT: usize = 4096;
@@ -70,7 +70,7 @@ impl ImeState {
             let app_id = format!("{APP_ID_PREFIX}{}", package.as_str());
             let purpose = u32::try_from(qt_int(message.get("purpose")));
             let purpose = purpose.ok().filter(|purpose| *purpose <= 13).unwrap_or(0);
-            let hints = (qt_int(message.get("hints")) as u32) & HINT_MASK;
+            let hints = qt_int(message.get("hints")).cast_unsigned() & HINT_MASK;
             let replay = self.panels.get(&app_id).copied().map(panel);
             self.app_id = Some(app_id.clone());
             return (Some(ShellCall::SetEditor(app_id, purpose, hints)), replay);
@@ -159,7 +159,7 @@ impl ImeState {
 /// # Errors
 /// Never in practice: the names are fixed and valid.
 pub fn text_input(bus: &Connection) -> zbus::Result<Proxy<'static>> {
-    Proxy::new(bus, SHELL_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)
+    Proxy::new(bus, SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)
 }
 
 /// Makes `call` on `shell`.
@@ -248,7 +248,7 @@ fn listen(
     state: &Mutex<ImeState>,
     handle: &ChannelHandle,
 ) -> zbus::Result<()> {
-    let rule = crate::signals(SHELL_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)?.build();
+    let rule = crate::signals(SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)?.build();
     let signals = MessageIterator::for_match_rule(rule, bus, Some(64))?;
     crate::report("IME register failed", register(shell));
     for signal in signals {
@@ -267,7 +267,8 @@ fn listen(
 
 /// Registers again whenever the Shell gets a new bus owner.
 fn follow_owner(bus: &Connection, shell: &Proxy<'_>) -> zbus::Result<()> {
-    let changes = MessageIterator::for_match_rule(crate::owner_changes(SHELL_NAME)?, bus, Some(8))?;
+    let changes =
+        MessageIterator::for_match_rule(crate::owner_changes(SHELL_BUS_NAME)?, bus, Some(8))?;
     for change in changes {
         if change.is_ok_and(|change| crate::gained_owner(&change)) {
             crate::report("IME register failed", register(shell));
@@ -440,7 +441,7 @@ mod tests {
         owner
             .object_server()
             .at(TEXT_INPUT_PATH, MockShell(Arc::clone(&calls)))?;
-        owner.request_name(SHELL_NAME)?;
+        owner.request_name(SHELL_BUS_NAME)?;
         let bus = Connection::session()?;
         let shell = text_input(&bus)?;
         register(&shell)?;

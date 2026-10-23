@@ -57,11 +57,11 @@ pub fn spawn<E: Display>(
 ///
 /// # Errors
 /// A name is invalid.
-pub fn signals(
-    sender: &'static str,
-    path: &'static str,
-    interface: &'static str,
-) -> zbus::Result<Builder<'static>> {
+pub fn signals<'m>(
+    sender: &'m str,
+    path: &'m str,
+    interface: &'m str,
+) -> zbus::Result<Builder<'m>> {
     MatchRule::builder()
         .msg_type(message::Type::Signal)
         .sender(sender)?
