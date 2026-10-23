@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use deckard_core::{ids::PackageName, validate};
+use deckard_core::ids::PackageName;
+use deckard_core::validate;
 use serde_json::{Map, Value, json};
 use zbus::blocking::{Connection, Proxy};
 
