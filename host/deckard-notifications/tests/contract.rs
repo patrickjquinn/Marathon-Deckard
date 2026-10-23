@@ -150,12 +150,11 @@ fn private_bus_notify_replace_close_and_legacy_state() -> TestResult<()> {
         .build()?;
     let home = tempfile::tempdir()?;
     let state_path = home.path().join("state/deckard/notifications.json");
-    let (tx, _rx) = mpsc::channel();
     let adapter = NotificationAdapter::new(
         bus.connection()?,
         &state_path,
         home.path().join("icons"),
-        tx,
+        |_| {},
     )?;
 
     let first = post("android-key", "First", false);
@@ -195,7 +194,7 @@ fn private_bus_notify_replace_close_and_legacy_state() -> TestResult<()> {
         bus.connection()?,
         &state_path,
         home.path().join("icons"),
-        mpsc::channel().0,
+        |_| {},
     )?;
     restored.post(&first)?;
     assert_eq!(
@@ -229,7 +228,9 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
         bus.connection()?,
         home.path().join("notifications.json"),
         home.path().join("icons"),
-        tx,
+        move |event| {
+            let _ = tx.send(event);
+        },
     )?;
     let _listener = adapter.listen()?;
     adapter.post(&post("tap", "Tap", false))?;
@@ -273,7 +274,7 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
         rx.recv_timeout(Duration::from_millis(750)).is_err(),
         "a tapped non-auto-cancel row must not be dismissed"
     );
-    assert_eq!(adapter.snapshot()?, json!({}));
+    assert_eq!(adapter.snapshot(), json!({}));
 
     adapter.post(&post("dismiss", "Dismiss", true))?;
     hub.emit_signal(
@@ -301,12 +302,11 @@ fn private_bus_image_data_uses_freedesktop_struct_signature() -> TestResult<()> 
         .serve_at(PATH, FakeHub(calls.clone()))?
         .build()?;
     let home = tempfile::tempdir()?;
-    let (tx, _rx) = mpsc::channel();
     let adapter = NotificationAdapter::new(
         bus.connection()?,
         home.path().join("notifications.json"),
         home.path().join("icons"),
-        tx,
+        |_| {},
     )?;
     let mut png = io::Cursor::new(Vec::new());
     DynamicImage::new_rgba8(2, 3).write_to(&mut png, ImageFormat::Png)?;

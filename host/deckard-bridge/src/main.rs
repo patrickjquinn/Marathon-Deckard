@@ -188,7 +188,6 @@ struct App {
     handle: ChannelHandle,
     packages: PackageBridge,
     notifications: NotificationBridge,
-    actions: Receiver<deckard_core::notification_state::BridgeEvent>,
     media: MprisAdapter,
     audio: AudioWake,
     keel: KeelApps,
@@ -201,7 +200,6 @@ fn serve_app(events: Receiver<ChannelEvent>, app: App) {
         handle,
         packages,
         notifications,
-        actions,
         mut media,
         audio,
         keel,
@@ -270,9 +268,6 @@ fn serve_app(events: Receiver<ChannelEvent>, app: App) {
             Ok(_) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-        while let Ok(action) = actions.try_recv() {
-            let _ = handle.send(bridge_event(&action));
         }
         if let Some(generation) = current {
             for command in media.take_commands() {
@@ -365,8 +360,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         PathBuf::from("/usr/bin/marathon-store-handler"),
     )?;
     let media = MprisAdapter::new(None, cache.with_file_name("art"))?;
-    let (notifications, actions) =
-        NotificationBridge::new(bus.clone(), state.join("notifications.json"), cache)?;
+    let to_user = app_handle.clone();
+    let notifications = NotificationBridge::new(
+        bus.clone(),
+        state.join("notifications.json"),
+        cache,
+        move |action| {
+            let _ = to_user.send(bridge_event(&action));
+        },
+    )?;
     let _hub_listener = notifications.listen_hub()?;
     let audio = audio::spawn(bus.clone(), app_handle.clone())?;
     let app_packages = packages.clone();
@@ -406,7 +408,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 handle: app_handle,
                 packages: app_packages,
                 notifications,
-                actions,
                 media,
                 audio,
                 keel: app_keel,
