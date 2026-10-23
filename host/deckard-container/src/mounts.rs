@@ -1,6 +1,13 @@
+//! Image, overlay and property mounts of the Android rootfs, run through
+//! mount(8) by path. Every path must be controlled by root
+//! ([`owner_controlled`]), so only root could swap one between the check and
+//! the mount, and root already owns the host. Session-owned paths are bound
+//! from descriptors instead (`session_config`).
+
 use crate::command::{CommandSpec, Runner};
 use crate::{Error, Result};
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -178,28 +185,44 @@ fn validate_path_syntax(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn no_symlink_components(path: &Path) -> Result<()> {
+/// Every existing component of `path` is a real file or directory owned by
+/// root or this process and not writable by group or others, except sticky
+/// directories, whose entries others cannot replace. Then only root can swap
+/// a component between this check and a mount.
+///
+/// # Errors
+/// A component is a link, foreign, or writable by others.
+pub(crate) fn owner_controlled(path: &Path) -> Result<()> {
     validate_path_syntax(path)?;
+    let owners = [0, rustix::process::geteuid().as_raw()];
     let mut current = PathBuf::from("/");
-    for part in path.components().skip(1) {
-        current.push(part);
-        match current.symlink_metadata() {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(Error::Invalid(format!(
-                    "symlink in mount path: {}",
-                    current.display()
-                )));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+    let mut components = path.components().skip(1).peekable();
+    loop {
+        let metadata = match current.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
+        };
+        let shared = metadata.mode() & 0o022 != 0;
+        let sticky_dir = metadata.is_dir() && metadata.mode() & 0o1000 != 0;
+        if metadata.file_type().is_symlink()
+            || !owners.contains(&metadata.uid())
+            || (shared && !(sticky_dir && components.peek().is_some()))
+        {
+            return Err(Error::Invalid(format!(
+                "mount path is not controlled by root: {}",
+                current.display()
+            )));
         }
+        let Some(part) = components.next() else {
+            return Ok(());
+        };
+        current.push(part);
     }
-    Ok(())
 }
 
 fn safe_dir(path: &Path) -> Result<()> {
-    no_symlink_components(path)?;
+    owner_controlled(path)?;
     if !path.is_dir() {
         return Err(Error::Invalid(format!(
             "directory missing: {}",
@@ -210,7 +233,7 @@ fn safe_dir(path: &Path) -> Result<()> {
 }
 
 fn safe_regular_file(path: &Path) -> Result<()> {
-    no_symlink_components(path)?;
+    owner_controlled(path)?;
     let metadata = path.metadata()?;
     if !metadata.is_file() {
         return Err(Error::Invalid(format!(
@@ -222,7 +245,7 @@ fn safe_regular_file(path: &Path) -> Result<()> {
 }
 
 fn safe_create_dir(path: &Path) -> Result<()> {
-    no_symlink_components(path)?;
+    owner_controlled(path)?;
     fs::create_dir_all(path)?;
     safe_dir(path)
 }
@@ -265,7 +288,7 @@ mod tests {
         fs::create_dir(&base)?;
         let link = base.join("link");
         std::os::unix::fs::symlink("/tmp", &link)?;
-        assert!(no_symlink_components(&link.join("image.img")).is_err());
+        assert!(owner_controlled(&link.join("image.img")).is_err());
         fs::remove_file(link)?;
         fs::remove_dir(base)?;
         Ok(())

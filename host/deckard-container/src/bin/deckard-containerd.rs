@@ -5,7 +5,8 @@ use deckard_container::lxc::Lxc;
 use deckard_container::manager::ContainerManager;
 use deckard_container::mounts::MountLayout;
 use deckard_container::network::Network;
-use deckard_container::{properties, session_config};
+use deckard_container::properties;
+use deckard_container::session_config::{self, Stage};
 use deckard_launch::binder::{self, BinderConfig};
 use std::collections::HashMap;
 use std::error::Error;
@@ -32,7 +33,8 @@ fn audit_production() -> Result<(), Box<dyn Error + Send + Sync>> {
         .parse()?;
     let work = Path::new("/var/lib/waydroid");
     DriverNodes::from_config(&work.join("waydroid.cfg"))?.audit(Path::new("/dev"))?;
-    let rendered = session_config::render(&fields, uid, Path::new("/run/user"))?;
+    let pulse = session_config::check(&fields, uid, Path::new("/run/user"))?;
+    let rendered = session_config::render(&Stage::new(Path::new("/run/waydroid-lxc")), pulse);
     let installed = fs::read_to_string(work.join("lxc/waydroid/config_session"))?;
     if rendered != installed {
         return Err("session LXC config differs from the live config".into());

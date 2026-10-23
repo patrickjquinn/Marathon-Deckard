@@ -8,7 +8,7 @@ use crate::initializer_dbus::{InitializerService, OBJECT_PATH as INITIALIZER_PAT
 use crate::lxc::{State, validate_property_key, validate_property_value};
 use crate::manager::ContainerManager;
 use crate::properties;
-use crate::session_config;
+use crate::session_config::{self, Stage};
 use crate::{Error, Result};
 use deckard_launch::binder::BinderConfig;
 use rustix::fd::OwnedFd;
@@ -303,14 +303,22 @@ impl Backend for DirectBackend {
         if self.mode == Mode::Production {
             self.prepare_production()?;
         }
+        let stage = Stage::new(&self.manager.network.runtime);
         session_config::write(
             &self.manager.lxc.root.join(&self.manager.lxc.name),
             fields,
             uid,
             Path::new("/run/user"),
+            &stage,
         )?;
-        properties::write(&self.manager.mounts.work, fields, uid)?;
-        self.manager.start(&mut ProcessRunner)?;
+        let started = properties::write(&self.manager.mounts.work, fields, uid)
+            .and_then(|()| self.manager.start(&mut ProcessRunner));
+        if let Err(error) = started {
+            if self.manager.lxc.status(&mut ProcessRunner)? == State::Stopped {
+                let _ = stage.release();
+            }
+            return Err(error);
+        }
         if self.mode == Mode::Production {
             self.start_hardware();
         }
@@ -321,7 +329,8 @@ impl Backend for DirectBackend {
         if let Some(stop) = self.hardware_stop.take() {
             stop.store(true, Ordering::Relaxed);
         }
-        self.manager.stop(&mut ProcessRunner)
+        self.manager.stop(&mut ProcessRunner)?;
+        Stage::new(&self.manager.network.runtime).release()
     }
 
     fn freeze(&mut self) -> Result<()> {
