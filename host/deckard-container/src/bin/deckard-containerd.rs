@@ -1,7 +1,6 @@
 use deckard_container::dbus::{Mode, serve_system_bus};
 use deckard_container::drivers::DriverNodes;
 use deckard_container::hardware;
-use deckard_container::initializer::{LocalImageInit, NodeInventory};
 use deckard_container::lxc::Lxc;
 use deckard_container::manager::ContainerManager;
 use deckard_container::mounts::MountLayout;
@@ -12,8 +11,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::io;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -73,29 +71,9 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     if args == ["--audit-hardware"] {
         return audit_hardware();
     }
-    if args.first().map(String::as_str) == Some("--experimental-prepare-local") {
-        if args.len() != 11 {
-            return Err("usage: deckard-containerd --experimental-prepare-local WORK IMAGES TEMPLATES NAME BRIDGE ARCH LXC_MAJOR BINDER VNDBINDER HWBINDER".into());
-        }
-        let init = LocalImageInit {
-            work: PathBuf::from(&args[1]),
-            images: PathBuf::from(&args[2]),
-            templates: PathBuf::from(&args[3]),
-            name: args[4].clone(),
-            bridge: args[5].clone(),
-            arch: args[6].clone(),
-            lxc_major: args[7].parse()?,
-            binder: args[8].clone(),
-            vndbinder: args[9].clone(),
-            hwbinder: args[10].clone(),
-        };
-        let output = init.prepare_local(&NodeInventory::from_host()?)?;
-        println!("{}", output.display());
-        return Ok(());
-    }
     let production = args == ["--production-run"];
     if !production && args != ["--experimental-run"] {
-        return Err("usage: deckard-containerd --audit-production | --audit-hardware | --production-run | --experimental-run | --experimental-prepare-local ...".into());
+        return Err("usage: deckard-containerd --audit-production | --audit-hardware | --production-run | --experimental-run".into());
     }
     let work = PathBuf::from(if production {
         "/var/lib/waydroid"

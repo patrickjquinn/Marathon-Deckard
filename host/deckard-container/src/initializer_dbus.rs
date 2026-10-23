@@ -1,124 +1,110 @@
-//! Root-authorized local-image initializer bus contract.
+//! `/Initializer` (`id.waydro.Initializer`): `Init(a{ss})`, `Cancel()` and the
+//! `ProgressChanged(s)`, `Finished()` and `Interrupted()` signals.
+//!
+//! Upstream downloads images from the requested OTA channels. Deckard only
+//! initializes from images already on the device, so custom channels are
+//! refused and the default ones select nothing. Non-root callers need polkit
+//! authorization for `id.waydro.Initializer.Init`; unlike upstream there is
+//! no exemption for the default channels, because Init restarts the session.
 
-use crate::command::{CommandSpec, ProcessRunner, Runner};
-use crate::dbus::{Caller, caller};
-use crate::initializer::{LocalImageInit, NodeInventory, ProductionInit};
-use crate::lxc::{Lxc, State};
+use crate::Result;
+use crate::command::ProcessRunner;
+use crate::dbus::{Caller, ContainerService, caller};
+use crate::drivers;
+use crate::initializer::{Host, Images, Init, Instance, PREINSTALLED};
 use std::collections::HashMap;
-use std::fs;
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 use zbus::connection::Connection;
 use zbus::fdo;
 use zbus::message::Header;
+use zbus::zvariant::Value;
 
 pub const OBJECT_PATH: &str = "/Initializer";
-const SCRATCH_ROOT: &str = "/tmp/deckard-init-scratch";
+pub const INTERFACE: &str = "id.waydro.Initializer";
+pub const POLKIT_ACTION: &str = "id.waydro.Initializer.Init";
+const SYSTEM_CHANNEL: &str = "https://ota.waydro.id/system";
+const VENDOR_CHANNEL: &str = "https://ota.waydro.id/vendor";
+const SYSTEM_TYPES: [&str; 2] = ["VANILLA", "GAPPS"];
+const POLKIT_TIMEOUT: Duration = Duration::from_secs(300);
 const DEADLINE: Duration = Duration::from_secs(10);
-const PRODUCTION_WORK: &str = "/var/lib/waydroid";
-const PRODUCTION_TEMPLATES: &str = "/usr/lib/waydroid/data/configs";
 
-enum InitRequest {
-    Scratch(Box<LocalImageInit>),
-    Production,
-}
+/// Reports one progress line to the caller.
+pub type Progress<'a> = dyn Fn(&str) + 'a;
+/// One initialization, run on a worker thread; `cancelled` asks it to stop.
+pub type Job = dyn Fn(&Progress<'_>, &AtomicBool) -> Result<()> + Send + Sync;
 
-struct Job {
+struct Active {
+    owner: u32,
     cancelled: Arc<AtomicBool>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InitializerService {
-    job: Arc<Mutex<Option<Arc<Job>>>>,
+    active: Arc<Mutex<Option<Arc<Active>>>>,
+    job: Arc<Job>,
 }
 
 impl InitializerService {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(job: Arc<Job>) -> Self {
+        Self {
+            active: Arc::new(Mutex::new(None)),
+            job,
+        }
     }
 
-    async fn init_authorized(
-        &self,
-        params: HashMap<String, String>,
-        who: Caller,
-        conn: Connection,
-    ) -> fdo::Result<()> {
-        require_root(who)?;
-        let init = parse_request(&params)?;
-        let job = Arc::new(Job {
+    /// Initializes `/var/lib/waydroid`, stopping and restarting `container`'s
+    /// session around it.
+    pub fn production(container: ContainerService) -> Self {
+        Self::new(Arc::new(move |progress, cancelled| {
+            container.with_stopped(|| initialize(progress, cancelled))
+        }))
+    }
+
+    fn start(&self, who: Caller, conn: Connection) -> fdo::Result<()> {
+        let active = Arc::new(Active {
+            owner: who.uid,
             cancelled: Arc::new(AtomicBool::new(false)),
         });
         {
-            let mut active = self
-                .job
-                .lock()
-                .map_err(|_| fdo::Error::Failed("initializer state poisoned".into()))?;
-            if active.is_some() {
+            let mut current = self.active.lock().map_err(|_| poisoned())?;
+            if current.is_some() {
                 return Err(fdo::Error::Failed(
                     "initialization already in progress".into(),
                 ));
             }
-            *active = Some(job.clone());
+            *current = Some(Arc::clone(&active));
         }
-        let state = self.job.clone();
-        let worker_job = job.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("deckard-local-init".into())
+        let state = Arc::clone(&self.active);
+        let job = Arc::clone(&self.job);
+        let worker = Arc::clone(&active);
+        let spawned = thread::Builder::new()
+            .name("deckard-init".into())
             .spawn(move || {
-                let deadline = Instant::now() + DEADLINE;
-                let _ = emit(&conn, "ProgressChanged", &("Preparing local images",));
-                let result = NodeInventory::from_host().and_then(|inventory| match init {
-                    InitRequest::Scratch(init) => init
-                        .prepare_local_cancellable(
-                            &inventory,
-                            &worker_job.cancelled,
-                            Some(deadline),
-                        )
-                        .map(|_| ()),
-                    InitRequest::Production => {
-                        let init = production_request()
-                            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-                        let lxc = Lxc::new(init.work.join("lxc"), "waydroid".into())?;
-                        if lxc.root.join("waydroid/config").exists()
-                            && lxc.status(&mut ProcessRunner)? != State::Stopped
-                        {
-                            return Err(crate::Error::Invalid(
-                                "stop the Waydroid container before initialization".into(),
-                            ));
-                        }
-                        init.initialize_stopped(&inventory, &worker_job.cancelled, Some(deadline))
-                    }
-                });
-                let signal = match result {
-                    Ok(_) => "Finished",
+                let progress = |message: &str| {
+                    let _ = emit(&conn, "ProgressChanged", &(message,));
+                };
+                let signal = match job(&progress, &worker.cancelled) {
+                    Ok(()) => "Finished",
                     Err(error) => {
-                        let _ = emit(&conn, "ProgressChanged", &(error.to_string(),));
+                        progress(&error.to_string());
                         "Interrupted"
                     }
                 };
-                let _ = emit(&conn, signal, &());
-                if let Ok(mut active) = state.lock()
-                    && active
+                if let Ok(mut current) = state.lock()
+                    && current
                         .as_ref()
-                        .is_some_and(|current| Arc::ptr_eq(current, &worker_job))
+                        .is_some_and(|job| Arc::ptr_eq(job, &worker))
                 {
-                    *active = None;
+                    *current = None;
                 }
-            })
-        {
-            let mut active = self
-                .job
-                .lock()
-                .map_err(|_| fdo::Error::Failed("initializer state poisoned".into()))?;
-            if active
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &job))
-            {
-                *active = None;
-            }
+                let _ = emit(&conn, signal, &());
+            });
+        if let Err(error) = spawned {
+            *self.active.lock().map_err(|_| poisoned())? = None;
             return Err(fdo::Error::Failed(format!(
                 "unable to start initializer: {error}"
             )));
@@ -127,18 +113,45 @@ impl InitializerService {
     }
 
     fn cancel_authorized(&self, who: Caller) -> fdo::Result<()> {
-        require_root(who)?;
-        if let Some(job) = self
-            .job
-            .lock()
-            .map_err(|_| fdo::Error::Failed("initializer state poisoned".into()))?
-            .as_ref()
-        {
-            job.cancelled.store(true, Ordering::Release);
+        let current = self.active.lock().map_err(|_| poisoned())?;
+        let Some(active) = current.as_ref() else {
+            return Ok(());
+        };
+        if who.uid != 0 && who.uid != active.owner {
+            return Err(fdo::Error::AccessDenied(
+                "only root or the caller of Init may cancel it".into(),
+            ));
         }
-        // Never wait on a filesystem operation or block the bus executor.
+        // Cooperative: the worker checks before each step and never blocks the bus.
+        active.cancelled.store(true, Ordering::Release);
         Ok(())
     }
+}
+
+fn poisoned() -> fdo::Error {
+    fdo::Error::Failed("initializer state poisoned".into())
+}
+
+fn initialize(progress: &Progress<'_>, cancelled: &AtomicBool) -> Result<()> {
+    let instance = Instance::production();
+    drivers::ensure_binder_nodes(&mut ProcessRunner)?;
+    let host = Host::probe(&mut ProcessRunner)?;
+    let preinstalled: Vec<PathBuf> = PREINSTALLED.iter().map(PathBuf::from).collect();
+    let images = Images::find(&preinstalled, &instance.work.join("images"))?;
+    progress(&format!(
+        "Initializing Android from {}",
+        images.path().display()
+    ));
+    if matches!(images, Images::Installed(_)) {
+        progress("Image download is not supported; keeping the installed images");
+    }
+    Init {
+        instance: &instance,
+        images,
+        host,
+    }
+    .run(cancelled, Some(Instant::now() + DEADLINE))?
+    .commit()
 }
 
 fn emit<B: serde::ser::Serialize + zbus::zvariant::DynamicType>(
@@ -146,208 +159,79 @@ fn emit<B: serde::ser::Serialize + zbus::zvariant::DynamicType>(
     signal: &str,
     body: &B,
 ) -> zbus::Result<()> {
-    async_io::block_on(conn.emit_signal(
-        None::<&str>,
-        OBJECT_PATH,
-        "id.waydro.Initializer",
-        signal,
-        body,
-    ))
+    async_io::block_on(conn.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, signal, body))
 }
 
-fn require_root(who: Caller) -> fdo::Result<()> {
-    if who.uid == 0 {
-        Ok(())
-    } else {
-        Err(fdo::Error::AccessDenied(
-            "initializer requires root; Polkit authorization is not implemented".into(),
-        ))
-    }
-}
-
-fn parse_request(params: &HashMap<String, String>) -> fdo::Result<InitRequest> {
-    if params.len() == 3
-        && params.contains_key("system_channel")
-        && params.contains_key("vendor_channel")
-        && params.contains_key("system_type")
-    {
-        for key in ["system_channel", "vendor_channel", "system_type"] {
-            let value = &params[key];
-            if value.len() > 2048 || value.chars().any(char::is_control) {
-                return Err(fdo::Error::InvalidArgs(format!("invalid {key}")));
-            }
-        }
-        return Ok(InitRequest::Production);
-    }
-    parse_scratch_request(params).map(|init| InitRequest::Scratch(Box::new(init)))
-}
-
-fn production_request() -> fdo::Result<ProductionInit> {
-    let work = PathBuf::from(PRODUCTION_WORK);
-    trusted_directory(&work)?;
-    let images = [
-        "/etc/waydroid-extra/images",
-        "/usr/share/waydroid-extra/images",
-        "/var/lib/waydroid/images",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.join("system.img").exists() && path.join("vendor.img").exists())
-    .ok_or_else(|| {
-        fdo::Error::NotSupported(
-            "local system.img and vendor.img are required; OTA is not supported".into(),
-        )
-    })?;
-    trusted_directory(&images)?;
-    let templates = PathBuf::from(PRODUCTION_TEMPLATES);
-    trusted_directory(&templates)?;
-    let arch = std::env::consts::ARCH.to_owned();
-    if !matches!(arch.as_str(), "aarch64" | "x86_64") {
-        return Err(fdo::Error::NotSupported(format!(
-            "unsupported architecture: {arch}"
-        )));
-    }
-    let version = ProcessRunner
-        .run(CommandSpec::new("lxc-info", ["--version"]).with_timeout(Duration::from_secs(3)))
-        .map_err(|error| fdo::Error::Failed(format!("LXC version unavailable: {error}")))?;
-    let lxc_major = version
-        .trim()
-        .split('.')
-        .next()
-        .and_then(|major| major.parse().ok())
-        .ok_or_else(|| fdo::Error::Failed("invalid LXC version".into()))?;
-    let binder = installed_node(&["binder", "anbox-binder", "puddlejumper", "bonder"])?;
-    let vndbinder = installed_node(&[
-        "vndbinder",
-        "anbox-vndbinder",
-        "vndpuddlejumper",
-        "vndbonder",
-    ])?;
-    let hwbinder = installed_node(&["hwbinder", "anbox-hwbinder", "hwpuddlejumper", "hwbonder"])?;
-    Ok(ProductionInit {
-        work,
-        images,
-        templates,
-        arch,
-        lxc_major,
-        binder,
-        vndbinder,
-        hwbinder,
-        ota: None,
-    })
-}
-
-fn installed_node(candidates: &[&str]) -> fdo::Result<String> {
-    candidates
-        .iter()
-        .find(|name| {
-            fs::metadata(Path::new("/dev").join(name)).is_ok_and(|metadata| {
-                std::os::unix::fs::FileTypeExt::is_char_device(&metadata.file_type())
-            })
-        })
-        .map(|name| (*name).to_owned())
-        .ok_or_else(|| {
-            fdo::Error::NotSupported(format!("missing Binder device: {}", candidates[0]))
-        })
-}
-
-fn parse_scratch_request(params: &HashMap<String, String>) -> fdo::Result<LocalImageInit> {
-    if params.len() > 16 || params.values().any(|value| value.len() > 4096) {
-        return Err(fdo::Error::InvalidArgs(
-            "initializer request too large".into(),
-        ));
-    }
-    if params.get("mode").map(String::as_str) != Some("prepare-local-scratch") {
-        return Err(fdo::Error::NotSupported(
-            "standard Init requires OTA, configuration, mounts, and restart parity".into(),
-        ));
-    }
-    const KEYS: [&str; 11] = [
-        "mode",
-        "work",
-        "images",
-        "templates",
-        "name",
-        "bridge",
-        "arch",
-        "lxc_major",
-        "binder",
-        "vndbinder",
-        "hwbinder",
-    ];
-    if params.len() != KEYS.len() || params.keys().any(|key| !KEYS.contains(&key.as_str())) {
-        return Err(fdo::Error::InvalidArgs(
-            "prepare-local-scratch requires exactly its eleven fields".into(),
-        ));
-    }
-    let field = |key: &str| -> fdo::Result<String> {
+/// Accepts upstream's three-field request with the default channels.
+fn validate_request(params: &HashMap<String, String>) -> fdo::Result<()> {
+    let field = |key: &str| {
         params
             .get(key)
-            .cloned()
-            .ok_or_else(|| fdo::Error::InvalidArgs(format!("missing {key}")))
+            .filter(|value| value.len() <= 2048 && !value.chars().any(char::is_control))
+            .ok_or_else(|| fdo::Error::InvalidArgs(format!("missing or invalid {key}")))
     };
-    let work = PathBuf::from(field("work")?);
-    let scratch = Path::new(SCRATCH_ROOT);
-    let canonical_scratch = fs::canonicalize(scratch)
-        .map_err(|error| fdo::Error::InvalidArgs(format!("scratch root unavailable: {error}")))?;
-    if canonical_scratch != scratch {
-        return Err(fdo::Error::InvalidArgs("scratch root is redirected".into()));
-    }
-    trusted_directory(scratch)?;
-    let canonical_work = fs::canonicalize(&work)
-        .map_err(|error| fdo::Error::InvalidArgs(format!("work directory unavailable: {error}")))?;
-    if canonical_work.parent() != Some(scratch) || !canonical_work.is_dir() {
+    if params.len() != 3 {
         return Err(fdo::Error::InvalidArgs(
-            "work must be an existing direct child of the scratch root".into(),
+            "Init takes system_channel, vendor_channel and system_type".into(),
         ));
     }
-    trusted_directory(&canonical_work)?;
-    trusted_directory(&canonical_work.join("lxc"))?;
-    let images = scratch_child(&canonical_work, &field("images")?)?;
-    let templates = scratch_child(&canonical_work, &field("templates")?)?;
-    let lxc_major = field("lxc_major")?
-        .parse()
-        .map_err(|_| fdo::Error::InvalidArgs("invalid lxc_major".into()))?;
-    Ok(LocalImageInit {
-        work: canonical_work,
-        images,
-        templates,
-        name: field("name")?,
-        bridge: field("bridge")?,
-        arch: field("arch")?,
-        lxc_major,
-        binder: field("binder")?,
-        vndbinder: field("vndbinder")?,
-        hwbinder: field("hwbinder")?,
-    })
-}
-
-fn scratch_child(work: &Path, requested: &str) -> fdo::Result<PathBuf> {
-    let path = fs::canonicalize(requested).map_err(|error| {
-        fdo::Error::InvalidArgs(format!("input directory unavailable: {error}"))
-    })?;
-    if path.parent() != Some(work) {
+    let channels = (
+        field("system_channel")?.trim_end_matches('/'),
+        field("vendor_channel")?.trim_end_matches('/'),
+    );
+    if !SYSTEM_TYPES.contains(&field("system_type")?.as_str()) {
         return Err(fdo::Error::InvalidArgs(
-            "images and templates must be direct children of scratch work".into(),
+            "system_type must be VANILLA or GAPPS".into(),
         ));
     }
-    trusted_directory(&path)?;
-    Ok(path)
-}
-
-fn trusted_directory(path: &Path) -> fdo::Result<()> {
-    let metadata =
-        fs::symlink_metadata(path).map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
-    if !metadata.is_dir()
-        || metadata.file_type().is_symlink()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o022 != 0
-    {
-        return Err(fdo::Error::InvalidArgs(
-            "scratch directories must be owned by the daemon and not writable by others".into(),
+    if channels != (SYSTEM_CHANNEL, VENDOR_CHANNEL) {
+        return Err(fdo::Error::NotSupported(
+            "custom OTA channels are not supported: Deckard does not download images".into(),
         ));
     }
     Ok(())
+}
+
+/// Asks polkit whether the sender may run `POLKIT_ACTION`, letting it prompt.
+async fn authorize(conn: &Connection, header: &Header<'_>, who: Caller) -> fdo::Result<()> {
+    if who.uid == 0 {
+        return Ok(());
+    }
+    let sender = header
+        .sender()
+        .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".into()))?;
+    let subject = (
+        "system-bus-name",
+        HashMap::from([("name", Value::from(sender.as_str()))]),
+    );
+    let details: HashMap<&str, &str> = HashMap::new();
+    let allow_interaction = 1u32;
+    let body = (subject, POLKIT_ACTION, details, allow_interaction, "");
+    let call = conn.call_method(
+        Some("org.freedesktop.PolicyKit1"),
+        "/org/freedesktop/PolicyKit1/Authority",
+        Some("org.freedesktop.PolicyKit1.Authority"),
+        "CheckAuthorization",
+        &body,
+    );
+    let timeout = async {
+        async_io::Timer::after(POLKIT_TIMEOUT).await;
+        Err(zbus::Error::Failure("polkit timed out".into()))
+    };
+    let reply = futures_lite::future::or(call, timeout)
+        .await
+        .map_err(|error| fdo::Error::AccessDenied(format!("polkit: {error}")))?;
+    let (authorized, _, _): (bool, bool, HashMap<String, String>) = reply
+        .body()
+        .deserialize()
+        .map_err(|error| fdo::Error::AccessDenied(format!("polkit: {error}")))?;
+    if authorized {
+        Ok(())
+    } else {
+        Err(fdo::Error::AccessDenied(
+            "polkit: not authorized to initialize Android".into(),
+        ))
+    }
 }
 
 #[zbus::interface(name = "id.waydro.Initializer")]
@@ -359,7 +243,9 @@ impl InitializerService {
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
         let who = caller(conn, &header).await?;
-        self.init_authorized(params, who, conn.clone()).await
+        validate_request(&params)?;
+        authorize(conn, &header, who).await?;
+        self.start(who, conn.clone())
     }
 
     async fn cancel(
@@ -388,10 +274,13 @@ mod tests {
     use super::*;
     use crate::dbus::BUS_NAME;
     use futures_lite::{StreamExt, future};
-    use std::error::Error;
+    use std::error::Error as StdError;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
     use zbus::connection::Builder;
+    use zbus::zvariant::OwnedValue;
+
+    type TestResult = std::result::Result<(), Box<dyn StdError>>;
 
     struct Bus(Child);
 
@@ -402,7 +291,7 @@ mod tests {
         }
     }
 
-    fn private_bus() -> Result<(Bus, String), Box<dyn Error>> {
+    fn private_bus() -> std::result::Result<(Bus, String), Box<dyn StdError>> {
         let mut child = Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
             .stdin(Stdio::null())
@@ -419,158 +308,201 @@ mod tests {
         Ok((bus, address.trim().to_owned()))
     }
 
-    fn scratch_fields(work: &Path, images: &Path, templates: &Path) -> HashMap<String, String> {
+    fn request(system_channel: &str) -> HashMap<String, String> {
         HashMap::from([
-            ("mode".into(), "prepare-local-scratch".into()),
-            ("work".into(), work.display().to_string()),
-            ("images".into(), images.display().to_string()),
-            ("templates".into(), templates.display().to_string()),
-            ("name".into(), "deckard".into()),
-            ("bridge".into(), "deckard0".into()),
-            ("arch".into(), "aarch64".into()),
-            ("lxc_major".into(), "4".into()),
-            ("binder".into(), "binder".into()),
-            ("vndbinder".into(), "vndbinder".into()),
-            ("hwbinder".into(), "hwbinder".into()),
+            ("system_channel".into(), system_channel.into()),
+            ("vendor_channel".into(), VENDOR_CHANNEL.into()),
+            ("system_type".into(), "VANILLA".into()),
         ])
     }
 
-    #[test]
-    fn private_bus_matches_installed_initializer_signatures() -> Result<(), Box<dyn Error>> {
-        let (_bus, address) = private_bus()?;
-        async_io::block_on(async {
-            let server = Builder::address(address.as_str())?
-                .name(BUS_NAME)?
-                .serve_at(OBJECT_PATH, InitializerService::new())?
-                .build()
-                .await?;
-            let client = Builder::address(address.as_str())?.build().await?;
-            let introspect = zbus::Proxy::new(
-                &client,
-                BUS_NAME,
-                OBJECT_PATH,
-                "org.freedesktop.DBus.Introspectable",
-            )
-            .await?;
-            let xml: String = introspect.call("Introspect", &()).await?;
-            assert!(xml.contains("interface name=\"id.waydro.Initializer\""));
-            assert!(xml.contains("name=\"Init\""));
-            assert!(xml.contains("type=\"a{ss}\""));
-            for name in ["Cancel", "ProgressChanged", "Finished", "Interrupted"] {
-                assert!(xml.contains(&format!("name=\"{name}\"")));
-            }
-            let proxy =
-                zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, "id.waydro.Initializer").await?;
-            let legacy = HashMap::from([
-                (
-                    "system_channel".to_owned(),
-                    "https://example.invalid".to_owned(),
-                ),
-                (
-                    "vendor_channel".to_owned(),
-                    "https://example.invalid".to_owned(),
-                ),
-                ("system_type".to_owned(), "VANILLA".to_owned()),
-                ("unexpected".to_owned(), "rejected".to_owned()),
-            ]);
-            let result: zbus::Result<()> = proxy.call("Init", &(legacy,)).await;
-            assert!(result.is_err());
-            let uid = rustix::process::geteuid().as_raw();
-            let cancel: zbus::Result<()> = proxy.call("Cancel", &()).await;
-            assert_eq!(cancel.is_ok(), uid == 0);
-            drop(client);
-            drop(server);
-            Ok::<(), zbus::Error>(())
-        })?;
-        Ok(())
+    struct Polkit {
+        allow: bool,
+        asked: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.PolicyKit1.Authority")]
+    impl Polkit {
+        async fn check_authorization(
+            &self,
+            subject: (String, HashMap<String, OwnedValue>),
+            action: String,
+            _details: HashMap<String, String>,
+            flags: u32,
+            _cancel: String,
+        ) -> fdo::Result<(bool, bool, HashMap<String, String>)> {
+            assert_eq!(flags, 1);
+            assert!(subject.1.contains_key("name"));
+            self.asked
+                .lock()
+                .map_err(|_| fdo::Error::Failed("poisoned".into()))?
+                .push((subject.0, action));
+            Ok((self.allow, false, HashMap::new()))
+        }
     }
 
     #[test]
-    fn authorization_and_standard_init_dispatch() {
-        let service = InitializerService::new();
+    fn requests_follow_upstream_shape_and_refuse_downloads() {
+        assert!(validate_request(&request(SYSTEM_CHANNEL)).is_ok());
+        assert!(validate_request(&request("https://ota.waydro.id/system/")).is_ok());
+        assert!(matches!(
+            validate_request(&request("https://example.invalid/system")),
+            Err(fdo::Error::NotSupported(_))
+        ));
+        let mut extra = request(SYSTEM_CHANNEL);
+        extra.insert("mode".into(), "prepare-local-scratch".into());
+        assert!(matches!(
+            validate_request(&extra),
+            Err(fdo::Error::InvalidArgs(_))
+        ));
+        let mut bad_type = request(SYSTEM_CHANNEL);
+        bad_type.insert("system_type".into(), "VANILLA\nX".into());
+        assert!(validate_request(&bad_type).is_err());
+    }
+
+    #[test]
+    fn only_root_or_the_initiator_cancels() -> fdo::Result<()> {
+        let service = InitializerService::new(Arc::new(|_: &Progress<'_>, _: &AtomicBool| Ok(())));
         assert!(
             service
                 .cancel_authorized(Caller { uid: 1000, pid: 9 })
+                .is_ok()
+        );
+        let cancelled = Arc::new(AtomicBool::new(false));
+        *service.active.lock().map_err(|_| poisoned())? = Some(Arc::new(Active {
+            owner: 1000,
+            cancelled: Arc::clone(&cancelled),
+        }));
+        assert!(
+            service
+                .cancel_authorized(Caller { uid: 1001, pid: 9 })
                 .is_err()
         );
-        assert!(service.cancel_authorized(Caller { uid: 0, pid: 1 }).is_ok());
-        let params = HashMap::from([
-            ("system_channel".into(), "default".into()),
-            ("vendor_channel".into(), "default".into()),
-            ("system_type".into(), "VANILLA".into()),
-        ]);
-        assert!(matches!(
-            parse_request(&params),
-            Ok(InitRequest::Production)
-        ));
-        let mut malformed = params;
-        malformed.insert("system_type".into(), "VANILLA\nBAD".into());
-        assert!(parse_request(&malformed).is_err());
+        assert!(!cancelled.load(Ordering::Acquire));
+        service.cancel_authorized(Caller { uid: 1000, pid: 9 })?;
+        assert!(cancelled.load(Ordering::Acquire));
+        Ok(())
     }
 
-    #[test]
-    fn scratch_job_completes_without_touching_production() -> Result<(), Box<dyn Error>> {
-        let scratch = Path::new(SCRATCH_ROOT);
-        fs::create_dir_all(scratch)?;
-        let root = scratch.join(format!(
-            "test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        fs::create_dir_all(root.join("lxc"))?;
-        let images = root.join("images");
-        let templates = root.join("templates");
-        fs::create_dir(&images)?;
-        fs::create_dir(&templates)?;
-        for image in ["system.img", "vendor.img"] {
-            let mut bytes = vec![0; 1082];
-            bytes[1080..1082].copy_from_slice(&[0x53, 0xef]);
-            fs::write(images.join(image), bytes)?;
-        }
-        fs::write(
-            templates.join("config_base"),
-            b"lxc.rootfs.path = /var/lib/waydroid/rootfs\nlxc.arch = LXCARCH\nlxc.include = /var/lib/waydroid/lxc/waydroid/config_nodes\nlxc.include = /var/lib/waydroid/lxc/waydroid/config_session\n",
-        )?;
-        fs::write(
-            templates.join("config_3"),
-            b"lxc.uts.name = waydroid\nlxc.seccomp.profile = /var/lib/waydroid/lxc/waydroid/waydroid.seccomp\nlxc.net.0.link = waydroid0\n",
-        )?;
-        fs::write(templates.join("waydroid.seccomp"), b"2\nblacklist\n")?;
+    fn served(allow: bool, job: Arc<Job>) -> TestResult {
         let (_bus, address) = private_bus()?;
-        let result = async_io::block_on(async {
-            let server = Builder::address(address.as_str())?
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let outcome = async_io::block_on(async {
+            let _polkit = Builder::address(address.as_str())?
+                .name("org.freedesktop.PolicyKit1")?
+                .serve_at(
+                    "/org/freedesktop/PolicyKit1/Authority",
+                    Polkit {
+                        allow,
+                        asked: Arc::clone(&asked),
+                    },
+                )?
+                .build()
+                .await?;
+            let _server = Builder::address(address.as_str())?
                 .name(BUS_NAME)?
-                .serve_at(OBJECT_PATH, InitializerService::new())?
+                .serve_at(OBJECT_PATH, InitializerService::new(job))?
                 .build()
                 .await?;
             let client = Builder::address(address.as_str())?.build().await?;
-            let service = InitializerService::new();
-            let proxy =
-                zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, "id.waydro.Initializer").await?;
+            let proxy = zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, INTERFACE).await?;
+            let mut progress = proxy.receive_signal("ProgressChanged").await?;
             let mut finished = proxy.receive_signal("Finished").await?;
-            service
-                .init_authorized(
-                    scratch_fields(&root, &images, &templates),
-                    Caller { uid: 0, pid: 1 },
-                    server.clone(),
-                )
-                .await
-                .map_err(|error| zbus::Error::Failure(error.to_string()))?;
-            let received = future::or(async { finished.next().await.is_some() }, async {
-                async_io::Timer::after(Duration::from_secs(3)).await;
-                false
-            })
+            let mut interrupted = proxy.receive_signal("Interrupted").await?;
+            let refused: zbus::Result<()> = proxy
+                .call("Init", &(request("https://example.invalid"),))
+                .await;
+            assert!(refused.is_err());
+            let reply: zbus::Result<()> = proxy.call("Init", &(request(SYSTEM_CHANNEL),)).await;
+            if reply.is_err() {
+                return Ok::<_, zbus::Error>(None);
+            }
+            let done = future::or(
+                async {
+                    future::or(async { finished.next().await.map(|_| "Finished") }, async {
+                        interrupted.next().await.map(|_| "Interrupted")
+                    })
+                    .await
+                },
+                async {
+                    async_io::Timer::after(Duration::from_secs(5)).await;
+                    None
+                },
+            )
             .await;
-            assert!(received, "initializer did not emit Finished");
-            assert!(root.join("lxc/deckard/config").exists());
-            drop(client);
-            drop(server);
-            Ok::<(), zbus::Error>(())
-        });
-        fs::remove_dir_all(&root)?;
-        result?;
+            let line = progress
+                .next()
+                .await
+                .and_then(|message| message.body().deserialize::<String>().ok());
+            Ok(done.map(|signal| (signal, line)))
+        })?;
+        let uid = rustix::process::geteuid().as_raw();
+        let asked = asked.lock().map_err(|_| "poisoned")?.clone();
+        if uid == 0 {
+            assert!(asked.is_empty());
+        } else {
+            assert_eq!(
+                asked,
+                [("system-bus-name".to_owned(), POLKIT_ACTION.to_owned())]
+            );
+        }
+        match (allow || uid == 0, outcome) {
+            (false, None) => Ok(()),
+            (true, Some((signal, line))) => {
+                let expected = if line.as_deref() == Some("step") {
+                    "Finished"
+                } else {
+                    "Interrupted"
+                };
+                assert_eq!(signal, expected);
+                Ok(())
+            }
+            (allowed, outcome) => Err(format!("allowed {allowed}, outcome {outcome:?}").into()),
+        }
+    }
+
+    #[test]
+    fn private_bus_init_needs_polkit_and_signals_the_outcome() -> TestResult {
+        served(
+            false,
+            Arc::new(|progress: &Progress<'_>, _: &AtomicBool| {
+                progress("step");
+                Ok(())
+            }),
+        )?;
+        served(
+            true,
+            Arc::new(|progress: &Progress<'_>, _: &AtomicBool| {
+                progress("step");
+                Ok(())
+            }),
+        )?;
+        served(
+            true,
+            Arc::new(|_: &Progress<'_>, _: &AtomicBool| {
+                Err(crate::Error::Invalid("images missing".into()))
+            }),
+        )
+    }
+
+    #[test]
+    fn introspection_matches_installed_signatures() -> TestResult {
+        use zbus::object_server::Interface;
+        let service = InitializerService::new(Arc::new(|_: &Progress<'_>, _: &AtomicBool| Ok(())));
+        let mut xml = String::new();
+        service.introspect_to_writer(&mut xml, 0);
+        assert!(xml.contains("interface name=\"id.waydro.Initializer\""));
+        assert!(xml.contains("type=\"a{ss}\""));
+        for name in [
+            "Init",
+            "Cancel",
+            "ProgressChanged",
+            "Finished",
+            "Interrupted",
+        ] {
+            assert!(xml.contains(&format!("name=\"{name}\"")), "{name}");
+        }
+        assert!(xml.contains("<arg name=\"message\" type=\"s\""));
         Ok(())
     }
 }

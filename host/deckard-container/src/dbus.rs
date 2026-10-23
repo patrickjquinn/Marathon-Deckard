@@ -197,6 +197,10 @@ trait Backend: Send {
     fn hardware(&mut self, _request: HardwareRequest) -> Result<HardwareOutcome> {
         Err(Error::Invalid("hardware service unavailable".into()))
     }
+    /// Whether the LXC instance exists, so that its status can be asked.
+    fn initialized(&mut self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -285,6 +289,11 @@ impl DirectBackend {
 }
 
 impl Backend for DirectBackend {
+    fn initialized(&mut self) -> bool {
+        let instance = self.manager.lxc.root.join(&self.manager.lxc.name);
+        instance.join("config").is_file()
+    }
+
     fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
         if self.manager.lxc.status(&mut ProcessRunner)? != State::Stopped {
             return Err(Error::Invalid(
@@ -425,6 +434,47 @@ impl ContainerService {
             Ok(())
         })
         .await
+    }
+
+    /// Runs `work` with the container stopped. A tracked session is stopped
+    /// first and started again afterwards; if that restart fails, the session
+    /// is dropped and its process told to exit (SIGUSR1). An untracked running
+    /// container is refused. Blocks other calls while `work` runs.
+    ///
+    /// # Errors
+    /// The container is running untracked, stopping or restarting fails, or
+    /// `work` fails.
+    pub fn with_stopped<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Invalid("state lock poisoned".into()))?;
+        let resume = state
+            .session
+            .as_ref()
+            .map(|session| (session.fields.clone(), session.identity.uid));
+        if resume.is_some() {
+            state.backend.stop()?;
+        } else if state.backend.initialized() && state.backend.status()? != State::Stopped {
+            return Err(Error::Invalid(
+                "the container is running without a session; stop it first".into(),
+            ));
+        }
+        let result = work();
+        if let Some((fields, uid)) = resume
+            && let Err(error) = state.backend.start(&fields, uid)
+        {
+            if let Some(session) = state.session.take() {
+                let _ = pidfd_send_signal(&session.pidfd, Signal::USR1);
+            }
+            return Err(match result {
+                Ok(_) => error,
+                Err(failure) => Error::Invalid(format!(
+                    "{failure}; restarting the session also failed: {error}"
+                )),
+            });
+        }
+        result
     }
 
     pub async fn handle_hardware_request(&self, request: HardwareRequest) -> fdo::Result<()> {
@@ -704,7 +754,10 @@ pub async fn serve_system_bus(
     let connection = Builder::system()?
         .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, service.clone())?
-        .serve_at(INITIALIZER_PATH, InitializerService::new())?
+        .serve_at(
+            INITIALIZER_PATH,
+            InitializerService::production(service.clone()),
+        )?
         .build()
         .await?;
     Ok((connection, service))
@@ -814,6 +867,66 @@ mod tests {
                 .push("hardware_suspend");
             Ok(HardwareOutcome::Active)
         }
+    }
+
+    fn tracked(service: &ContainerService) -> std::result::Result<Child, Box<dyn StdError>> {
+        let process = Command::new("sleep").arg("30").spawn()?;
+        let pid = process.id();
+        let pidfd = pidfd_open(
+            Pid::from_raw(i32::try_from(pid)?).ok_or("invalid test PID")?,
+            PidfdFlags::empty(),
+        )?;
+        let fields = HashMap::from([
+            ("user_id".to_owned(), "1000".to_owned()),
+            ("pid".to_owned(), pid.to_string()),
+        ]);
+        service
+            .state
+            .lock()
+            .map_err(|_| "state lock poisoned")?
+            .session = Some(Session {
+            identity: SessionIdentity::parse(&fields)?,
+            fields,
+            pidfd,
+        });
+        Ok(process)
+    }
+
+    #[test]
+    fn init_coordination_restarts_the_tracked_session() -> std::result::Result<(), Box<dyn StdError>>
+    {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        assert!(service.with_stopped(|| Ok(())).is_err());
+        let mut session = tracked(&service)?;
+        let record = calls.clone();
+        service.with_stopped(|| {
+            record
+                .lock()
+                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .push("init");
+            Ok(())
+        })?;
+        assert!(
+            service
+                .with_stopped(|| Err::<(), _>(Error::Invalid("failed init".into())))
+                .is_err()
+        );
+        assert_eq!(
+            *calls.lock().map_err(|_| "record lock poisoned")?,
+            ["stop", "init", "start", "stop", "start"]
+        );
+        assert!(
+            service
+                .state
+                .lock()
+                .map_err(|_| "poisoned")?
+                .session
+                .is_some()
+        );
+        let _ = session.kill();
+        let _ = session.wait();
+        Ok(())
     }
 
     #[test]
