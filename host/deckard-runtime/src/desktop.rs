@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
 
@@ -175,6 +175,48 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+fn is_launcher(app: &AppInfo) -> bool {
+    app.categories
+        .iter()
+        .any(|category| category.trim() == LAUNCHER)
+}
+
+fn valid_app(app: &AppInfo) -> bool {
+    valid_package(&app.package) && !app.name.is_empty() && !app.name.contains('\0')
+}
+
+fn applications_dir(data_home: &Path) -> Result<PathBuf> {
+    let applications = data_home.join("applications");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&applications)?;
+    Ok(applications)
+}
+
+fn launcher_path(applications: &Path, package: &str) -> PathBuf {
+    applications.join(format!("waydroid.{package}.desktop"))
+}
+
+fn write_app(applications: &Path, data_home: &Path, app: &AppInfo) -> Result<()> {
+    let path = launcher_path(applications, &app.package);
+    let existing = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let next = render_app(&existing, app, &data_home.join("waydroid/data/icons"));
+    if next != existing {
+        atomic_write(&path, &next)?;
+    }
+    Ok(())
+}
+
+/// Rewrites every launcher from a full Android snapshot and removes the
+/// launchers of packages it no longer lists. Returns the launcher count.
+///
+/// # Errors
+/// The snapshot is empty or malformed (nothing is changed), or a write fails.
 pub fn export(data_home: &Path, apps: &[AppInfo]) -> Result<usize> {
     // An empty or malformed Binder snapshot must never delete existing launchers.
     if apps.is_empty() {
@@ -182,41 +224,19 @@ pub fn export(data_home: &Path, apps: &[AppInfo]) -> Result<usize> {
     }
     let mut packages = HashSet::new();
     for app in apps {
-        if !valid_package(&app.package) || app.name.is_empty() || app.name.contains('\0') {
+        if !valid_app(app) {
             return Err(invalid("invalid Android app identity"));
         }
         if !packages.insert(app.package.as_str()) {
             return Err(invalid("duplicate Android app identity"));
         }
     }
-    let applications = data_home.join("applications");
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&applications)?;
-    let icons = data_home.join("waydroid/data/icons");
-    let visible: HashSet<&str> = apps
-        .iter()
-        .filter(|app| {
-            app.categories
-                .iter()
-                .any(|category| category.trim() == LAUNCHER)
-        })
-        .map(|app| app.package.as_str())
-        .collect();
-    for app in apps
-        .iter()
-        .filter(|app| visible.contains(app.package.as_str()))
-    {
-        let path = applications.join(format!("waydroid.{}.desktop", app.package));
-        let existing = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => return Err(error.into()),
-        };
-        let next = render_app(&existing, app, &icons);
-        if next != existing {
-            atomic_write(&path, &next)?;
+    let applications = applications_dir(data_home)?;
+    let mut visible = HashSet::new();
+    for app in apps {
+        if is_launcher(app) {
+            write_app(&applications, data_home, app)?;
+            visible.insert(app.package.as_str());
         }
     }
     for entry in fs::read_dir(&applications)? {
@@ -235,6 +255,28 @@ pub fn export(data_home: &Path, apps: &[AppInfo]) -> Result<usize> {
     }
     File::open(&applications)?.sync_all()?;
     Ok(visible.len())
+}
+
+/// Applies one package change from Android: `app` is its current entry, or
+/// `None` once it is removed. Only launcher apps keep a launcher.
+///
+/// # Errors
+/// The package name or entry is invalid, or a write fails.
+pub fn update(data_home: &Path, package: &str, app: Option<&AppInfo>) -> Result<()> {
+    if !valid_package(package) || app.is_some_and(|app| app.package != package || !valid_app(app)) {
+        return Err(invalid("invalid Android package change"));
+    }
+    let applications = applications_dir(data_home)?;
+    match app.filter(|app| is_launcher(app)) {
+        Some(app) => write_app(&applications, data_home, app)?,
+        None => match fs::remove_file(launcher_path(&applications, package)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        },
+    }
+    File::open(&applications)?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -364,5 +406,48 @@ mod tests {
         );
         assert!(entry.contains("Name=A\\nB\\\\C\n"));
         assert!(!entry.contains("Name=A\nB"));
+    }
+
+    #[test]
+    fn package_changes_add_update_and_remove_one_launcher() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root
+            .path()
+            .join("applications/waydroid.org.example.app.desktop");
+        let other = root
+            .path()
+            .join("applications/waydroid.org.example.other.desktop");
+        export(root.path(), &[app("Other", "org.example.other", true)])?;
+        update(
+            root.path(),
+            "org.example.app",
+            Some(&app("App", "org.example.app", true)),
+        )?;
+        assert!(fs::read_to_string(&path)?.contains("Name=App\n"));
+        update(
+            root.path(),
+            "org.example.app",
+            Some(&app("App", "org.example.app", false)),
+        )?;
+        assert!(!path.exists());
+        update(
+            root.path(),
+            "org.example.app",
+            Some(&app("App", "org.example.app", true)),
+        )?;
+        update(root.path(), "org.example.app", None)?;
+        assert!(!path.exists());
+        update(root.path(), "org.example.app", None)?;
+        assert!(
+            update(
+                root.path(),
+                "org.example.app",
+                Some(&app("Spoof", "org.example.other", true))
+            )
+            .is_err()
+        );
+        assert!(update(root.path(), "../escape", None).is_err());
+        assert!(other.exists());
+        Ok(())
     }
 }

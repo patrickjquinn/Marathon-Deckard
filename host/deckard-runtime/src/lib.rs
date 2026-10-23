@@ -1,6 +1,7 @@
 //! The native Deckard user session (upstream `waydroid session`).
 
 mod desktop;
+mod monitor;
 
 use std::collections::HashMap;
 use std::env;
@@ -11,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use deckard_launch::binder::{BinderConfig, Platform};
+use deckard_launch::binder::{self, BinderConfig, Platform};
 use nix::unistd::{User, getegid, geteuid};
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use zbus::blocking::{Connection, Proxy};
@@ -32,6 +34,7 @@ const SESSION_PATH: &str = "/SessionManager";
 const SESSION_INTERFACE: &str = "id.waydro.SessionManager";
 const CONTAINER_UNIT: &str = "deckard-container.service";
 const WAYDROID_CONFIG: &str = "/var/lib/waydroid/waydroid.cfg";
+const EVENT_QUEUE: usize = 64;
 
 #[derive(Clone)]
 struct SessionManager {
@@ -263,19 +266,59 @@ fn export_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
     Err(unavailable("Android app catalog did not become ready"))
 }
 
-fn monitor_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
-    export_installed_apps(data_home, stop)?;
-    let config = BinderConfig::from_file(Path::new(WAYDROID_CONFIG))?;
-    while !stop.load(Ordering::Acquire) {
-        thread::sleep(Duration::from_secs(15));
-        if stop.load(Ordering::Acquire) {
-            break;
+fn apply(data_home: &Path, config: &BinderConfig, event: Option<monitor::Event>) -> Result<()> {
+    let platform = Platform::connect(config)?;
+    match event {
+        Some(monitor::Event::Package { package, removed }) => {
+            let app = if removed {
+                None
+            } else {
+                platform.app(&package)?
+            };
+            desktop::update(data_home, &package, app.as_ref())
         }
-        let result = Platform::connect(&config)
-            .and_then(|catalog| catalog.apps())
-            .and_then(|apps| desktop::export(data_home, &apps));
-        if let Err(error) = result {
-            eprintln!("deckard-runtime: Android desktop refresh failed: {error}");
+        Some(monitor::Event::UserUnlocked) | None => {
+            desktop::export(data_home, &platform.apps()?).map(|_| ())
+        }
+    }
+}
+
+/// Exports the launchers once Android is ready, then follows Android's
+/// `waydroidusermonitor` callbacks instead of polling the catalog.
+fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()> {
+    let config = BinderConfig::from_file(Path::new(WAYDROID_CONFIG))?;
+    let (sender, events) = mpsc::sync_channel(EVENT_QUEUE);
+    let resync = Arc::new(AtomicBool::new(false));
+    let handler = monitor::handler(sender, Arc::clone(&resync));
+    let service_config = config.clone();
+    let service_stop = Arc::clone(stop);
+    thread::spawn(move || {
+        if let Err(error) = binder::serve(
+            &service_config,
+            monitor::SERVICE,
+            monitor::INTERFACE,
+            handler,
+            service_stop,
+        ) {
+            eprintln!("deckard-runtime: {} unavailable: {error}", monitor::SERVICE);
+        }
+    });
+    if let Err(error) = export_installed_apps(data_home, stop) {
+        // A later userUnlocked callback exports the catalog.
+        eprintln!("deckard-runtime: Android desktop export failed: {error}");
+    }
+    while !stop.load(Ordering::Acquire) {
+        let event = match events.recv_timeout(Duration::from_millis(500)) {
+            Ok(event) => Some(event),
+            Err(RecvTimeoutError::Timeout) if resync.swap(false, Ordering::AcqRel) => None,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) if stop.load(Ordering::Acquire) => break,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(unavailable("Android package callbacks stopped"));
+            }
+        };
+        if let Err(error) = apply(data_home, &config, event) {
+            eprintln!("deckard-runtime: Android launcher update failed: {error}");
         }
     }
     Ok(())
@@ -334,7 +377,7 @@ pub fn session_start() -> Result<()> {
     let export_stop = Arc::clone(&stop);
     thread::spawn(move || {
         if let Err(error) = monitor_installed_apps(&data_home, &export_stop) {
-            eprintln!("deckard-runtime: Android desktop export failed: {error}");
+            eprintln!("deckard-runtime: Android launcher monitor failed: {error}");
         }
     });
 
