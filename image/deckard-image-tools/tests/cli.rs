@@ -103,3 +103,46 @@ fn accepts_equals_options_for_existing_build_script_callers() {
             .contains("system_accent1_100\">#ff8a3d")
     );
 }
+
+#[test]
+fn hwcomposer_command_matches_golden_output_and_refuses_unknown_input() {
+    let temporary = tempfile::tempdir().unwrap();
+    let input = temporary.path().join("stock.so");
+    let output = temporary.path().join("patched.so");
+    let golden = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../overlay/vendor/lib64/hw/hwcomposer.waydroid.so"),
+    )
+    .unwrap();
+    let mut stock = golden.clone();
+    stock[0x3eee0..0x3eee4].copy_from_slice(&[0x20, 0x00, 0x80, 0x52]);
+    std::fs::write(&input, &stock).unwrap();
+
+    let result = command()
+        .arg("hwcomposer")
+        .arg("--input")
+        .arg(&input)
+        .arg("--out")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(std::fs::read(&output).unwrap(), golden);
+
+    stock[0] ^= 1;
+    std::fs::write(&input, &stock).unwrap();
+    let result = command()
+        .arg("hwcomposer")
+        .arg("--input")
+        .arg(&input)
+        .arg("--out")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert_eq!(std::fs::read(&output).unwrap(), golden);
+}
