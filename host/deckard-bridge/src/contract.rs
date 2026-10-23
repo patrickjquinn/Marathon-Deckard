@@ -3,8 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use deckard_core::ids;
-use deckard_core::{keel, validate};
+use deckard_core::{ids, keel, validate};
 pub use deckard_packages::VariantMap;
 use serde_json::{Map, Value};
 

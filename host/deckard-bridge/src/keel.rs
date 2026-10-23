@@ -5,7 +5,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::future::Future;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -168,14 +167,6 @@ struct Shared {
 
 fn ok(reply: &Map<String, Value>) -> bool {
     reply.get("ok").and_then(Value::as_bool) == Some(true)
-}
-
-async fn within<T>(limit: Duration, work: impl Future<Output = T>) -> Option<T> {
-    future::or(async { Some(work.await) }, async {
-        Timer::after(limit).await;
-        None
-    })
-    .await
 }
 
 fn keel_op(op: &str, pkg: &str) -> Value {
@@ -575,7 +566,7 @@ impl Shared {
             state.pending.insert(id, pending);
             id
         };
-        let answered = within(BRIDGE_TIMEOUT, answer.recv()).await;
+        let answered = intents::within(BRIDGE_TIMEOUT, answer.recv()).await;
         let mut state = sync::lock(&self.state);
         state.pending.remove(&id);
         match answered {

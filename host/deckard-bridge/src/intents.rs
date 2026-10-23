@@ -343,6 +343,15 @@ pub(crate) fn object(value: Value) -> Map<String, Value> {
     }
 }
 
+/// `work`'s output, or None once `limit` has passed.
+pub(crate) async fn within<T>(limit: Duration, work: impl Future<Output = T>) -> Option<T> {
+    let timeout = async {
+        Timer::after(limit).await;
+        None
+    };
+    future::or(async { Some(work.await) }, timeout).await
+}
+
 /// Calls `method` of `to`, failing once `limit` has passed.
 pub(crate) async fn call<B>(
     bus: &zbus::Connection,
@@ -355,11 +364,8 @@ where
     B: Serialize + DynamicType,
 {
     let call = bus.call_method(Some(service), path, Some(interface), method, body);
-    let timeout = async {
-        Timer::after(limit).await;
-        Err(zbus::Error::Failure("timed out".into()))
-    };
-    future::or(call, timeout).await
+    let timed_out = || Err(zbus::Error::Failure("timed out".into()));
+    within(limit, call).await.unwrap_or_else(timed_out)
 }
 
 /// Runs `target` on the session bus.

@@ -12,9 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_channel::Sender;
-use async_io::Timer;
 use deckard_core::{ids, keel, png_guard, sync, text, validate};
-use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::interface;
 use zbus::message::Header;
@@ -154,15 +152,11 @@ impl Sharing {
         }
         message.insert("id".into(), id.clone().into());
         let reply = if (self.send)(message) {
-            let timeout = async {
-                Timer::after(TIMEOUT).await;
-                Err("Android didn't answer".into())
-            };
-            let answer = async {
-                let stopped = |_| Err("Android stopped".into());
-                answered.recv().await.unwrap_or_else(stopped)
-            };
-            future::or(answer, timeout).await
+            match intents::within(TIMEOUT, answered.recv()).await {
+                Some(Ok(answer)) => answer,
+                Some(Err(_)) => Err("Android stopped".into()),
+                None => Err("Android didn't answer".into()),
+            }
         } else {
             Err("Android isn't running".into())
         };
