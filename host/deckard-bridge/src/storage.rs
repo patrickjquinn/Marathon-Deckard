@@ -6,6 +6,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io;
+use std::iter;
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
@@ -151,37 +152,49 @@ impl Worker {
         self.prepare();
         let mut settle: Option<Instant> = None;
         loop {
-            let event = match settle {
+            let first = match settle {
                 Some(at) => events.recv_timeout(at.saturating_duration_since(Instant::now())),
                 None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
-            let all = self.folders.iter().map(|(_, dir)| dir.clone());
-            match event {
-                Ok(Event::Changed(wd)) => {
-                    if let Some(dir) = self.watched.get(&wd).cloned() {
-                        self.changed(dir);
-                        settle = Some(Instant::now() + SETTLE);
-                    }
-                }
-                Ok(Event::Gone(wd)) => drop(self.watched.remove(&wd)),
-                Ok(Event::Overflow) => {
-                    self.dirty.extend(all);
-                    self.watch();
-                    settle = Some(Instant::now() + SETTLE);
-                }
-                Ok(Event::Connected(connected)) => {
-                    self.connected = connected;
-                    if connected {
-                        self.dirty.extend(all);
-                        self.flush();
-                    }
-                }
+            let first = match first {
+                Ok(event) => event,
                 Err(RecvTimeoutError::Timeout) => {
                     settle = None;
                     self.flush();
+                    continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
+            };
+            // What is already queued is one change per folder, as Qt's watcher had it.
+            let batch = iter::once(first).chain(events.try_iter().take(QUEUE));
+            let mut changed = BTreeSet::new();
+            let mut rescan = false;
+            for event in batch {
+                let all = self.folders.iter().map(|(_, dir)| dir.clone());
+                match event {
+                    Event::Changed(wd) => changed.extend(self.watched.get(&wd).cloned()),
+                    Event::Gone(wd) => drop(self.watched.remove(&wd)),
+                    Event::Overflow => {
+                        self.dirty.extend(all);
+                        rescan = true;
+                    }
+                    Event::Connected(connected) => {
+                        self.connected = connected;
+                        if connected {
+                            self.dirty.extend(all);
+                            self.flush();
+                        }
+                    }
+                }
             }
+            if changed.is_empty() && !rescan {
+                continue;
+            }
+            for dir in changed {
+                self.changed(dir);
+            }
+            self.watch();
+            settle = Some(Instant::now() + SETTLE);
         }
     }
 
@@ -240,7 +253,6 @@ impl Worker {
             }
         }
         self.dirty.insert(dir);
-        self.watch();
     }
 
     fn flush(&mut self) {
