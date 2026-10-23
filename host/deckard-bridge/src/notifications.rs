@@ -184,7 +184,10 @@ impl NotificationBridge {
 }
 
 pub fn bridge_event(event: &BridgeEvent) -> Map<String, Value> {
-    event.to_json().as_object().cloned().unwrap_or_default()
+    match serde_json::to_value(event) {
+        Ok(Value::Object(object)) => object,
+        _ => Map::new(),
+    }
 }
 
 fn string<'a>(message: &'a Map<String, Value>, field: &str) -> &'a str {

@@ -1,13 +1,16 @@
-//! Pure notification reconciliation. The adapter owns D-Bus, timers, and atomic file writes.
+//! Pure notification reconciliation. The adapter owns D-Bus, timers, and
+//! atomic file writes.
 //!
-//! `display_digest` must be the SHA-256 of the C++ Hub-facing QDataStream fields
-//! (excluding `suppress-sound`) while migrating existing notification state.
+//! `display_digest` must be the SHA-256 of the C++ Hub-facing QDataStream
+//! fields (excluding `suppress-sound`) while migrating notification state.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::messages::Post;
+use crate::validate;
 
 pub const MAX_TRACKED: usize = 200;
 pub const DISMISS_DELAY_MS: u64 = 500;
@@ -31,7 +34,9 @@ pub enum Command {
     Send(BridgeEvent),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A message for DeckardBridge; serialises as its wire object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "t", rename_all = "lowercase")]
 pub enum BridgeEvent {
     Invoke {
         key: String,
@@ -47,18 +52,7 @@ pub enum BridgeEvent {
     },
 }
 
-impl BridgeEvent {
-    pub fn to_json(&self) -> Value {
-        match self {
-            Self::Invoke { key, action } => json!({"t": "invoke", "key": key, "action": action}),
-            Self::Reply { key, action, text } => {
-                json!({"t": "reply", "key": key, "action": action, "text": text})
-            }
-            Self::Dismiss { key } => json!({"t": "dismiss", "key": key}),
-        }
-    }
-}
-
+/// A tracked row; `id` is 0 while its Notify is pending.
 #[derive(Clone, Debug)]
 struct Entry {
     id: u32,
@@ -66,13 +60,6 @@ struct Entry {
     reply_action: String,
     auto_cancel: bool,
     invoked_at: i64,
-}
-
-struct Pending {
-    key: String,
-    digest: Vec<u8>,
-    reply_action: String,
-    auto_cancel: bool,
 }
 
 struct Closing {
@@ -85,43 +72,32 @@ struct Closing {
 pub struct NotificationState {
     entries: BTreeMap<String, Entry>,
     keys: HashMap<u32, String>,
-    pending: HashMap<u64, Pending>,
+    pending: HashMap<u64, (String, Entry)>,
     pending_by_key: HashMap<String, u64>,
     closing: HashMap<u32, Closing>,
     next_token: u64,
 }
 
 impl NotificationState {
-    /// Accepts the legacy object keyed by Android notification key. Malformed rows are ignored.
+    /// Accepts the legacy object keyed by Android notification key.
+    /// Malformed rows are ignored.
+    #[must_use]
     pub fn restore(state: &Value) -> Self {
         let mut result = Self::default();
-        let Some(object) = state.as_object() else {
-            return result;
-        };
-        for (key, row) in object {
-            let Some(row) = row.as_object() else {
+        let rows = state.as_object().into_iter().flatten();
+        for (key, row) in rows {
+            let field = |name: &str| row.get(name).unwrap_or(&Value::Null);
+            let Some(id) = field("id").as_f64().and_then(legacy_id) else {
                 continue;
             };
-            let Some(id) = row.get("id").and_then(legacy_id) else {
-                continue;
-            };
-            let digest = row
-                .get("digest")
-                .and_then(Value::as_str)
-                .and_then(decode_hex)
-                .unwrap_or_default();
+            let digest = field("digest")
+                .as_str()
+                .and_then(|hex| hex::decode(hex).ok());
             let entry = Entry {
                 id,
-                digest,
-                reply_action: row
-                    .get("reply")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                auto_cancel: row
-                    .get("autoCancel")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                digest: digest.unwrap_or_default(),
+                reply_action: field("reply").as_str().unwrap_or_default().to_owned(),
+                auto_cancel: field("autoCancel").as_bool().unwrap_or(false),
                 invoked_at: 0,
             };
             result.keys.insert(id, key.clone());
@@ -130,114 +106,98 @@ impl NotificationState {
         result
     }
 
+    #[must_use]
     pub fn snapshot(&self) -> Value {
         let mut state = Map::new();
         for (key, entry) in &self.entries {
-            state.insert(
-                key.clone(),
-                json!({
-                    "id": entry.id,
-                    "digest": encode_hex(&entry.digest),
-                    "reply": entry.reply_action,
-                    "autoCancel": entry.auto_cancel,
-                }),
-            );
+            let row = json!({
+                "id": entry.id,
+                "digest": hex::encode(&entry.digest),
+                "reply": entry.reply_action,
+                "autoCancel": entry.auto_cancel,
+            });
+            state.insert(key.clone(), row);
         }
         Value::Object(state)
-    }
-
-    pub fn tracked_len(&self) -> usize {
-        self.entries.len()
     }
 
     /// Returns a Notify command only for a new or changed display payload.
     /// The adapter must call `notified` or `notify_failed` for each request,
     /// and pass Unix milliseconds to the action and timer methods.
+    #[must_use]
     pub fn prepare_post(&mut self, post: &Post, display_digest: &[u8]) -> Vec<Command> {
         let key = &post.key;
-        if !self.entries.contains_key(key)
-            && !self.pending_by_key.contains_key(key)
-            && self.entries.len() + self.pending_by_key.len() >= MAX_TRACKED
-        {
+        let known = self.entries.contains_key(key) || self.pending_by_key.contains_key(key);
+        if !known && self.entries.len() + self.pending_by_key.len() >= MAX_TRACKED {
             return Vec::new();
         }
-        if let Some(request) = self.pending_by_key.get(key)
-            && self
-                .pending
-                .get(request)
-                .is_some_and(|pending| pending.digest == display_digest)
-        {
+        let pending = self
+            .pending_by_key
+            .get(key)
+            .and_then(|request| self.pending.get(request));
+        if pending.is_some_and(|(_, pending)| pending.digest == display_digest) {
             return Vec::new();
         }
         if let Some(old) = self.pending_by_key.remove(key) {
             self.pending.remove(&old);
         }
-        if self
-            .entries
-            .get(key)
-            .is_some_and(|entry| entry.digest == display_digest)
-        {
+        let current = self.entries.get(key);
+        if current.is_some_and(|entry| entry.digest == display_digest) {
             return Vec::new();
         }
+        let replaces_id = current.map_or(0, |entry| entry.id);
         let request = self.token();
+        let entry = Entry {
+            id: 0,
+            digest: display_digest.to_vec(),
+            reply_action: post.reply_action.clone(),
+            auto_cancel: post.auto_cancel,
+            invoked_at: 0,
+        };
         self.pending_by_key.insert(key.clone(), request);
-        self.pending.insert(
-            request,
-            Pending {
-                key: key.clone(),
-                digest: display_digest.to_vec(),
-                reply_action: post.reply_action.clone(),
-                auto_cancel: post.auto_cancel,
-            },
-        );
+        self.pending.insert(request, (key.clone(), entry));
         vec![Command::Notify {
             request,
             post: Box::new(post.clone()),
-            replaces_id: self.entries.get(key).map_or(0, |entry| entry.id),
+            replaces_id,
         }]
     }
 
     /// Commit only a successful, current Notify reply. A stale reply is closed
     /// unless its id is already the currently tracked notification.
+    #[must_use]
     pub fn notified(&mut self, request: u64, id: u32) -> Vec<Command> {
-        let Some(pending) = self.pending.remove(&request) else {
+        let Some((key, mut entry)) = self.pending.remove(&request) else {
             return self.close_untracked(id);
         };
-        if self.pending_by_key.get(&pending.key) != Some(&request) {
+        if self.pending_by_key.get(&key) != Some(&request) {
             return self.close_untracked(id);
         }
-        self.pending_by_key.remove(&pending.key);
+        self.pending_by_key.remove(&key);
         if id == 0 {
             return Vec::new();
         }
-        if let Some(previous) = self.entries.get(&pending.key)
+        if let Some(previous) = self.entries.get(&key)
             && previous.id != id
         {
             self.keys.remove(&previous.id);
         }
-        self.entries.insert(
-            pending.key.clone(),
-            Entry {
-                id,
-                digest: pending.digest,
-                reply_action: pending.reply_action,
-                auto_cancel: pending.auto_cancel,
-                invoked_at: 0,
-            },
-        );
-        self.keys.insert(id, pending.key);
+        entry.id = id;
+        self.entries.insert(key.clone(), entry);
+        self.keys.insert(id, key);
         vec![Command::Persist(self.snapshot())]
     }
 
     pub fn notify_failed(&mut self, request: u64) {
-        if let Some(pending) = self.pending.remove(&request)
-            && self.pending_by_key.get(&pending.key) == Some(&request)
+        if let Some((key, _)) = self.pending.remove(&request)
+            && self.pending_by_key.get(&key) == Some(&request)
         {
-            self.pending_by_key.remove(&pending.key);
+            self.pending_by_key.remove(&key);
         }
     }
 
     /// Remove local mappings before asking the Hub to close the row.
+    #[must_use]
     pub fn remove(&mut self, key: &str) -> Vec<Command> {
         if let Some(request) = self.pending_by_key.remove(key) {
             self.pending.remove(&request);
@@ -250,12 +210,11 @@ impl NotificationState {
     }
 
     /// Reconcile a complete Android key set. Removals are emitted in key order.
+    #[must_use]
     pub fn sync(&mut self, live_keys: &[String]) -> Vec<Command> {
         let live: HashSet<&str> = live_keys.iter().map(String::as_str).collect();
-        let stale: Vec<String> = self
-            .entries
-            .keys()
-            .chain(self.pending_by_key.keys())
+        let tracked = self.entries.keys().chain(self.pending_by_key.keys());
+        let stale: Vec<String> = tracked
             .filter(|key| !live.contains(key.as_str()))
             .cloned()
             .collect();
@@ -266,47 +225,50 @@ impl NotificationState {
         commands
     }
 
+    #[must_use]
     pub fn action_invoked(&mut self, id: u32, action: &str, now_ms: i64) -> Vec<Command> {
         if action == "inline-reply" {
             return Vec::new();
         }
-        let key = if let Some(key) = self.keys.get(&id) {
-            if let Some(entry) = self.entries.get_mut(key) {
-                entry.invoked_at = now_ms;
-            }
-            Some(key.clone())
-        } else if let Some(closing) = self.closing.get_mut(&id) {
-            closing.entry.invoked_at = now_ms;
-            Some(closing.key.clone())
-        } else {
-            None
+        let tracked = self
+            .keys
+            .get(&id)
+            .and_then(|key| Some((key, self.entries.get_mut(key)?)));
+        let (key, entry) = match tracked {
+            Some((key, entry)) => (key, entry),
+            None => match self.closing.get_mut(&id) {
+                Some(closing) => (&closing.key, &mut closing.entry),
+                None => return Vec::new(),
+            },
         };
-        key.map_or_else(Vec::new, |key| {
-            vec![Command::Send(BridgeEvent::Invoke {
-                key,
-                action: crate::validate::truncate(action, 16),
-            })]
-        })
+        entry.invoked_at = now_ms;
+        vec![Command::Send(BridgeEvent::Invoke {
+            key: key.clone(),
+            action: validate::truncate(action, 16),
+        })]
     }
 
     /// Replies are accepted only while the notification remains active.
+    #[must_use]
     pub fn notification_replied(&self, id: u32, text: &str) -> Vec<Command> {
         let Some(key) = self.keys.get(&id) else {
             return Vec::new();
         };
-        let Some(entry) = self.entries.get(key) else {
+        let Some(entry) = self
+            .entries
+            .get(key)
+            .filter(|entry| !entry.reply_action.is_empty())
+        else {
             return Vec::new();
         };
-        if entry.reply_action.is_empty() {
-            return Vec::new();
-        }
         vec![Command::Send(BridgeEvent::Reply {
             key: key.clone(),
             action: entry.reply_action.clone(),
-            text: crate::validate::truncate(text, 4096),
+            text: validate::truncate(text, 4096),
         })]
     }
 
+    #[must_use]
     pub fn notification_closed(&mut self, id: u32, reason: u32) -> Vec<Command> {
         let Some(key) = self.keys.remove(&id) else {
             return Vec::new();
@@ -327,6 +289,7 @@ impl NotificationState {
         commands
     }
 
+    #[must_use]
     pub fn dismiss_due(&mut self, id: u32, token: u64, now_ms: i64) -> Vec<Command> {
         if self
             .closing
@@ -335,15 +298,13 @@ impl NotificationState {
         {
             return Vec::new();
         }
-        let Some(closing) = self.closing.remove(&id) else {
+        let Some(Closing { key, entry, .. }) = self.closing.remove(&id) else {
             return Vec::new();
         };
-        if !closing.entry.auto_cancel
-            && now_ms.saturating_sub(closing.entry.invoked_at) < TAP_GRACE_MS
-        {
+        if !entry.auto_cancel && now_ms.saturating_sub(entry.invoked_at) < TAP_GRACE_MS {
             return Vec::new();
         }
-        vec![Command::Send(BridgeEvent::Dismiss { key: closing.key })]
+        vec![Command::Send(BridgeEvent::Dismiss { key })]
     }
 
     fn close_untracked(&self, id: u32) -> Vec<Command> {
@@ -361,40 +322,9 @@ impl NotificationState {
     }
 }
 
-fn legacy_id(value: &Value) -> Option<u32> {
-    let number = value.as_f64()?;
-    if number.is_finite() && number.fract() == 0.0 && (1.0..=u32::MAX as f64).contains(&number) {
-        Some(number as u32)
-    } else {
-        None
-    }
-}
-
-fn decode_hex(value: &str) -> Option<Vec<u8>> {
-    if !value.len().is_multiple_of(2) {
-        return None;
-    }
-    value
-        .as_bytes()
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| {
-            let high = (pair[0] as char).to_digit(16)? as u8;
-            let low = (pair[1] as char).to_digit(16)? as u8;
-            Some((high << 4) | low)
-        })
-        .collect()
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        result.push(HEX[(byte >> 4) as usize] as char);
-        result.push(HEX[(byte & 0xf) as usize] as char);
-    }
-    result
+fn legacy_id(number: f64) -> Option<u32> {
+    let whole = number.fract() == 0.0 && (1.0..=f64::from(u32::MAX)).contains(&number);
+    whole.then_some(number as u32)
 }
 
 #[cfg(test)]
@@ -504,11 +434,11 @@ mod tests {
             })
         );
         assert_eq!(
-            BridgeEvent::Invoke {
+            serde_json::to_value(BridgeEvent::Invoke {
                 key: "key".into(),
                 action: "default".into()
-            }
-            .to_json(),
+            })
+            .unwrap(),
             json!({"t": "invoke", "key": "key", "action": "default"})
         );
         let reply = state.notification_replied(7, &("x".repeat(4095) + "😀more"));
@@ -521,7 +451,7 @@ mod tests {
             })]
         );
         assert_eq!(
-            BridgeEvent::Dismiss { key: "key".into() }.to_json(),
+            serde_json::to_value(BridgeEvent::Dismiss { key: "key".into() }).unwrap(),
             json!({"t": "dismiss", "key": "key"})
         );
         assert!(state.notification_replied(99, "text").is_empty());
@@ -553,12 +483,12 @@ mod tests {
             vec!["default", "inline-reply", "a2", "a3"]
         );
         assert_eq!(
-            BridgeEvent::Reply {
+            serde_json::to_value(BridgeEvent::Reply {
                 key: "key".into(),
                 action: "a1".into(),
                 text: "hello".into()
-            }
-            .to_json(),
+            })
+            .unwrap(),
             json!({"t": "reply", "key": "key", "action": "a1", "text": "hello"})
         );
     }
@@ -606,7 +536,7 @@ mod tests {
         );
 
         tracked(&mut state, "auto", 8, true);
-        state.action_invoked(8, "a1", 10_100);
+        let _ = state.action_invoked(8, "a1", 10_100);
         let commands = state.notification_closed(8, 2);
         let Command::ScheduleDismiss { token, .. } = commands[1] else {
             panic!("expected timer")
@@ -685,7 +615,7 @@ mod tests {
     fn tap_grace_uses_strict_three_second_boundary() {
         let mut state = NotificationState::default();
         tracked(&mut state, "key", 7, false);
-        state.action_invoked(7, "default", 10_000);
+        let _ = state.action_invoked(7, "default", 10_000);
         let commands = state.notification_closed(7, 2);
         let Command::ScheduleDismiss { token, .. } = commands[1] else {
             panic!("expected timer")
@@ -721,7 +651,7 @@ mod tests {
             "zero": {"id": 0}, "negative": {"id": -1}, "fraction": {"id": 2.5},
             "valid": {"id": 4, "digest": "invalid", "reply": "a1"}
         }));
-        assert_eq!(state.tracked_len(), 1);
+        assert_eq!(state.snapshot().as_object().unwrap().len(), 1);
         assert_eq!(state.snapshot()["valid"]["digest"], "");
         let commands = state.notification_closed(4, 2);
         let Command::ScheduleDismiss { token, .. } = commands[1] else {

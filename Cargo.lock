@@ -316,6 +316,7 @@ name = "deckard-core"
 version = "0.4.0"
 dependencies = [
  "base64",
+ "hex",
  "image",
  "regex",
  "rustix",
