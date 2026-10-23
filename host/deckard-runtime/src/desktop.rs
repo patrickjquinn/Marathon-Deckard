@@ -1,17 +1,21 @@
+//! Android launchers as desktop entries (upstream `tools/helpers/apps.py`),
+//! merged into any existing entry so user edits survive.
+
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::fs::{self, DirBuilder, File};
+use std::io::ErrorKind;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
-use tempfile::NamedTempFile;
-
+use deckard_host_tools::files;
 use deckard_launch::binder::AppInfo;
 
 use crate::{Result, invalid};
 
 const LAUNCHER: &str = "android.intent.category.LAUNCHER";
 const DECKARD_LAUNCH: &str = "/usr/libexec/deckard-launch";
+const ENTRY: &str = "Desktop Entry";
+const SETTINGS: &str = "Desktop Action app-settings";
 const SYSTEM_APPS: &[&str] = &[
     "com.android.calculator2",
     "com.android.camera2",
@@ -31,148 +35,109 @@ const SYSTEM_APPS: &[&str] = &[
 ];
 
 fn valid_package(package: &str) -> bool {
-    package.contains('.')
-        && package.split('.').all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        })
+    let part = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    };
+    package.contains('.') && package.split('.').all(part)
 }
 
-fn escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
-}
-
-struct DesktopFile {
-    lines: Vec<String>,
-}
+/// A desktop entry's lines, edited in place.
+struct DesktopFile(Vec<String>);
 
 impl DesktopFile {
-    fn parse(content: &str) -> Self {
-        Self {
-            lines: content.lines().map(str::to_owned).collect(),
-        }
+    /// The line range of `group`'s keys.
+    fn group(&self, group: &str) -> Option<(usize, usize)> {
+        let header = format!("[{group}]");
+        let start = self.0.iter().position(|line| line.trim() == header)? + 1;
+        let next = self.0[start..]
+            .iter()
+            .position(|line| line.starts_with('[') && line.ends_with(']'));
+        Some((start, next.map_or(self.0.len(), |index| start + index)))
     }
 
-    fn group_bounds(&self, group: &str) -> Option<(usize, usize)> {
-        let header = format!("[{group}]");
-        let start = self.lines.iter().position(|line| line.trim() == header)?;
-        let end = self.lines[start + 1..]
-            .iter()
-            .position(|line| line.starts_with('[') && line.ends_with(']'))
-            .map_or(self.lines.len(), |index| start + 1 + index);
-        Some((start + 1, end))
+    fn find(&self, group: &str, key: &str) -> Option<usize> {
+        let (start, end) = self.group(group)?;
+        (start..end).find(|&index| {
+            self.0[index]
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.starts_with('='))
+        })
     }
 
     fn get(&self, group: &str, key: &str) -> Option<&str> {
-        let (start, end) = self.group_bounds(group)?;
-        self.lines[start..end]
-            .iter()
-            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+        let index = self.find(group, key)?;
+        Some(&self.0[index][key.len() + 1..])
     }
 
     fn set(&mut self, group: &str, key: &str, value: &str) {
-        if let Some((start, end)) = self.group_bounds(group) {
-            if let Some(index) = (start..end).find(|&index| {
-                self.lines[index]
-                    .strip_prefix(key)
-                    .is_some_and(|rest| rest.starts_with('='))
-            }) {
-                self.lines[index] = format!("{key}={value}");
-            } else {
-                self.lines.insert(end, format!("{key}={value}"));
+        let line = format!("{key}={value}");
+        match (self.find(group, key), self.group(group)) {
+            (Some(index), _) => self.0[index] = line,
+            (None, Some((_, end))) => self.0.insert(end, line),
+            (None, None) => {
+                if !self.0.is_empty() {
+                    self.0.push(String::new());
+                }
+                self.0.push(format!("[{group}]"));
+                self.0.push(line);
             }
-        } else {
-            if !self.lines.is_empty() {
-                self.lines.push(String::new());
-            }
-            self.lines.push(format!("[{group}]"));
-            self.lines.push(format!("{key}={value}"));
         }
     }
 
-    fn prepend_list(&mut self, group: &str, key: &str, first: &str) {
-        let current = self.get(group, key).unwrap_or_default();
-        let mut values = vec![first.to_owned()];
+    /// Puts `first` at the head of the `;` list `key`.
+    fn prepend(&mut self, group: &str, key: &str, first: &str) {
+        let mut values = vec![first];
+        let current = self.get(group, key).unwrap_or_default().to_owned();
         values.extend(
             current
                 .split(';')
-                .filter(|value| !value.is_empty() && *value != first)
-                .map(str::to_owned),
+                .filter(|value| !value.is_empty() && *value != first),
         );
         self.set(group, key, &format!("{};", values.join(";")));
-    }
-
-    fn render(self) -> String {
-        let mut content = self.lines.join("\n");
-        content.push('\n');
-        content
     }
 }
 
 fn render_app(existing: &str, app: &AppInfo, icon_dir: &Path) -> String {
-    let mut desktop = DesktopFile::parse(existing);
-    desktop.set("Desktop Entry", "Type", "Application");
-    desktop.set("Desktop Entry", "Name", &escape(&app.name));
+    let package = &app.package;
+    let icon = |name: &str| {
+        icon_dir
+            .join(format!("{name}.png"))
+            .to_string_lossy()
+            .into_owned()
+    };
+    let name = app
+        .name
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    let mut desktop = DesktopFile(existing.lines().map(str::to_owned).collect());
+    desktop.set(ENTRY, "Type", "Application");
+    desktop.set(ENTRY, "Name", &name);
     desktop.set(
-        "Desktop Entry",
+        ENTRY,
         "Exec",
-        &format!("{DECKARD_LAUNCH} app launch {}", app.package),
+        &format!("{DECKARD_LAUNCH} app launch {package}"),
     );
-    desktop.set(
-        "Desktop Entry",
-        "Icon",
-        &icon_dir
-            .join(format!("{}.png", app.package))
-            .to_string_lossy(),
-    );
-    desktop.prepend_list("Desktop Entry", "Categories", "X-WayDroid-App");
-    desktop.set(
-        "Desktop Entry",
-        "X-Purism-FormFactor",
-        "Workstation;Mobile;",
-    );
-    desktop.prepend_list("Desktop Entry", "Actions", "app-settings");
-    if SYSTEM_APPS.contains(&app.package.as_str())
-        && desktop.get("Desktop Entry", "NoDisplay").is_none()
-    {
-        desktop.set("Desktop Entry", "NoDisplay", "true");
+    desktop.set(ENTRY, "Icon", &icon(package));
+    desktop.prepend(ENTRY, "Categories", "X-WayDroid-App");
+    desktop.set(ENTRY, "X-Purism-FormFactor", "Workstation;Mobile;");
+    desktop.prepend(ENTRY, "Actions", "app-settings");
+    if SYSTEM_APPS.contains(&package.as_str()) && desktop.get(ENTRY, "NoDisplay").is_none() {
+        desktop.set(ENTRY, "NoDisplay", "true");
     }
-    desktop.set("Desktop Action app-settings", "Name", "App Settings");
-    desktop.set(
-        "Desktop Action app-settings",
-        "Exec",
-        &format!(
-            "{DECKARD_LAUNCH} app intent android.settings.APPLICATION_DETAILS_SETTINGS package:{}",
-            app.package
-        ),
+    desktop.set(SETTINGS, "Name", "App Settings");
+    let settings = format!(
+        "{DECKARD_LAUNCH} app intent android.settings.APPLICATION_DETAILS_SETTINGS package:{package}"
     );
-    desktop.set(
-        "Desktop Action app-settings",
-        "Icon",
-        &icon_dir.join("com.android.settings.png").to_string_lossy(),
-    );
-    desktop.render()
-}
-
-fn atomic_write(path: &Path, content: &str) -> Result<()> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| invalid("desktop path has no parent"))?;
-    let mut temporary = NamedTempFile::new_in(directory)?;
-    temporary.write_all(content.as_bytes())?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o644))?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path)?;
-    File::open(directory)?.sync_all()?;
-    Ok(())
+    desktop.set(SETTINGS, "Exec", &settings);
+    desktop.set(SETTINGS, "Icon", &icon("com.android.settings"));
+    let mut content = desktop.0.join("\n");
+    content.push('\n');
+    content
 }
 
 fn is_launcher(app: &AppInfo) -> bool {
@@ -187,7 +152,7 @@ fn valid_app(app: &AppInfo) -> bool {
 
 fn applications_dir(data_home: &Path) -> Result<PathBuf> {
     let applications = data_home.join("applications");
-    fs::DirBuilder::new()
+    DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(&applications)?;
@@ -200,14 +165,10 @@ fn launcher_path(applications: &Path, package: &str) -> PathBuf {
 
 fn write_app(applications: &Path, data_home: &Path, app: &AppInfo) -> Result<()> {
     let path = launcher_path(applications, &app.package);
-    let existing = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error.into()),
-    };
+    let existing = files::read_optional(&path)?;
     let next = render_app(&existing, app, &data_home.join("waydroid/data/icons"));
     if next != existing {
-        atomic_write(&path, &next)?;
+        files::replace(&path, next.as_bytes(), 0o644)?;
     }
     Ok(())
 }
@@ -233,23 +194,22 @@ pub fn export(data_home: &Path, apps: &[AppInfo]) -> Result<usize> {
     }
     let applications = applications_dir(data_home)?;
     let mut visible = HashSet::new();
-    for app in apps {
-        if is_launcher(app) {
-            write_app(&applications, data_home, app)?;
-            visible.insert(app.package.as_str());
-        }
+    let launchers = apps.iter().filter(|app| is_launcher(app));
+    for app in launchers {
+        write_app(&applications, data_home, app)?;
+        visible.insert(app.package.as_str());
     }
     for entry in fs::read_dir(&applications)? {
         let entry = entry?;
         let name = entry.file_name();
-        let Some(package) = name
+        let package = name
             .to_str()
-            .and_then(|name| name.strip_prefix("waydroid."))
-            .and_then(|name| name.strip_suffix(".desktop"))
-        else {
-            continue;
-        };
-        if valid_package(package) && !visible.contains(package) && entry.file_type()?.is_file() {
+            .and_then(|name| name.strip_prefix("waydroid.")?.strip_suffix(".desktop"));
+        if let Some(package) = package
+            && valid_package(package)
+            && !visible.contains(package)
+            && entry.file_type()?.is_file()
+        {
             fs::remove_file(entry.path())?;
         }
     }
@@ -270,9 +230,8 @@ pub fn update(data_home: &Path, package: &str, app: Option<&AppInfo>) -> Result<
     match app.filter(|app| is_launcher(app)) {
         Some(app) => write_app(&applications, data_home, app)?,
         None => match fs::remove_file(launcher_path(&applications, package)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            result => result?,
         },
     }
     File::open(&applications)?.sync_all()?;

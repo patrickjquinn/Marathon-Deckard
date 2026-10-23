@@ -10,7 +10,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -18,43 +18,44 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use deckard_launch::binder::{self, BinderConfig, Platform};
-use nix::unistd::{User, getegid, geteuid};
+use deckard_launch::session::{ContainerManagerProxyBlocking, SESSION_NAME};
+use nix::unistd::User;
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
-use zbus::blocking::{Connection, Proxy};
+use zbus::blocking::Connection;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
-use zbus::interface;
 
-pub type Error = Box<dyn std::error::Error + Send + Sync>;
-pub type Result<T> = std::result::Result<T, Error>;
+pub use deckard_launch::Result;
 
-const CONTAINER_NAME: &str = "id.waydro.Container";
-const CONTAINER_PATH: &str = "/ContainerManager";
-const CONTAINER_INTERFACE: &str = "id.waydro.ContainerManager";
-const SESSION_NAME: &str = "id.waydro.Session";
 const SESSION_PATH: &str = "/SessionManager";
-const SESSION_INTERFACE: &str = "id.waydro.SessionManager";
 const CONTAINER_UNIT: &str = "deckard-container.service";
 const WAYDROID_CONFIG: &str = "/var/lib/waydroid/waydroid.cfg";
 const EVENT_QUEUE: usize = 64;
 
-#[derive(Clone)]
 struct SessionManager {
     stop: Arc<AtomicBool>,
 }
 
-#[interface(name = "id.waydro.SessionManager")]
+#[zbus::interface(name = "id.waydro.SessionManager")]
 impl SessionManager {
-    #[zbus(name = "Stop")]
     fn stop(&self) {
         self.stop.store(true, Ordering::Release);
     }
 }
 
-fn invalid(message: impl Into<String>) -> Error {
+#[zbus::proxy(
+    interface = "id.waydro.SessionManager",
+    default_service = "id.waydro.Session",
+    default_path = "/SessionManager"
+)]
+trait Session {
+    fn stop(&self) -> zbus::Result<()>;
+}
+
+fn invalid(message: impl Into<String>) -> deckard_launch::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into()).into()
 }
 
-fn unavailable(message: impl Into<String>) -> Error {
+fn unavailable(message: impl Into<String>) -> deckard_launch::Error {
     io::Error::new(io::ErrorKind::NotConnected, message.into()).into()
 }
 
@@ -63,12 +64,7 @@ fn env_nonempty(key: &str) -> Option<String> {
 }
 
 fn wayland_socket(runtime_dir: &Path, display: &str) -> PathBuf {
-    let path = Path::new(display);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        runtime_dir.join(path)
-    }
+    runtime_dir.join(display)
 }
 
 fn socket_identity(path: &Path) -> io::Result<(u64, u64)> {
@@ -86,18 +82,17 @@ fn density(host_property: Option<&str>, grid_unit_px: Option<&str>) -> Result<St
     if let Some(value) = host_property.filter(|value| !value.is_empty()) {
         return Ok(value.to_owned());
     }
-    match grid_unit_px {
-        Some(value) => {
-            let pixels: u32 = value.parse()?;
-            Ok(pixels
-                .checked_mul(20)
-                .ok_or_else(|| invalid("GRID_UNIT_PX overflows LCD density"))?
-                .to_string())
-        }
-        None => Ok("0".to_owned()),
-    }
+    let Some(value) = grid_unit_px else {
+        return Ok("0".to_owned());
+    };
+    let pixels: u32 = value.parse()?;
+    let density = pixels
+        .checked_mul(20)
+        .ok_or_else(|| invalid("GRID_UNIT_PX overflows LCD density"))?;
+    Ok(density.to_string())
 }
 
+/// What the session tells the container manager about the user.
 pub struct SessionSpec<'a> {
     pub runtime_dir: &'a Path,
     pub display: &'a str,
@@ -111,6 +106,11 @@ pub struct SessionSpec<'a> {
     pub lcd_density: &'a str,
 }
 
+/// The `Start` payload, upstream's fourteen session fields.
+///
+/// # Errors
+/// The Wayland display is unset or not a socket, or the data directory
+/// cannot be created.
 pub fn session_payload(spec: &SessionSpec<'_>) -> Result<HashMap<String, String>> {
     if spec.display.is_empty() || spec.display == "None" {
         return Err(invalid("WAYLAND_DISPLAY is not set"));
@@ -120,43 +120,35 @@ pub fn session_payload(spec: &SessionSpec<'_>) -> Result<HashMap<String, String>
         .metadata()
         .is_ok_and(|metadata| metadata.file_type().is_socket())
     {
+        let socket = socket.display();
         return Err(unavailable(format!(
-            "Wayland socket {} is missing or is not a socket",
-            socket.display()
+            "Wayland socket {socket} is missing or is not a socket"
         )));
     }
     let user_state = spec.data_home.join("waydroid");
     let data = user_state.join("data");
     fs::create_dir_all(&data)?;
+    let path = |path: &Path| path.to_string_lossy().into_owned();
     let fields = [
         ("user_name", spec.user_name.to_owned()),
         ("user_id", spec.uid.to_string()),
         ("group_id", spec.gid.to_string()),
-        ("host_user", spec.home.to_string_lossy().into_owned()),
+        ("host_user", path(spec.home)),
         ("pid", spec.pid.to_string()),
-        (
-            "xdg_data_home",
-            spec.data_home.to_string_lossy().into_owned(),
-        ),
-        (
-            "xdg_runtime_dir",
-            spec.runtime_dir.to_string_lossy().into_owned(),
-        ),
+        ("xdg_data_home", path(spec.data_home)),
+        ("xdg_runtime_dir", path(spec.runtime_dir)),
         ("wayland_display", spec.display.to_owned()),
-        (
-            "pulse_runtime_path",
-            spec.pulse_runtime_path.to_string_lossy().into_owned(),
-        ),
+        ("pulse_runtime_path", path(spec.pulse_runtime_path)),
         ("state", "STOPPED".to_owned()),
         ("lcd_density", spec.lcd_density.to_owned()),
         ("background_start", "true".to_owned()),
-        (
-            "waydroid_user_state",
-            user_state.to_string_lossy().into_owned(),
-        ),
-        ("waydroid_data", data.to_string_lossy().into_owned()),
+        ("waydroid_user_state", path(&user_state)),
+        ("waydroid_data", path(&data)),
     ];
-    Ok(fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+    Ok(fields
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect())
 }
 
 fn host_density() -> Result<String> {
@@ -171,59 +163,38 @@ fn host_density() -> Result<String> {
     density(property.as_deref(), env_nonempty("GRID_UNIT_PX").as_deref())
 }
 
-fn make_payload() -> Result<(HashMap<String, String>, PathBuf)> {
-    let uid = geteuid().as_raw();
-    if uid == 0 {
+fn make_payload() -> Result<HashMap<String, String>> {
+    let uid = nix::unistd::geteuid();
+    if uid.is_root() {
         return Err(invalid(
             "session start must run as the graphical user, not root",
         ));
     }
-    let user =
-        User::from_uid(geteuid())?.ok_or_else(|| invalid("current user has no passwd entry"))?;
+    let user = User::from_uid(uid)?.ok_or_else(|| invalid("current user has no passwd entry"))?;
     let runtime_dir = PathBuf::from(
         env_nonempty("XDG_RUNTIME_DIR").ok_or_else(|| invalid("XDG_RUNTIME_DIR is not set"))?,
     );
     let display = env_nonempty("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".to_owned());
-    let home = user.dir;
-    let data_home = env_nonempty("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/share"));
-    let pulse_runtime_path = env_nonempty("PULSE_RUNTIME_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| runtime_dir.join("pulse"));
-    let lcd_density = host_density()?;
-    let payload = session_payload(&SessionSpec {
+    let data_home =
+        env_nonempty("XDG_DATA_HOME").map_or_else(|| user.dir.join(".local/share"), PathBuf::from);
+    let pulse =
+        env_nonempty("PULSE_RUNTIME_PATH").map_or_else(|| runtime_dir.join("pulse"), PathBuf::from);
+    session_payload(&SessionSpec {
         runtime_dir: &runtime_dir,
         display: &display,
         data_home: &data_home,
-        home: &home,
+        home: &user.dir,
         user_name: &user.name,
-        uid,
-        gid: getegid().as_raw(),
+        uid: uid.as_raw(),
+        gid: nix::unistd::getegid().as_raw(),
         pid: std::process::id(),
-        pulse_runtime_path: &pulse_runtime_path,
-        lcd_density: &lcd_density,
-    })?;
-    Ok((payload, runtime_dir.join("marathon-waydroid-requested")))
-}
-
-fn container_proxy(connection: &Connection) -> Result<Proxy<'_>> {
-    Ok(Proxy::new(
-        connection,
-        CONTAINER_NAME,
-        CONTAINER_PATH,
-        CONTAINER_INTERFACE,
-    )?)
-}
-
-fn stop_container(connection: &Connection, quit_session: bool) -> Result<()> {
-    container_proxy(connection)?.call::<_, _, ()>("Stop", &(quit_session,))?;
-    Ok(())
+        pulse_runtime_path: &pulse,
+        lcd_density: &host_density()?,
+    })
 }
 
 fn start_container(connection: &Connection, payload: &HashMap<String, String>) -> Result<()> {
-    container_proxy(connection)?.call::<_, _, ()>("Start", &(payload,))?;
-    Ok(())
+    Ok(ContainerManagerProxyBlocking::new(connection)?.start(payload.clone())?)
 }
 
 fn start_system_container() -> Result<()> {
@@ -243,9 +214,8 @@ fn android_ready(boot: &str, credential_encrypted: &str) -> bool {
 }
 
 /// Waits for Android to boot and unlock user 0, then exports its launchers.
-fn export_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
-    let config = BinderConfig::from_file(Path::new(WAYDROID_CONFIG))?;
-    let platform = Platform::connect(&config)?;
+fn export_installed_apps(config: &BinderConfig, data_home: &Path, stop: &AtomicBool) -> Result<()> {
+    let platform = Platform::connect(config)?;
     let deadline = Instant::now() + Duration::from_secs(120);
     while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
         let boot = platform.getprop("sys.boot_completed", "");
@@ -270,16 +240,16 @@ fn export_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
 fn apply(data_home: &Path, config: &BinderConfig, event: Option<monitor::Event>) -> Result<()> {
     let platform = Platform::connect(config)?;
     match event {
-        Some(monitor::Event::Package { package, removed }) => {
-            let app = if removed {
-                None
-            } else {
-                platform.app(&package)?
-            };
-            desktop::update(data_home, &package, app.as_ref())
-        }
+        Some(monitor::Event::Package {
+            package,
+            removed: true,
+        }) => desktop::update(data_home, &package, None),
+        Some(monitor::Event::Package {
+            package,
+            removed: false,
+        }) => desktop::update(data_home, &package, platform.app(&package)?.as_ref()),
         Some(monitor::Event::UserUnlocked) | None => {
-            desktop::export(data_home, &platform.apps()?).map(|_| ())
+            desktop::export(data_home, &platform.apps()?).map(drop)
         }
     }
 }
@@ -302,7 +272,7 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
         }
     });
     // A later userUnlocked callback exports the catalog.
-    if let Err(error) = export_installed_apps(data_home, stop) {
+    if let Err(error) = export_installed_apps(&config, data_home, stop) {
         eprintln!("deckard-runtime: Android desktop export failed: {error}");
     }
     timezone::propagate(&config, stop);
@@ -323,25 +293,17 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
     Ok(())
 }
 
-pub fn export_current_user_apps() -> Result<()> {
-    if geteuid().as_raw() == 0 {
-        return Err(invalid("desktop export must run as the graphical user"));
-    }
-    let user =
-        User::from_uid(geteuid())?.ok_or_else(|| invalid("current user has no passwd entry"))?;
-    let data_home = env_nonempty("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user.dir.join(".local/share"));
-    export_installed_apps(&data_home, &AtomicBool::new(false))
-}
-
+/// Owns `id.waydro.Session`, starts the container for this user and runs
+/// until stopped, told to leave (SIGUSR1) or the compositor's socket changes.
+///
+/// # Errors
+/// The session cannot start, or the compositor restarted.
 pub fn session_start() -> Result<()> {
-    let (payload, marker) = make_payload()?;
-    let socket = wayland_socket(
-        Path::new(&payload["xdg_runtime_dir"]),
-        &payload["wayland_display"],
-    );
+    let payload = make_payload()?;
+    let runtime_dir = Path::new(&payload["xdg_runtime_dir"]);
+    let socket = wayland_socket(runtime_dir, &payload["wayland_display"]);
     let initial_socket = socket_identity(&socket)?;
+    let marker = runtime_dir.join("marathon-waydroid-requested");
     let stop = Arc::new(AtomicBool::new(false));
     let leave_container = Arc::new(AtomicBool::new(false));
     for signal in [SIGHUP, SIGINT, SIGTERM] {
@@ -349,12 +311,10 @@ pub fn session_start() -> Result<()> {
     }
     signal_hook::flag::register(SIGUSR1, Arc::clone(&leave_container))?;
     let session_bus = Connection::session()?;
-    session_bus.object_server().at(
-        SESSION_PATH,
-        SessionManager {
-            stop: Arc::clone(&stop),
-        },
-    )?;
+    let manager = SessionManager {
+        stop: Arc::clone(&stop),
+    };
+    session_bus.object_server().at(SESSION_PATH, manager)?;
     let name_reply =
         session_bus.request_name_with_flags(SESSION_NAME, RequestNameFlags::DoNotQueue.into())?;
     if name_reply != RequestNameReply::PrimaryOwner {
@@ -392,7 +352,7 @@ pub fn session_start() -> Result<()> {
         thread::sleep(Duration::from_millis(100));
     }
     if !leave_container.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
-        stop_container(&system_bus, false)?;
+        ContainerManagerProxyBlocking::new(&system_bus)?.stop(false)?;
     }
     if compositor_changed {
         return Err(unavailable(
@@ -402,100 +362,16 @@ pub fn session_start() -> Result<()> {
     Ok(())
 }
 
+/// Asks the running session to stop, else stops the container directly.
+///
+/// # Errors
+/// Neither the session nor the container manager answers.
 pub fn session_stop() -> Result<()> {
-    if let Ok(session_bus) = Connection::session() {
-        let session = Proxy::new(&session_bus, SESSION_NAME, SESSION_PATH, SESSION_INTERFACE);
-        if session
-            .and_then(|proxy| proxy.call::<_, _, ()>("Stop", &()))
-            .is_ok()
-        {
-            return Ok(());
-        }
+    let session = Connection::session().and_then(|bus| SessionProxyBlocking::new(&bus)?.stop());
+    if session.is_ok() {
+        return Ok(());
     }
-    stop_container(&Connection::system()?, true)
-}
-
-fn valid_property_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= 128
-        && key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-}
-
-fn property_command(key: &str, value: Option<&str>) -> Result<Command> {
-    if !valid_property_key(key) {
-        return Err(invalid("invalid Android property key"));
-    }
-    if let Some(value) = value
-        && (value.len() > 91 || value.contains(['\n', '\r', '\0']))
-    {
-        return Err(invalid("invalid Android property value"));
-    }
-    let mut command = Command::new("timeout");
-    command.args([
-        "20",
-        "lxc-attach",
-        "-P",
-        "/var/lib/waydroid/lxc",
-        "-n",
-        "waydroid",
-        "--clear-env",
-        "--",
-        if value.is_some() {
-            "/system/bin/setprop"
-        } else {
-            "/system/bin/getprop"
-        },
-        key,
-    ]);
-    if let Some(value) = value {
-        command.arg(value);
-    }
-    Ok(command)
-}
-
-fn run_property(key: &str, value: Option<&str>) -> Result<Output> {
-    let mut command = property_command(key, value)?;
-    if geteuid().as_raw() != 0 {
-        return Err(unavailable(
-            "Android property access requires root; unprivileged Binder adapter is not implemented",
-        ));
-    }
-    let bus = Connection::system()?;
-    let container = container_proxy(&bus)?;
-    let session: HashMap<String, String> = container.call("GetSession", &())?;
-    if session.is_empty() {
-        return Err(unavailable("Android session is stopped"));
-    }
-    let frozen = session.get("state").is_some_and(|state| state == "FROZEN");
-    if frozen {
-        container.call::<_, _, ()>("Unfreeze", &())?;
-    }
-    let result = command.output();
-    if frozen {
-        container.call::<_, _, ()>("Freeze", &())?;
-    }
-    let output = result?;
-    if !output.status.success() {
-        return Err(unavailable(format!(
-            "Android property command failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(output)
-}
-
-pub fn property_get(key: &str) -> Result<String> {
-    Ok(String::from_utf8(run_property(key, None)?.stdout)?
-        .trim_end()
-        .to_owned())
-}
-
-pub fn property_set(key: &str, value: &str) -> Result<()> {
-    run_property(key, Some(value))?;
-    Ok(())
+    Ok(ContainerManagerProxyBlocking::new(&Connection::system()?)?.stop(true)?)
 }
 
 #[cfg(test)]
@@ -505,7 +381,7 @@ mod tests {
 
     struct MockContainer(Arc<Mutex<Option<HashMap<String, String>>>>);
 
-    #[interface(name = "id.waydro.ContainerManager")]
+    #[zbus::interface(name = "id.waydro.ContainerManager")]
     impl MockContainer {
         #[zbus(name = "Start")]
         fn start(&self, payload: HashMap<String, String>) -> zbus::fdo::Result<()> {
@@ -627,21 +503,6 @@ mod tests {
     }
 
     #[test]
-    fn property_argv_is_not_shell_interpreted() -> Result<()> {
-        let command = property_command("persist.sys.timezone", Some("Europe/Dublin"))?;
-        let args: Vec<_> = command.get_args().collect();
-        assert_eq!(
-            args.last().map(|arg| arg.to_string_lossy().to_string()),
-            Some("Europe/Dublin".to_owned())
-        );
-        assert_eq!(command.get_program(), "timeout");
-        assert_eq!(args[1], "lxc-attach");
-        assert!(property_command("a;touch /tmp/x", None).is_err());
-        assert!(property_command("a.b", Some("x\ny")).is_err());
-        Ok(())
-    }
-
-    #[test]
     fn session_stop_dbus_contract() -> Result<()> {
         if env::var_os("DECKARD_RUNTIME_PRIVATE_BUS").is_none() {
             return Ok(());
@@ -671,9 +532,9 @@ mod tests {
         let owner = Connection::session()?;
         owner
             .object_server()
-            .at(CONTAINER_PATH, MockContainer(Arc::clone(&captured)))?;
-        let reply =
-            owner.request_name_with_flags(CONTAINER_NAME, RequestNameFlags::DoNotQueue.into())?;
+            .at("/ContainerManager", MockContainer(Arc::clone(&captured)))?;
+        let reply = owner
+            .request_name_with_flags("id.waydro.Container", RequestNameFlags::DoNotQueue.into())?;
         assert_eq!(reply, RequestNameReply::PrimaryOwner);
         let mut payload = HashMap::new();
         payload.insert("user_id".to_owned(), "1000".to_owned());
