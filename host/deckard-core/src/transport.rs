@@ -120,7 +120,6 @@ impl BridgeListener {
             ));
         }
 
-        stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
         let active = stream.try_clone()?;
         self.generation = self
             .generation
@@ -199,13 +198,42 @@ impl BridgeSession {
         }
     }
 
-    /// One bounded frame per call; a stalled peer closes after the write
-    /// timeout so a partially written frame cannot be reused.
+    /// One bounded frame per call. The deadline applies to the whole frame,
+    /// including peers that consume a few bytes at a time.
     pub fn send_message(&mut self, message: &Map<String, Value>) -> io::Result<()> {
         let frame = framing::encode(message).map_err(protocol_error)?;
-        if let Err(error) = self.stream.write_all(&frame) {
-            self.close();
-            return Err(error);
+        let deadline = Instant::now() + WRITE_TIMEOUT;
+        let mut written = 0;
+        while written < frame.len() {
+            let Some(remaining) = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+            else {
+                self.close();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "bridge write timed out",
+                ));
+            };
+            if let Err(error) = self.stream.set_write_timeout(Some(remaining)) {
+                self.close();
+                return Err(error);
+            }
+            match self.stream.write(&frame[written..]) {
+                Ok(0) => {
+                    self.close();
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "bridge peer closed",
+                    ));
+                }
+                Ok(count) => written += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    self.close();
+                    return Err(error);
+                }
+            }
         }
         Ok(())
     }
