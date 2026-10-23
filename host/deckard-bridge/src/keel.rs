@@ -65,6 +65,10 @@ pub enum Error {
     NotAvailable(String),
     #[zbus(name = "shipwright.Keel.Actions.Error.Failed")]
     Failed(String),
+    #[zbus(name = "shipwright.Keel.Actions.Error.Timeout")]
+    Timeout(String),
+    #[zbus(name = "shipwright.Keel.Actions.Error.Cancelled")]
+    Cancelled(String),
 }
 
 impl Error {
@@ -74,6 +78,8 @@ impl Error {
             "UnknownAction" => Self::UnknownAction(message),
             "InvalidArguments" => Self::InvalidArguments(message),
             "NotAvailable" => Self::NotAvailable(message),
+            "Timeout" => Self::Timeout(message),
+            "Cancelled" => Self::Cancelled(message),
             _ => Self::Failed(message),
         }
     }
