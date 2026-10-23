@@ -317,7 +317,7 @@ highest priority, above DeckardPalette). Lines that don't match
 Marathon's keyboard in Android apps. DeckardIme (`image/apps/DeckardIme`,
 package `org.marathonos.deckard.ime`, `/system/app` in the overlay) is
 Android's only input method; it draws nothing. deckard-bridge's IME channel
-(`host/deckard-bridge/src/ime.rs`, `host/deckard-ime`) relays between it and the shell's
+(`host/deckard-bridge/src/ime.rs`) relays between it and the shell's
 `org.marathonos.Shell.TextInput1`.
 
 Transport: the same framing, limits and `SO_PEERCRED` check as the bridge, on

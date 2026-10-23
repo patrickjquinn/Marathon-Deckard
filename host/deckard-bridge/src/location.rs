@@ -12,10 +12,10 @@ use async_channel::{Receiver, Sender};
 use async_io::Timer;
 use futures_lite::{StreamExt, future};
 use serde_json::{Map, Value, json};
+use zbus::MessageStream;
 use zbus::fdo::DBusProxy;
 use zbus::message::Message;
 use zbus::zvariant::{DeserializeDict, OwnedObjectPath, Type, Value as Variant};
-use zbus::{MatchRule, MessageStream};
 
 use crate::Outbound;
 
@@ -55,11 +55,9 @@ pub fn message(fix: &Fix) -> Option<Map<String, Value>> {
     let acc = within(fix.accuracy, (Excluded(0.0), Excluded(f64::INFINITY)))?;
     let (seconds, micros) = fix.timestamp?;
     let time = seconds.saturating_mul(1000).saturating_add(micros / 1000);
-    let Value::Object(mut out) = json!({
+    let mut out = crate::object(json!({
         "t": "location", "lat": lat, "lon": lon, "acc": acc.min(1e7), "time": time,
-    }) else {
-        return None;
-    };
+    }));
     // GeoClue's "unknown" values: -DBL_MAX altitude, -1 speed and heading.
     let optional = [
         ("alt", within(fix.altitude, (Excluded(-1e5), Excluded(1e5)))),
@@ -185,13 +183,8 @@ async fn create(bus: &zbus::Connection) -> zbus::Result<Client> {
     )
     .await?;
     let path: OwnedObjectPath = reply.body().deserialize()?;
-    let rule = MatchRule::builder()
-        .msg_type(zbus::message::Type::Signal)
-        .sender(GEOCLUE)?
-        .path(path.clone())?
-        .interface(CLIENT)?
-        .member("LocationUpdated")?
-        .build();
+    let rule = crate::signals(GEOCLUE, path.as_str(), CLIENT)?;
+    let rule = rule.member("LocationUpdated")?.build();
     let updates = MessageStream::for_match_rule(rule, bus, Some(16)).await?;
     set(bus, &path, "DesktopId", DESKTOP_ID.into()).await;
     set(bus, &path, "RequestedAccuracyLevel", ACCURACY_EXACT.into()).await;

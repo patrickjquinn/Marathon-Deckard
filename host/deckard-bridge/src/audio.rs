@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread;
 
-use serde_json::{Map, Value};
+use deckard_core::runtime_state::SHELL_BUS_NAME;
+use serde_json::{Map, Value, json};
 use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::zvariant::OwnedValue;
-use zbus::{MatchRule, Message, message};
+use zbus::{MatchRule, Message};
 
 use crate::app_channel::ChannelHandle;
 
-const SHELL: &str = "org.marathonos.Shell";
 const SETTINGS_PATH: &str = "/org/marathonos/Shell/Settings";
 const SETTINGS_INTERFACE: &str = "org.marathonos.Shell.Settings1";
 
@@ -46,11 +46,7 @@ impl AudioState {
     /// The `audio` message for DeckardBridge.
     #[must_use]
     pub fn message(&self) -> Map<String, Value> {
-        Map::from_iter([
-            ("t".to_owned(), Value::from("audio")),
-            ("quiet".to_owned(), Value::from(self.quiet)),
-            ("alarm".to_owned(), Value::from(self.alarm)),
-        ])
+        crate::object(json!({"t": "audio", "quiet": self.quiet, "alarm": self.alarm}))
     }
 }
 
@@ -75,28 +71,16 @@ impl AudioWake {
 pub fn spawn(bus: Connection, channel: ChannelHandle) -> zbus::Result<AudioWake> {
     let (sender, wakes) = mpsc::sync_channel(1);
     let wake = AudioWake(sender);
+    let audio = crate::signals(
+        SHELL_BUS_NAME,
+        "/org/marathonos/Shell/Audio",
+        "org.marathonos.Shell.Audio1",
+    );
+    let settings = crate::signals(SHELL_BUS_NAME, SETTINGS_PATH, SETTINGS_INTERFACE)?;
     let rules: [(MatchRule<'static>, Relevant); 3] = [
-        (
-            signal(
-                "/org/marathonos/Shell/Audio",
-                "org.marathonos.Shell.Audio1",
-                "StateChanged",
-            )?,
-            |_| true,
-        ),
-        (
-            signal(SETTINGS_PATH, SETTINGS_INTERFACE, "PropertyChanged")?,
-            setting_changed,
-        ),
-        (
-            MatchRule::builder()
-                .msg_type(message::Type::Signal)
-                .sender("org.freedesktop.DBus")?
-                .member("NameOwnerChanged")?
-                .add_arg(SHELL)?
-                .build(),
-            shell_appeared,
-        ),
+        (audio?.member("StateChanged")?.build(), |_| true),
+        (settings.member("PropertyChanged")?.build(), setting_changed),
+        (crate::owner_changes(SHELL_BUS_NAME)?, crate::gained_owner),
     ];
     for (rule, relevant) in rules {
         let messages = MessageIterator::for_match_rule(rule, &bus, Some(16))?;
@@ -115,20 +99,6 @@ pub fn spawn(bus: Connection, channel: ChannelHandle) -> zbus::Result<AudioWake>
     Ok(wake)
 }
 
-fn signal(
-    path: &'static str,
-    interface: &'static str,
-    member: &'static str,
-) -> zbus::Result<MatchRule<'static>> {
-    Ok(MatchRule::builder()
-        .msg_type(message::Type::Signal)
-        .sender(SHELL)?
-        .path(path)?
-        .interface(interface)?
-        .member(member)?
-        .build())
-}
-
 fn setting_changed(message: &Message) -> bool {
     message
         .body()
@@ -138,15 +108,8 @@ fn setting_changed(message: &Message) -> bool {
         })
 }
 
-fn shell_appeared(message: &Message) -> bool {
-    message
-        .body()
-        .deserialize::<(String, String, String)>()
-        .is_ok_and(|(_, _, owner)| !owner.is_empty())
-}
-
 fn read_shell(bus: &Connection) -> zbus::Result<AudioState> {
-    let proxy = Proxy::new(bus, SHELL, SETTINGS_PATH, SETTINGS_INTERFACE)?;
+    let proxy = Proxy::new(bus, SHELL_BUS_NAME, SETTINGS_PATH, SETTINGS_INTERFACE)?;
     let state: HashMap<String, OwnedValue> = proxy.call("GetState", &())?;
     Ok(AudioState::from_shell(&state))
 }

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use deckard_bridge::reclaim::Reclaimer;
@@ -20,9 +20,8 @@ fn asks_when_the_container_goes_over_budget() -> TestResult {
     let dir = tempfile::tempdir()?;
     events(dir.path(), 5, 0)?;
     let (sent, requests) = mpsc::channel::<Map<String, Value>>();
-    let reclaimer = Reclaimer::new(dir.path().into(), dir.path().join("none"), move |message| {
-        sent.send(message).is_ok()
-    });
+    let send = move |message| sent.send(message).is_ok();
+    let reclaimer = Reclaimer::new(dir.path().into(), dir.path().join("none"), Arc::new(send));
 
     events(dir.path(), 6, 0)?;
     assert!(requests.recv_timeout(Duration::from_millis(200)).is_err());

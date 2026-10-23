@@ -9,6 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use deckard_core::ids::PackageName;
+use deckard_core::sync;
 use deckard_core::transport::{self, BridgeListener, BridgeSession};
 use serde_json::{Map, Value};
 
@@ -19,6 +20,7 @@ const OUTBOUND_CAPACITY: usize = 256;
 /// peer is disconnected as a flood.
 pub const INBOUND_CAPACITY: usize = transport::BURST as usize;
 
+/// What happens on the socket, by connection generation.
 #[derive(Debug)]
 pub enum ChannelEvent {
     Connected(u64),
@@ -32,91 +34,96 @@ struct Active {
     stop: Arc<AtomicBool>,
 }
 
+type Current = Arc<Mutex<Option<Active>>>;
+
+/// Sends to the connected peer; cheap to clone.
 #[derive(Clone)]
 pub struct ChannelHandle {
-    active: Arc<Mutex<Option<Active>>>,
+    active: Current,
 }
 
 impl ChannelHandle {
+    /// The connected peer's generation.
+    #[must_use]
     pub fn generation(&self) -> Option<u64> {
-        self.active
-            .lock()
-            .ok()?
+        sync::lock(&self.active)
             .as_ref()
             .map(|active| active.generation)
     }
 
-    pub fn is_current(&self, generation: u64) -> bool {
-        self.generation() == Some(generation)
-    }
-
+    /// Queues `message` for the connected peer.
+    ///
+    /// # Errors
+    /// As [`Self::send_to`], or `NotConnected` when no peer is connected.
     pub fn send(&self, message: Map<String, Value>) -> io::Result<()> {
-        let generation = self.generation().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "Android bridge is offline")
-        })?;
-        self.send_to(generation, message)
+        let offline = || io::Error::new(io::ErrorKind::NotConnected, "Android bridge is offline");
+        self.send_to(self.generation().ok_or_else(offline)?, message)
     }
 
-    /// Rejects late replies intended for a replaced Android process.
+    /// Queues `message` for peer `generation`, so a late reply never reaches
+    /// a replaced Android process. A peer that lets its queue fill is
+    /// disconnected.
+    ///
+    /// # Errors
+    /// `NotConnected` when that peer is gone, `WouldBlock` when its queue
+    /// is full.
     pub fn send_to(&self, generation: u64, message: Map<String, Value>) -> io::Result<()> {
-        let guard = self
-            .active
-            .lock()
-            .map_err(|_| io::Error::other("Android bridge lock poisoned"))?;
+        let guard = sync::lock(&self.active);
         let active = guard
             .as_ref()
-            .filter(|active| active.generation == generation)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "Android peer replaced"))?;
+            .filter(|active| active.generation == generation);
+        let gone = |text| io::Error::new(io::ErrorKind::NotConnected, text);
+        let active = active.ok_or_else(|| gone("Android peer replaced"))?;
         match active.outbound.try_send(message) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
                 active.stop.store(true, Ordering::Release);
-                Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "Android peer is not draining output",
-                ))
+                let text = "Android peer is not draining output";
+                Err(io::Error::new(io::ErrorKind::WouldBlock, text))
             }
-            Err(TrySendError::Disconnected(_)) => Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "Android peer disconnected",
-            )),
+            Err(TrySendError::Disconnected(_)) => Err(gone("Android peer disconnected")),
         }
     }
 }
 
+/// The listening socket for one Android package.
 pub struct AppChannel {
     listener: BridgeListener,
     package: PackageName,
-    active: Arc<Mutex<Option<Active>>>,
+    active: Current,
     events: SyncSender<ChannelEvent>,
 }
 
 impl AppChannel {
+    /// Binds `socket_path` for the uid `packages_list` gives `package`.
+    ///
+    /// # Errors
+    /// The socket could not be bound.
     pub fn bind(
         socket_path: impl AsRef<Path>,
         packages_list: impl AsRef<Path>,
         package: PackageName,
     ) -> io::Result<(Self, ChannelHandle, Receiver<ChannelEvent>)> {
         let listener = BridgeListener::bind(socket_path, packages_list, package.clone())?;
-        let active = Arc::new(Mutex::new(None));
+        let active = Current::default();
         let (events, receiver) = mpsc::sync_channel(INBOUND_CAPACITY);
         let handle = ChannelHandle {
             active: Arc::clone(&active),
         };
-        Ok((
-            Self {
-                listener,
-                package,
-                active,
-                events,
-            },
-            handle,
-            receiver,
-        ))
+        let channel = Self {
+            listener,
+            package,
+            active,
+            events,
+        };
+        Ok((channel, handle, receiver))
     }
 
     /// Runs on a dedicated accept thread. Bad peers are rejected without
     /// displacing the current session, as in the C++ bridge.
+    ///
+    /// # Errors
+    /// `BrokenPipe` once the event receiver is gone.
     pub fn run(mut self) -> io::Result<()> {
         loop {
             let session = match self.listener.accept() {
@@ -130,25 +137,22 @@ impl AppChannel {
             eprintln!("deckard-bridge: {} connected", self.package.as_str());
             let (outbound, receiver) = mpsc::sync_channel(OUTBOUND_CAPACITY);
             let stop = Arc::new(AtomicBool::new(false));
-            {
-                let mut guard = self
-                    .active
-                    .lock()
-                    .map_err(|_| io::Error::other("Android bridge lock poisoned"))?;
-                if let Some(previous) = guard.replace(Active {
-                    generation,
-                    outbound,
-                    stop: Arc::clone(&stop),
-                }) {
-                    previous.stop.store(true, Ordering::Release);
-                }
+            let next = Active {
+                generation,
+                outbound,
+                stop: Arc::clone(&stop),
+            };
+            let previous = sync::lock(&self.active).replace(next);
+            if let Some(previous) = previous {
+                previous.stop.store(true, Ordering::Release);
             }
+            let closed = |_| io::Error::new(io::ErrorKind::BrokenPipe, "channel events closed");
             self.events
                 .send(ChannelEvent::Connected(generation))
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "channel events closed"))?;
+                .map_err(closed)?;
             let events = self.events.clone();
             let active = Arc::clone(&self.active);
-            thread::spawn(move || serve(session, receiver, events, active, stop));
+            thread::spawn(move || serve(session, receiver, &events, &active, &stop));
         }
     }
 }
@@ -156,16 +160,14 @@ impl AppChannel {
 fn serve(
     mut session: BridgeSession,
     outbound: Receiver<Map<String, Value>>,
-    events: SyncSender<ChannelEvent>,
-    active: Arc<Mutex<Option<Active>>>,
-    stop: Arc<AtomicBool>,
+    events: &SyncSender<ChannelEvent>,
+    active: &Mutex<Option<Active>>,
+    stop: &AtomicBool,
 ) {
     let generation = session.generation();
     let mut dropped = 0_u32;
-    let started = session
-        .set_read_timeout(Some(READ_POLL))
-        .and_then(|()| session.writer());
-    if let Ok(mut writer) = started {
+    let started = session.set_read_timeout(Some(READ_POLL));
+    if let Ok(mut writer) = started.and_then(|()| session.writer()) {
         thread::spawn(move || {
             while let Ok(message) = outbound.recv() {
                 if writer.send_message(&message).is_err() {
@@ -174,40 +176,39 @@ fn serve(
             }
             writer.close();
         });
-        loop {
-            if stop.load(Ordering::Acquire) {
-                break;
-            }
-            match session.read_message() {
-                Ok(Some(message)) => {
-                    match events.try_send(ChannelEvent::Message(generation, message)) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(_)) => {
-                            dropped += 1;
-                            if dropped > transport::MAX_DROPPED {
-                                eprintln!("deckard-bridge: Android peer floods a stalled consumer");
-                                break;
-                            }
-                        }
-                        Err(TrySendError::Disconnected(_)) => break,
-                    }
-                }
-                Ok(None) => break,
+        while !stop.load(Ordering::Acquire) {
+            let message = match session.read_message() {
+                Ok(Some(message)) => message,
                 Err(error)
                     if matches!(
                         error.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) => {}
-                Err(_) => break,
+                    ) =>
+                {
+                    continue;
+                }
+                Ok(None) | Err(_) => break,
+            };
+            match events.try_send(ChannelEvent::Message(generation, message)) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    dropped += 1;
+                    if dropped > transport::MAX_DROPPED {
+                        eprintln!("deckard-bridge: Android peer floods a stalled consumer");
+                        break;
+                    }
+                }
+                Err(TrySendError::Disconnected(_)) => break,
             }
         }
     }
-    if let Ok(mut guard) = active.lock()
-        && guard
-            .as_ref()
-            .is_some_and(|current| current.generation == generation)
+    let mut guard = sync::lock(active);
+    if guard
+        .as_ref()
+        .is_some_and(|current| current.generation == generation)
     {
         guard.take();
     }
+    drop(guard);
     let _ = events.send(ChannelEvent::Disconnected(generation));
 }

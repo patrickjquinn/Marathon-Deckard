@@ -9,10 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use deckard_core::runtime_state::{ResetError, RuntimeState, State, UnitCall};
 use deckard_core::sync;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
-use zbus::{MatchRule, message};
 
 pub const UNIT: &str = "deckard-session.service";
 pub const MANAGER: &str = "org.freedesktop.systemd1.Manager";
@@ -21,6 +20,7 @@ const SYSTEMD: &str = "org.freedesktop.systemd1";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
 
+/// The runtime state Settings shows; cheap to clone.
 #[derive(Clone)]
 pub struct Runtime {
     state: Arc<Mutex<RuntimeState>>,
@@ -34,15 +34,13 @@ impl Runtime {
         sync::lock(&self.state)
     }
 
+    /// `policy` is Settings' `settings.json`, `applications` the desktop
+    /// entries and `memory` the container's `memory.current`.
+    #[must_use]
     pub fn new(policy: PathBuf, applications: PathBuf, memory: PathBuf) -> Self {
         let mut state = RuntimeState::default();
-        if let Some(enabled) = fs::read(&policy)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|value| value.get("startAtLogin").cloned())
-            .map(|value| value.as_bool().unwrap_or(false))
-        {
-            state.set_start_at_login(enabled);
+        if let Some(enabled) = read_policy(&policy).get("startAtLogin") {
+            state.set_start_at_login(enabled.as_bool().unwrap_or(false));
         }
         Self {
             state: Arc::new(Mutex::new(state)),
@@ -52,13 +50,12 @@ impl Runtime {
         }
     }
 
+    /// `GetRuntime`'s and `RuntimeChanged`'s dictionary.
     pub fn snapshot(&self) -> HashMap<String, OwnedValue> {
         let mut state = self.lock();
         state.set_has_android_apps(has_apps(&self.applications));
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH);
+        let now_ms = i64::try_from(now.unwrap_or_default().as_millis()).unwrap_or(i64::MAX);
         let memory = fs::read_to_string(&self.memory)
             .ok()
             .and_then(|s| s.trim().parse().ok())
@@ -83,14 +80,20 @@ impl Runtime {
         ])
     }
 
+    /// Whether the snapshot changed.
+    #[must_use]
     pub fn set_connected(&self, connected: bool) -> bool {
         self.lock().set_android_connected(connected)
     }
 
+    /// Whether the snapshot changed.
+    #[must_use]
     pub fn set_version(&self, version: &str) -> bool {
         self.lock().set_android_version(version)
     }
 
+    /// Whether the snapshot changed.
+    #[must_use]
     pub fn set_unit(&self, active: &str, entered_ms: i64) -> bool {
         self.lock().set_unit(active, entered_ms)
     }
@@ -100,30 +103,39 @@ impl Runtime {
         self.lock().active_since_ms()
     }
 
+    /// The session's state as Settings shows it.
+    #[must_use]
     pub fn state(&self) -> State {
         self.lock().state()
     }
 
+    /// Starts a reset.
+    ///
+    /// # Errors
+    /// A reset is running, or the helper is not `available`.
     pub fn request_reset(&self, available: bool) -> Result<(), ResetError> {
         self.lock().request_reset(available)
     }
 
+    /// Ends the running reset.
     pub fn finish_reset(&self) {
         self.lock().finish_reset();
     }
 
+    /// Whether Android should start now that the user logged in.
+    #[must_use]
     pub fn at_login(&self) -> bool {
         let mut state = self.lock();
         state.set_has_android_apps(has_apps(&self.applications));
         state.at_login()
     }
 
+    /// Saves the choice in the policy file, keeping its other keys.
+    ///
+    /// # Errors
+    /// The policy file could not be written.
     pub fn set_start_at_login(&self, enabled: bool) -> std::io::Result<()> {
-        let mut policy = fs::read(&self.policy)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
+        let mut policy = read_policy(&self.policy);
         policy.insert("startAtLogin".into(), Value::Bool(enabled));
         let parent = self.policy.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
@@ -135,6 +147,12 @@ impl Runtime {
         self.lock().set_start_at_login(enabled);
         Ok(())
     }
+}
+
+fn read_policy(path: &Path) -> Map<String, Value> {
+    let policy = fs::read(path).ok();
+    let policy = policy.and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    policy.map(crate::object).unwrap_or_default()
 }
 
 fn has_apps(path: &Path) -> bool {
@@ -162,6 +180,10 @@ async fn manager_call(bus: &zbus::Connection, method: &str) -> zbus::Result<()> 
     Ok(())
 }
 
+/// Starts, stops or restarts the session unit.
+///
+/// # Errors
+/// systemd refused the job.
 pub async fn call_unit(bus: &zbus::Connection, call: UnitCall) -> zbus::Result<()> {
     let method = match call {
         UnitCall::Start => "StartUnit",
@@ -172,6 +194,9 @@ pub async fn call_unit(bus: &zbus::Connection, call: UnitCall) -> zbus::Result<(
 }
 
 /// Restarts the session only while it runs.
+///
+/// # Errors
+/// systemd refused the job.
 pub async fn try_restart_unit(bus: &zbus::Connection) -> zbus::Result<()> {
     manager_call(bus, "TryRestartUnit").await
 }
@@ -204,14 +229,8 @@ pub fn watch_unit(
 ) -> zbus::Result<()> {
     let manager = Proxy::new(bus, SYSTEMD, MANAGER_PATH, MANAGER)?;
     let path: OwnedObjectPath = manager.call("LoadUnit", &(UNIT,))?;
-    let rule = MatchRule::builder()
-        .msg_type(message::Type::Signal)
-        .sender(SYSTEMD)?
-        .path(path.as_str())?
-        .interface(PROPERTIES)?
-        .member("PropertiesChanged")?
-        .add_arg(UNIT_INTERFACE)?
-        .build();
+    let rule = crate::signals(SYSTEMD, path.as_str(), PROPERTIES)?.member("PropertiesChanged")?;
+    let rule = rule.add_arg(UNIT_INTERFACE)?.build();
     let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
     if let Err(error) = manager.call::<_, _, ()>("Subscribe", &()) {
         eprintln!("deckard-bridge: systemd Subscribe failed: {error}");

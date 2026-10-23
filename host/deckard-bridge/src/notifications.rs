@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, mpsc};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -42,26 +42,23 @@ pub struct NotificationBridge {
 }
 
 impl NotificationBridge {
-    /// The returned receiver carries validated Hub actions back to the
-    /// authenticated user bridge. The caller must drain it independently of
-    /// inbound Android messages to avoid notification-action deadlocks.
+    /// Validated Hub actions go back to Android through `to_android`, which
+    /// must not block.
     pub fn new(
         bus: Connection,
         state_path: impl Into<PathBuf>,
         icon_dir: impl Into<PathBuf>,
-    ) -> Result<(Self, mpsc::Receiver<BridgeEvent>)> {
+        to_android: impl Fn(BridgeEvent) + Send + Sync + 'static,
+    ) -> Result<Self> {
         let icon_dir = icon_dir.into();
-        let (sender, receiver) = mpsc::channel();
-        let adapter = NotificationAdapter::new(bus.clone(), state_path, icon_dir.clone(), sender)?;
-        Ok((
-            Self {
-                adapter,
-                bus,
-                icon_dir,
-                last_toast: Arc::new(Mutex::new(HashMap::new())),
-            },
-            receiver,
-        ))
+        let adapter =
+            NotificationAdapter::new(bus.clone(), state_path, icon_dir.clone(), to_android)?;
+        Ok(Self {
+            adapter,
+            bus,
+            icon_dir,
+            last_toast: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     pub fn listen_hub(&self) -> Result<JoinHandle<()>> {
@@ -91,10 +88,6 @@ impl NotificationBridge {
             _ => {}
         }
         Ok(())
-    }
-
-    pub fn snapshot(&self) -> Result<Value> {
-        self.adapter.snapshot()
     }
 
     fn icon(&self, message: &Map<String, Value>) -> Result<()> {

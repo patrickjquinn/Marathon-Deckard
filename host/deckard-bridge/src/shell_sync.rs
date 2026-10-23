@@ -10,9 +10,9 @@ use std::process;
 use deckard_core::palette::{self, Color, Theme};
 use deckard_core::runtime_state::SHELL_BUS_NAME;
 use futures_lite::{StreamExt, future};
+use zbus::MessageStream;
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::zvariant::OwnedValue;
-use zbus::{MatchRule, MessageStream, message};
 
 const POWER_PATH: &str = "/org/marathonos/Shell/Power";
 const POWER_INTERFACE: &str = "org.marathonos.Shell.Power1";
@@ -53,13 +53,8 @@ fn write(path: &Path, content: &str, done: &str) {
 /// # Errors
 /// Returns the D-Bus error that prevented the subscription.
 pub fn sync_doze(bus: &Connection, path: &Path) -> zbus::Result<()> {
-    let rule = MatchRule::builder()
-        .msg_type(message::Type::Signal)
-        .sender(SHELL_BUS_NAME)?
-        .path(POWER_PATH)?
-        .interface(POWER_INTERFACE)?
-        .member("StateChanged")?
-        .build();
+    let rule = crate::signals(SHELL_BUS_NAME, POWER_PATH, POWER_INTERFACE)?;
+    let rule = rule.member("StateChanged")?.build();
     let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
     for signal in signals {
         let Ok(signal) = signal else { continue };
@@ -113,20 +108,9 @@ async fn refresh_palette(bus: &zbus::Connection, path: &Path) {
 /// Returns the D-Bus error that prevented the subscription.
 pub fn sync_palette(bus: &zbus::Connection, path: &Path) -> zbus::Result<()> {
     future::block_on(async {
-        let ambience = MatchRule::builder()
-            .msg_type(message::Type::Signal)
-            .sender(SHELL_BUS_NAME)?
-            .path(AMBIENCE_PATH)?
-            .interface(AMBIENCE_INTERFACE)?
-            .member("AmbienceChanged")?
-            .build();
-        let owner = MatchRule::builder()
-            .msg_type(message::Type::Signal)
-            .sender("org.freedesktop.DBus")?
-            .interface("org.freedesktop.DBus")?
-            .member("NameOwnerChanged")?
-            .add_arg(SHELL_BUS_NAME)?
-            .build();
+        let ambience = crate::signals(SHELL_BUS_NAME, AMBIENCE_PATH, AMBIENCE_INTERFACE)?;
+        let ambience = ambience.member("AmbienceChanged")?.build();
+        let owner = crate::owner_changes(SHELL_BUS_NAME)?;
         let ambience = MessageStream::for_match_rule(ambience, bus, Some(8)).await?;
         let owner = MessageStream::for_match_rule(owner, bus, Some(8)).await?;
         let mut triggers = ambience.or(owner);

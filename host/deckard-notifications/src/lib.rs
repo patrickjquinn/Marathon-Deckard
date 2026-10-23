@@ -1,180 +1,152 @@
 //! D-Bus adapter for Deckard's validated Android notification payloads.
 
 mod digest;
-mod timers;
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{self, Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use deckard_core::messages::Post;
 use deckard_core::notification_state::{BridgeEvent, Command, NotificationState};
-use image::{ImageFormat, ImageReader, imageops::FilterType};
+use deckard_core::sync;
+use image::imageops::FilterType;
+use image::{ImageFormat, ImageReader};
 use serde_json::Value;
 use zbus::MatchRule;
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::message::{Message, Type};
 use zbus::zvariant::Value as Variant;
 
-use crate::timers::{MAX_PENDING_DISMISSALS, TimerQueue};
-
 pub type AdapterError = Box<dyn Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, AdapterError>;
 
 const HUB: &str = "org.freedesktop.Notifications";
 const HUB_PATH: &str = "/org/freedesktop/Notifications";
+const MAX_STATE_BYTES: usize = 1024 * 1024;
+const MAX_PENDING_DISMISSALS: usize = 512;
+
+/// A dismissal: when it is due, the notification id and its token.
+type Dismissal = (Instant, u32, u64);
 
 struct Inner {
     bus: Connection,
-    operation: Mutex<()>,
     state: Mutex<NotificationState>,
     state_path: PathBuf,
     icon_dir: PathBuf,
-    android_commands: mpsc::Sender<BridgeEvent>,
-    timers: Arc<TimerQueue>,
+    to_android: Box<dyn Fn(BridgeEvent) + Send + Sync>,
+    dismissals: SyncSender<Dismissal>,
 }
 
-impl Drop for Inner {
-    fn drop(&mut self) {
-        self.timers.stop();
-    }
-}
-
-/// A single notification owner. The Android bridge must call these methods in
-/// message order and must not run alongside the old C++ notification handler.
+/// The single owner of Android's notifications on the Hub. Every change
+/// runs under one lock, in the order it is made.
 #[derive(Clone)]
 pub struct NotificationAdapter {
     inner: Arc<Inner>,
 }
 
 impl NotificationAdapter {
-    /// `bus` may be a session bus connection or a private test-bus connection.
+    /// Restores `state_path` and posts on `bus`; Hub actions go back to
+    /// Android through `to_android`.
+    ///
+    /// # Errors
+    /// The saved state is unreadable or too large, or the dismissal thread
+    /// could not start.
     pub fn new(
         bus: Connection,
         state_path: impl Into<PathBuf>,
         icon_dir: impl Into<PathBuf>,
-        android_commands: mpsc::Sender<BridgeEvent>,
+        to_android: impl Fn(BridgeEvent) + Send + Sync + 'static,
     ) -> Result<Self> {
         let state_path = state_path.into();
         let state = match fs::read(&state_path) {
-            Ok(bytes) => {
-                if bytes.len() > 1024 * 1024 {
-                    return Err(
-                        io::Error::new(io::ErrorKind::InvalidData, "state file too large").into(),
-                    );
-                }
-                NotificationState::restore(&serde_json::from_slice::<Value>(&bytes)?)
+            Ok(bytes) if bytes.len() > MAX_STATE_BYTES => {
+                return Err(
+                    io::Error::new(io::ErrorKind::InvalidData, "state file too large").into(),
+                );
             }
+            Ok(bytes) => NotificationState::restore(&serde_json::from_slice::<Value>(&bytes)?),
             Err(error) if error.kind() == io::ErrorKind::NotFound => NotificationState::default(),
             Err(error) => return Err(error.into()),
         };
-        let timers = Arc::new(TimerQueue::new(MAX_PENDING_DISMISSALS));
+        let (dismissals, due) = mpsc::sync_channel(MAX_PENDING_DISMISSALS);
         let inner = Arc::new(Inner {
             bus,
-            operation: Mutex::new(()),
             state: Mutex::new(state),
             state_path,
             icon_dir: icon_dir.into(),
-            android_commands,
-            timers: Arc::clone(&timers),
+            to_android: Box::new(to_android),
+            dismissals,
         });
         let weak = Arc::downgrade(&inner);
         thread::Builder::new()
             .name("deckard-notification-timer".to_owned())
-            .spawn(move || {
-                if let Err(error) = timers.run(|id, token| {
-                    let Some(inner) = weak.upgrade() else {
-                        return;
-                    };
-                    if let Err(error) = (NotificationAdapter { inner }).dismiss_due(id, token) {
-                        eprintln!("deckard-notifications dismiss: {error}");
-                    }
-                }) {
-                    eprintln!("deckard-notifications timer worker: {error}");
-                }
-                timers.stop();
-            })?;
+            .spawn(move || dismiss(&weak, &due))?;
         Ok(Self { inner })
     }
 
-    /// Register the Hub signal match before spawning its receiver thread.
-    /// The listener ends when the underlying bus closes. Dropping this adapter
-    /// alone does not stop the thread because the listener retains a clone.
+    /// Subscribes to the Hub's signals, then follows them on a thread that
+    /// ends with the bus.
+    ///
+    /// # Errors
+    /// The subscription failed.
     pub fn listen(&self) -> Result<JoinHandle<()>> {
-        let rule = MatchRule::builder()
-            .msg_type(Type::Signal)
-            .sender(HUB)?
-            .path(HUB_PATH)?
-            .interface(HUB)?
-            .build();
-        let mut signals = MessageIterator::for_match_rule(rule, &self.inner.bus, Some(256))?;
+        let rule = MatchRule::builder().msg_type(Type::Signal).sender(HUB)?;
+        let rule = rule.path(HUB_PATH)?.interface(HUB)?.build();
+        let signals = MessageIterator::for_match_rule(rule, &self.inner.bus, Some(256))?;
         let adapter = self.clone();
         Ok(thread::spawn(move || {
-            for message in &mut signals {
-                match message {
-                    Ok(message) => {
-                        if let Err(error) = adapter.handle_signal(&message) {
-                            eprintln!("deckard-notifications signal: {error}");
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("deckard-notifications signal stream: {error}");
-                        break;
-                    }
+            for signal in signals {
+                let signal = match signal {
+                    Ok(signal) => signal,
+                    Err(error) => return eprintln!("deckard-notifications signal stream: {error}"),
+                };
+                if let Err(error) = adapter.handle_signal(&signal) {
+                    eprintln!("deckard-notifications signal: {error}");
                 }
             }
         }))
     }
 
+    /// Posts or updates `post`.
+    ///
+    /// # Errors
+    /// The Hub refused it, or the state could not be saved.
     pub fn post(&self, post: &Post) -> Result<()> {
-        let _operation = self.operation()?;
         let digest = digest::display_digest(post);
-        let Some(replaces_id) = self.state()?.replaces(post, &digest) else {
+        let mut state = sync::lock(&self.inner.state);
+        let Some(replaces_id) = state.replaces(post, &digest) else {
             return Ok(());
         };
         let id = self.notify(post, replaces_id)?;
-        let commands = self.state()?.notified(post, &digest, id);
+        let commands = state.notified(post, &digest, id);
         self.execute(commands)
     }
 
+    /// Withdraws Android's notification `key`.
+    ///
+    /// # Errors
+    /// The Hub refused it, or the state could not be saved.
     pub fn remove(&self, key: &str) -> Result<()> {
-        let _operation = self.operation()?;
-        let commands = self.state()?.remove(key);
-        self.execute(commands)
+        self.apply(|state| state.remove(key))
     }
 
+    /// Withdraws every notification not in `live_keys`.
+    ///
+    /// # Errors
+    /// The Hub refused it, or the state could not be saved.
     pub fn sync(&self, live_keys: &[String]) -> Result<()> {
-        let _operation = self.operation()?;
-        let commands = self.state()?.sync(live_keys);
-        self.execute(commands)
+        self.apply(|state| state.sync(live_keys))
     }
 
-    pub fn snapshot(&self) -> Result<Value> {
-        Ok(self.state()?.snapshot())
-    }
-
-    fn state(&self) -> Result<MutexGuard<'_, NotificationState>> {
-        self.inner
-            .state
-            .lock()
-            .map_err(|_| io::Error::other("notification state lock poisoned").into())
-    }
-
-    fn operation(&self) -> Result<MutexGuard<'_, ()>> {
-        self.inner
-            .operation
-            .lock()
-            .map_err(|_| io::Error::other("notification operation lock poisoned").into())
-    }
-
-    fn dismiss_due(&self, id: u32, token: u64) -> Result<()> {
-        let _operation = self.operation()?;
-        let commands = self.state()?.dismiss_due(id, token, now_ms());
+    fn apply(&self, change: impl FnOnce(&mut NotificationState) -> Vec<Command>) -> Result<()> {
+        let mut state = sync::lock(&self.inner.state);
+        let commands = change(&mut state);
         self.execute(commands)
     }
 
@@ -183,7 +155,7 @@ impl NotificationAdapter {
         for command in commands {
             match command {
                 Command::Close(id) => {
-                    if let Err(error) = self.close(id) {
+                    if let Err(error) = self.hub("CloseNotification", &(id,)) {
                         close_error.get_or_insert(error);
                     }
                 }
@@ -192,33 +164,41 @@ impl NotificationAdapter {
                     id,
                     token,
                     delay_ms,
-                } => self
-                    .inner
-                    .timers
-                    .schedule(id, token, Duration::from_millis(delay_ms))?,
-                Command::Send(event) => self.inner.android_commands.send(event).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "Android command receiver closed")
-                })?,
+                } => {
+                    let due = Instant::now() + Duration::from_millis(delay_ms);
+                    let queued = self.inner.dismissals.try_send((due, id, token));
+                    if let Err(TrySendError::Full(_)) = queued {
+                        eprintln!("deckard-notifications: too many dismissals; {id} stays");
+                    }
+                }
+                Command::Send(event) => (self.inner.to_android)(event),
             }
         }
         close_error.map_or(Ok(()), Err)
     }
 
+    fn hub<B>(&self, method: &str, body: &B) -> Result<Message>
+    where
+        B: zbus::export::serde::Serialize + zbus::zvariant::DynamicType,
+    {
+        let bus = &self.inner.bus;
+        Ok(bus.call_method(Some(HUB), HUB_PATH, Some(HUB), method, body)?)
+    }
+
     fn notify(&self, post: &Post, replaces_id: u32) -> Result<u32> {
-        let mut hints: HashMap<&str, Variant<'_>> = HashMap::new();
         let desktop_entry = format!("waydroid.{}", post.package.as_str());
-        hints.insert("desktop-entry", Variant::from(&desktop_entry));
-        hints.insert("urgency", Variant::from(post.urgency));
-        hints.insert("resident", Variant::from(post.ongoing));
-        hints.insert("suppress-sound", Variant::from(post.silent));
+        let mut hints = HashMap::from([
+            ("desktop-entry", Variant::from(&desktop_entry)),
+            ("urgency", Variant::from(post.urgency)),
+            ("resident", Variant::from(post.ongoing)),
+            ("suppress-sound", Variant::from(post.silent)),
+        ]);
         if !post.category.is_empty() {
             hints.insert("category", Variant::from(post.category.as_str()));
         }
         if !post.reply_action.is_empty() && !post.reply_placeholder.is_empty() {
-            hints.insert(
-                "x-kde-reply-placeholder-text",
-                Variant::from(post.reply_placeholder.as_str()),
-            );
+            let placeholder = Variant::from(post.reply_placeholder.as_str());
+            hints.insert("x-kde-reply-placeholder-text", placeholder);
         }
         let conversation = post.conversation.as_ref().map(Value::to_string);
         if let Some(value) = conversation.as_deref() {
@@ -228,10 +208,8 @@ impl NotificationAdapter {
             hints.insert("value", Variant::from(progress));
         }
         if let Some((width, height, pixels)) = image_data(&post.image) {
-            hints.insert(
-                "image-data",
-                Variant::new((width, height, width * 4, true, 8_i32, 4_i32, pixels)),
-            );
+            let image = (width, height, width * 4, true, 8_i32, 4_i32, pixels);
+            hints.insert("image-data", Variant::new(image));
         }
         let icon = self
             .inner
@@ -242,60 +220,59 @@ impl NotificationAdapter {
         } else {
             String::new()
         };
-        let actions: Vec<&str> = post
-            .actions
-            .iter()
-            .flat_map(|(id, label)| [id.as_str(), label.as_str()])
-            .collect();
-        let body = html_escape(&post.body);
-        let reply = self.inner.bus.call_method(
-            Some(HUB),
-            HUB_PATH,
-            Some(HUB),
-            "Notify",
-            &(
-                post.label.as_str(),
-                replaces_id,
-                icon_url.as_str(),
-                post.title.as_str(),
-                body.as_str(),
-                actions,
-                hints,
-                if post.ongoing { 0_i32 } else { -1_i32 },
-            ),
-        )?;
+        let mut actions = Vec::with_capacity(post.actions.len() * 2);
+        for (id, label) in &post.actions {
+            actions.extend([id.as_str(), label.as_str()]);
+        }
+        let text = html_escape(&post.body);
+        let timeout = if post.ongoing { 0_i32 } else { -1_i32 };
+        let (label, title, icon_url) = (post.label.as_str(), post.title.as_str(), &icon_url);
+        let body = (
+            label,
+            replaces_id,
+            icon_url,
+            title,
+            &text,
+            actions,
+            hints,
+            timeout,
+        );
+        let reply = self.hub("Notify", &body)?;
         Ok(reply.body().deserialize::<u32>()?)
     }
 
-    fn close(&self, id: u32) -> Result<()> {
-        self.inner
-            .bus
-            .call_method(Some(HUB), HUB_PATH, Some(HUB), "CloseNotification", &(id,))?;
-        Ok(())
-    }
-
     fn handle_signal(&self, message: &Message) -> Result<()> {
-        let _operation = self.operation()?;
-        let member = message
-            .header()
-            .member()
-            .map(|name| name.as_str().to_owned());
-        let commands = match member.as_deref() {
+        let body = message.body();
+        let header = message.header();
+        match header.member().map(|member| member.as_str()) {
             Some("ActionInvoked") => {
-                let (id, action): (u32, String) = message.body().deserialize()?;
-                self.state()?.action_invoked(id, &action, now_ms())
+                let (id, action): (u32, String) = body.deserialize()?;
+                self.apply(|state| state.action_invoked(id, &action, now_ms()))
             }
             Some("NotificationReplied") => {
-                let (id, text): (u32, String) = message.body().deserialize()?;
-                self.state()?.notification_replied(id, &text)
+                let (id, text): (u32, String) = body.deserialize()?;
+                self.apply(|state| state.notification_replied(id, &text))
             }
             Some("NotificationClosed") => {
-                let (id, reason): (u32, u32) = message.body().deserialize()?;
-                self.state()?.notification_closed(id, reason)
+                let (id, reason): (u32, u32) = body.deserialize()?;
+                self.apply(|state| state.notification_closed(id, reason))
             }
-            _ => return Ok(()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Every delay is `DISMISS_DELAY_MS`, so dismissals arrive in deadline order.
+fn dismiss(adapter: &Weak<Inner>, due: &Receiver<Dismissal>) {
+    for (deadline, id, token) in due {
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let Some(inner) = adapter.upgrade() else {
+            return;
         };
-        self.execute(commands)
+        let adapter = NotificationAdapter { inner };
+        if let Err(error) = adapter.apply(|state| state.dismiss_due(id, token, now_ms())) {
+            eprintln!("deckard-notifications dismiss: {error}");
+        }
     }
 }
 
@@ -317,9 +294,8 @@ fn image_data(png: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
     if png.is_empty() || png.len() > 512 * 1024 {
         return None;
     }
-    let (width, height) = ImageReader::with_format(Cursor::new(png), ImageFormat::Png)
-        .into_dimensions()
-        .ok()?;
+    let reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
+    let (width, height) = reader.into_dimensions().ok()?;
     if width == 0 || height == 0 || width > 4096 || height > 4096 {
         return None;
     }
@@ -328,13 +304,11 @@ fn image_data(png: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
         image.resize(128, 128, FilterType::Lanczos3)
     } else {
         image
-    }
-    .to_rgba8();
-    Some((
-        image.width() as i32,
-        image.height() as i32,
-        image.into_raw(),
-    ))
+    };
+    let image = image.to_rgba8();
+    let width = i32::try_from(image.width()).ok()?;
+    let height = i32::try_from(image.height()).ok()?;
+    Some((width, height, image.into_raw()))
 }
 
 fn html_escape(value: &str) -> String {
@@ -352,9 +326,6 @@ fn html_escape(value: &str) -> String {
 }
 
 fn now_ms() -> i64 {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    i64::try_from(millis).unwrap_or(i64::MAX)
+    let since = SystemTime::now().duration_since(UNIX_EPOCH);
+    i64::try_from(since.unwrap_or_default().as_millis()).unwrap_or(i64::MAX)
 }

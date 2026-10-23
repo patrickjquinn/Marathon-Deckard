@@ -34,7 +34,7 @@ must match the installed binary.
 | `notifications.{h,cpp}`: Hub posts, actions, icons, toasts, `notifications.json` | `deckard-notifications`, `src/notifications.rs`, `deckard-core::notification_state` |
 | `mpris.{h,cpp}`: one MPRIS2 player per media session, album art | `deckard-mpris`, routed in `main.rs` `serve_app` |
 | `audio.{h,cpp}`: `{t:audio,quiet,alarm}` from the Shell's profile, DND and alarm volume | `src/audio.rs` |
-| `ime.{h,cpp}`: IME channel, `ShellTextInput` | `deckard-ime`, `src/ime.rs` |
+| `ime.{h,cpp}`: IME channel, `ShellTextInput` | `src/ime.rs` |
 | `intents.{h,cpp}`: `open` routing, FileChooser picks and saves, camera capture, transfers, focus | `src/intents.rs` |
 | `share.{h,cpp}`: `org.marathonos.Deckard1.Share`, `share_out` | `src/sharing.rs` |
 | `keelapps.{h,cpp}`: `waydroid.<pkg>` Keel Actions providers, `apps.json`, shortcuts, secure windows | `src/keel.rs`, `deckard-core::keel` |

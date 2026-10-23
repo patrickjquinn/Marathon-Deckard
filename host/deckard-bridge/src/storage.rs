@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use deckard_core::acl;
 use deckard_host_tools::shared_folders::MEDIA_RW;
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::Outbound;
 
@@ -280,9 +280,7 @@ impl Worker {
         if paths.is_empty() {
             return;
         }
-        if let Value::Object(message) = json!({"t": "media_scan", "paths": paths}) {
-            (self.send)(message);
-        }
+        (self.send)(crate::object(json!({"t": "media_scan", "paths": paths})));
     }
 }
 

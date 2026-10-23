@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use async_io::Timer;
 use deckard_core::ids::PackageName;
-use deckard_core::validate::clean_text;
+use deckard_core::sync;
+use deckard_core::validate;
 use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::zvariant::{OwnedValue, Str};
@@ -103,10 +104,7 @@ impl PermissionPrompts {
     }
 
     fn waiting(&self) -> MutexGuard<'_, Waiting> {
-        // Nothing panics while holding it: poison is a broken invariant.
-        self.waiting
-            .lock()
-            .unwrap_or_else(|_| std::process::abort())
+        sync::lock(&self.waiting)
     }
 
     /// Takes `perm_ask` and `perm_cancel`; other messages are ignored.
@@ -149,7 +147,7 @@ impl PermissionPrompts {
                 .get("perms")
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len);
-            let pkg = clean_text(pkg, 255);
+            let pkg = validate::clean_text(pkg, 255);
             eprintln!("deckard-bridge: left to Android: {pkg} {count} permissions");
             self.answer(id, "unsupported", false);
             return;
@@ -211,9 +209,7 @@ impl PermissionPrompts {
 
     fn answer(&self, id: &str, answer: &str, precise: bool) {
         let message = json!({"t": "perm_answer", "id": id, "answer": answer, "precise": precise});
-        if let Value::Object(message) = message {
-            (self.send)(message);
-        }
+        (self.send)(crate::object(message));
     }
 
     fn cancel(&self, id: String) {
