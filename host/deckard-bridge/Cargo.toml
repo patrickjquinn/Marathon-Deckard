@@ -8,6 +8,7 @@ license = "Apache-2.0"
 
 [dependencies]
 async-channel.workspace = true
+async-executor.workspace = true
 async-io.workspace = true
 base64.workspace = true
 deckard-core = { path = "../deckard-core" }
