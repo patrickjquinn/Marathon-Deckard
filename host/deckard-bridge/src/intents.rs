@@ -16,6 +16,7 @@ use async_channel::Receiver;
 use async_io::Timer;
 use deckard_core::{ids, text, validate};
 use futures_lite::{StreamExt, future};
+use percent_encoding::CONTROLS;
 use regex::Regex;
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags};
 use rustix::path::Arg;
@@ -131,11 +132,11 @@ pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
     }
     let scheme = uri.split(':').next().unwrap_or("").to_lowercase();
     match kind {
-        "url" if web(uri, &scheme) => {
-            let args = object(json!({"url": uri, "newTab": true}));
+        "url" => {
+            let url = web(uri, &scheme).ok_or("not a web address")?;
+            let args = object(json!({"url": url, "newTab": true}));
             Ok(Target::Keel("browser", "browser.open", args))
         }
-        "url" => Err("not a web address"),
         "tel" | "sms" => phone(kind == "tel", &scheme, m),
         "mailto" => Ok(mail(m)),
         "geo" if scheme == "geo" => Ok(geo(uri)),
@@ -148,15 +149,27 @@ pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
     }
 }
 
-fn web(uri: &str, scheme: &str) -> bool {
-    let Some((_, rest)) = uri.split_once("://") else {
-        return false;
+/// `uri` as a web address with its path, query and fragment encoded, or
+/// None when it is not one.
+fn web(uri: &str, scheme: &str) -> Option<String> {
+    let (_, rest) = uri.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    let forbidden = |c: char| c.is_ascii_control() || " \"<>\\^`{|}".contains(c);
+    let hex = |part: &str| {
+        part.get(..2)
+            .is_some_and(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
     };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let plain = |c: char| c.is_ascii_graphic() && !"\"<>\\^`{|}".contains(c);
-    let strict = uri.chars().all(plain);
-    let host_ok = !host.is_empty() && !host.starts_with(':') && !host.contains('@');
-    uri.len() <= 2048 && (scheme == "http" || scheme == "https") && strict && host_ok
+    let web = scheme == "http" || scheme == "https";
+    let host_ok = !host.is_empty() && !host.starts_with(':');
+    let chars_ok = !uri.contains(forbidden) && uri.split('%').skip(1).all(hex);
+    if !web || !host_ok || !chars_ok || uri.encode_utf16().count() > 2048 {
+        return None;
+    }
+    let tail = rest.strip_prefix(authority).unwrap_or("");
+    let head = uri.strip_suffix(tail).unwrap_or(uri);
+    let tail = percent_encoding::utf8_percent_encode(tail, CONTROLS);
+    Some(format!("{head}{tail}"))
 }
 
 fn phone(tel: bool, scheme: &str, m: &Map<String, Value>) -> Result<Target, &'static str> {

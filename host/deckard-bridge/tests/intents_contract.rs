@@ -40,6 +40,9 @@ fn opens_route_like_cxx() {
     let cases = [
         (json!({"kind":"url","uri":"https://f-droid.org/packages/"}),
          keel("browser", "browser.open", json!({"url":"https://f-droid.org/packages/","newTab":true}))),
+        (json!({"kind":"url","uri":"https://user@de.wikipedia.org/wiki/Köln"}),
+         keel("browser", "browser.open", json!({"url":"https://user@de.wikipedia.org/wiki/K%C3%B6ln","newTab":true}))),
+        (json!({"kind":"url","uri":"https://example.org/%zz"}), None),
         (json!({"kind":"url","uri":"javascript:alert(1)"}), None),
         (json!({"kind":"url","uri":"file:///etc/passwd"}), None),
         (json!({"kind":"tel","uri":"tel:+353%2087%20123-4567"}), routed("phone", "/call", json!({"number":"+353871234567"}))),
