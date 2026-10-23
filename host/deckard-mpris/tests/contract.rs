@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -66,7 +65,7 @@ impl Drop for PrivateBus {
 
 fn message(sid: i32, package: &str) -> Value {
     json!({
-        "sid": sid, "pkg": package, "label": "Music", "state": "Playing",
+        "t": "media", "sid": sid, "pkg": package, "label": "Music", "state": "Playing",
         "position": 1000, "duration": 10000, "speed": 1.0,
         "title": "First", "artist": "Artist", "album": "Album",
         "can": {"play": true, "pause": true, "next": true, "previous": true, "seek": true}
@@ -80,15 +79,22 @@ fn name(package: &str, sid: i32) -> String {
     )
 }
 
+fn one(adapter: &MprisAdapter) -> TestResult<Value> {
+    let mut commands = adapter.take_commands();
+    if commands.len() != 1 {
+        return Err(io::Error::other(format!("expected one command: {commands:?}")).into());
+    }
+    Ok(Value::Object(commands.remove(0)))
+}
+
 #[test]
 fn two_players_have_distinct_connections_and_legacy_properties() -> TestResult<()> {
     let bus = PrivateBus::start()?;
     let client = bus.connection()?;
     let art = tempfile::tempdir()?;
-    let (tx, rx) = mpsc::channel();
-    let mut adapter = MprisAdapter::new_at(Some(&bus.address), art.path(), tx);
+    let mut adapter = MprisAdapter::new(Some(&bus.address), art.path())?;
     for (sid, package) in [(3, "org.lineageos.eleven"), (4, "org.example.player")] {
-        adapter.handle("media", message(sid, package).as_object().unwrap())?;
+        adapter.handle(message(sid, package).as_object().unwrap())?;
     }
     assert_eq!(adapter.active_players(), 2);
 
@@ -136,7 +142,7 @@ fn two_players_have_distinct_connections_and_legacy_properties() -> TestResult<(
 
     player.call::<_, _, ()>("Next", &())?;
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(2))?,
+        one(&adapter)?,
         json!({"t":"media_cmd","sid":3,"cmd":"next","position":0})
     );
     for (method, command) in [
@@ -147,21 +153,21 @@ fn two_players_have_distinct_connections_and_legacy_properties() -> TestResult<(
         ("Play", "play"),
     ] {
         let _: () = player.call(method, &())?;
-        assert_eq!(rx.recv_timeout(Duration::from_secs(2))?["cmd"], command);
+        assert_eq!(one(&adapter)?["cmd"], command);
     }
     let _: () = player.call("OpenUri", &(String::from("file:///ignored"),))?;
-    assert!(rx.try_recv().is_err());
+    assert!(adapter.take_commands().is_empty());
     let _: () = player.call("Seek", &(2_000_000_i64,))?;
-    let command = rx.recv_timeout(Duration::from_secs(2))?;
+    let command = one(&adapter)?;
     assert_eq!(command["cmd"], "seek");
     assert!(command["position"].as_i64().unwrap() >= 3_000);
     let _: () = player.call("SetPosition", &(track.clone(), 4_123_456_i64))?;
-    assert_eq!(rx.recv_timeout(Duration::from_secs(2))?["position"], 4_123);
+    assert_eq!(one(&adapter)?["position"], 4_123);
     let wrong = OwnedObjectPath::try_from("/org/marathonos/deckard/other")?;
     let _: () = player.call("SetPosition", &(wrong, 100_i64))?;
-    assert!(rx.try_recv().is_err());
+    assert!(adapter.take_commands().is_empty());
 
-    adapter.handle("media_gone", json!({"sid": 3}).as_object().unwrap())?;
+    adapter.handle(json!({"t": "media_gone", "sid": 3}).as_object().unwrap())?;
     assert_eq!(adapter.active_players(), 1);
     let deadline = Instant::now() + Duration::from_secs(2);
     while dbus
@@ -189,10 +195,9 @@ fn updates_emit_properties_and_seeked_with_new_track_id() -> TestResult<()> {
     let bus = PrivateBus::start()?;
     let client = bus.connection()?;
     let art = tempfile::tempdir()?;
-    let (tx, _rx) = mpsc::channel();
-    let mut adapter = MprisAdapter::new_at(Some(&bus.address), art.path(), tx);
+    let mut adapter = MprisAdapter::new(Some(&bus.address), art.path())?;
     let first = message(9, "org.example.player");
-    adapter.handle("media", first.as_object().unwrap())?;
+    adapter.handle(first.as_object().unwrap())?;
     let service = name("org.example.player", 9);
     let properties = Proxy::new(
         &client,
@@ -207,7 +212,7 @@ fn updates_emit_properties_and_seeked_with_new_track_id() -> TestResult<()> {
     let mut update = first.clone();
     update["state"] = json!("Paused");
     update["position"] = json!(7000);
-    adapter.handle("media", update.as_object().unwrap())?;
+    adapter.handle(update.as_object().unwrap())?;
     let change = changes
         .next()
         .ok_or_else(|| io::Error::other("no property signal"))?;
@@ -227,7 +232,7 @@ fn updates_emit_properties_and_seeked_with_new_track_id() -> TestResult<()> {
     assert_eq!(position, 7_000_000);
 
     update["title"] = json!("Second");
-    adapter.handle("media", update.as_object().unwrap())?;
+    adapter.handle(update.as_object().unwrap())?;
     let changed_track = changes
         .next()
         .ok_or_else(|| io::Error::other("no track signal"))?;
@@ -247,15 +252,14 @@ fn player_limit_seek_capability_and_art_lifecycle() -> TestResult<()> {
     let bus = PrivateBus::start()?;
     let client = bus.connection()?;
     let art = tempfile::tempdir()?;
-    let (tx, rx) = mpsc::channel();
-    let mut adapter = MprisAdapter::new_at(Some(&bus.address), art.path(), tx);
+    let mut adapter = MprisAdapter::new(Some(&bus.address), art.path())?;
 
     let mut png = std::io::Cursor::new(Vec::new());
     DynamicImage::new_rgba8(2, 2).write_to(&mut png, ImageFormat::Png)?;
     let mut first = message(1, "org.example.player");
     first["art"] = json!(base64::engine::general_purpose::STANDARD.encode(png.get_ref()));
     first["can"]["seek"] = json!(false);
-    adapter.handle("media", first.as_object().unwrap())?;
+    adapter.handle(first.as_object().unwrap())?;
     let service = name("org.example.player", 1);
     let player = Proxy::new(&client, service.as_str(), PATH, PLAYER)?;
     let metadata: HashMap<String, OwnedValue> = player.get_property("Metadata")?;
@@ -264,33 +268,45 @@ fn player_limit_seek_capability_and_art_lifecycle() -> TestResult<()> {
     assert!(std::path::Path::new(art_path).is_file());
     assert!(!player.get_property::<bool>("CanSeek")?);
     let _: () = player.call("Seek", &(1_000_000_i64,))?;
-    assert!(rx.try_recv().is_err());
+    assert!(adapter.take_commands().is_empty());
 
     for sid in 2..=8 {
-        adapter.handle(
-            "media",
-            message(sid, "org.example.player").as_object().unwrap(),
-        )?;
+        adapter.handle(message(sid, "org.example.player").as_object().unwrap())?;
     }
     assert_eq!(adapter.active_players(), 8);
     assert!(
         adapter
-            .handle(
-                "media",
-                message(9, "org.example.player").as_object().unwrap()
-            )
+            .handle(message(9, "org.example.player").as_object().unwrap())
             .is_err()
     );
     assert_eq!(adapter.active_players(), 8);
 
     let mut cleared = first.clone();
     cleared["art"] = json!("");
-    adapter.handle("media", cleared.as_object().unwrap())?;
+    adapter.handle(cleared.as_object().unwrap())?;
     let refreshed = Proxy::new(&client, service.as_str(), PATH, PLAYER)?;
     let metadata: HashMap<String, OwnedValue> = refreshed.get_property("Metadata")?;
     assert!(!metadata.contains_key("mpris:artUrl"));
     assert!(!std::path::Path::new(art_path).exists());
     adapter.clear();
     assert_eq!(adapter.active_players(), 0);
+    Ok(())
+}
+
+#[test]
+fn new_wipes_stale_art_and_clear_drops_queued_commands() -> TestResult<()> {
+    let bus = PrivateBus::start()?;
+    let client = bus.connection()?;
+    let art = tempfile::tempdir()?;
+    let stale = art.path().join("1-1.png");
+    std::fs::write(&stale, b"left by an earlier run")?;
+    let mut adapter = MprisAdapter::new(Some(&bus.address), art.path())?;
+    assert!(!stale.exists());
+    adapter.handle(message(1, "org.example.old").as_object().unwrap())?;
+    let service = name("org.example.old", 1);
+    let player = Proxy::new(&client, service.as_str(), PATH, PLAYER)?;
+    let _: () = player.call("Play", &())?;
+    adapter.clear();
+    assert!(adapter.take_commands().is_empty());
     Ok(())
 }

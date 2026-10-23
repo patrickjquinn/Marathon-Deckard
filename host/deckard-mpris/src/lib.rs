@@ -1,154 +1,49 @@
-//! One Android MediaSession per MPRIS2 bus connection.
+//! Android MediaSessions as MPRIS2 players, one session-bus connection each.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::fs;
 use std::io;
-use std::io::Cursor;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc::Sender};
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Instant;
 
 use deckard_core::messages::{self, Media};
-use image::ImageFormat;
-use serde_json::{Map, Value, json};
-use zbus::blocking::{Connection, connection::Builder};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str, Value as DbusValue};
+use deckard_core::png_guard;
+use serde_json::{Map, Value};
+use zbus::blocking::Connection;
+use zbus::blocking::connection::Builder;
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value as Variant};
 
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
-const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const MAX_PLAYERS: usize = 8;
-static ART_SERIAL: AtomicU64 = AtomicU64::new(0);
+const MAX_COMMANDS: usize = 16;
+const MAX_ART_BYTES: usize = 768 * 1024;
+const ART_SIDE: u32 = 512;
 
-pub type BridgeCommand = Value;
+type Command = Map<String, Value>;
+type Changes = HashMap<&'static str, Variant<'static>>;
 
-#[derive(Debug)]
-pub enum Error {
-    InvalidMedia(messages::MessageError),
-    TooManyPlayers,
-    Bus(zbus::Error),
-    Io(io::Error),
+struct Root {
+    identity: String,
+    desktop_entry: String,
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidMedia(error) => write!(f, "invalid media message: {error:?}"),
-            Self::TooManyPlayers => write!(f, "at most eight media players are supported"),
-            Self::Bus(error) => write!(f, "D-Bus error: {error}"),
-            Self::Io(error) => write!(f, "I/O error: {error}"),
+impl Root {
+    fn new(media: &Media) -> Self {
+        Self {
+            identity: media.label.clone(),
+            desktop_entry: format!("waydroid.{}", media.package.as_str()),
         }
     }
 }
-
-impl std::error::Error for Error {}
-
-impl From<zbus::Error> for Error {
-    fn from(error: zbus::Error) -> Self {
-        Self::Bus(error)
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-struct State {
-    media: Media,
-    track: u64,
-    since: Instant,
-    art_path: Option<PathBuf>,
-}
-
-impl State {
-    fn position_us(&self) -> i64 {
-        let mut position = self.media.position_ms;
-        if self.media.status == "Playing" {
-            let elapsed = self.since.elapsed().as_millis() as f64 * self.media.speed;
-            position = position.saturating_add(elapsed as i64);
-        }
-        if self.media.duration_ms > 0 {
-            position = position.min(self.media.duration_ms);
-        }
-        position.max(0).saturating_mul(1000)
-    }
-
-    fn can_seek(&self) -> bool {
-        self.media.can_seek && self.media.duration_ms > 0
-    }
-
-    fn rate(&self) -> f64 {
-        if self.media.speed > 0.0 {
-            self.media.speed
-        } else {
-            1.0
-        }
-    }
-
-    fn track_id(&self) -> String {
-        format!(
-            "/org/marathonos/deckard/session{}/track{}",
-            self.media.session_id, self.track
-        )
-    }
-
-    fn metadata(&self) -> HashMap<String, OwnedValue> {
-        let mut metadata = HashMap::new();
-        if let Ok(track) = OwnedObjectPath::try_from(self.track_id())
-            && let Ok(value) = OwnedValue::try_from(DbusValue::from(track))
-        {
-            metadata.insert("mpris:trackid".into(), value);
-        }
-        metadata.insert(
-            "xesam:title".into(),
-            OwnedValue::from(Str::from(self.media.title.clone())),
-        );
-        if self.media.duration_ms > 0 {
-            metadata.insert(
-                "mpris:length".into(),
-                OwnedValue::from(self.media.duration_ms.saturating_mul(1000)),
-            );
-        }
-        if !self.media.artist.is_empty()
-            && let Ok(value) =
-                OwnedValue::try_from(DbusValue::from(vec![self.media.artist.clone()]))
-        {
-            metadata.insert("xesam:artist".into(), value);
-        }
-        if !self.media.album.is_empty() {
-            metadata.insert(
-                "xesam:album".into(),
-                OwnedValue::from(Str::from(self.media.album.clone())),
-            );
-        }
-        if let Some(path) = &self.art_path {
-            metadata.insert(
-                "mpris:artUrl".into(),
-                OwnedValue::from(Str::from(format!("file://{}", path.display()))),
-            );
-        }
-        metadata
-    }
-}
-
-fn lock(state: &Arc<Mutex<State>>) -> MutexGuard<'_, State> {
-    state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-struct Root(Arc<Mutex<State>>);
 
 #[zbus::interface(name = "org.mpris.MediaPlayer2")]
 impl Root {
-    #[zbus(name = "Raise")]
     fn raise(&self) {}
 
-    #[zbus(name = "Quit")]
     fn quit(&self) {}
 
     #[zbus(property)]
@@ -168,12 +63,12 @@ impl Root {
 
     #[zbus(property)]
     fn identity(&self) -> String {
-        lock(&self.0).media.label.clone()
+        self.identity.clone()
     }
 
     #[zbus(property)]
     fn desktop_entry(&self) -> String {
-        format!("waydroid.{}", lock(&self.0).media.package.as_str())
+        self.desktop_entry.clone()
     }
 
     #[zbus(property)]
@@ -188,98 +83,188 @@ impl Root {
 }
 
 struct Player {
-    state: Arc<Mutex<State>>,
-    commands: Sender<BridgeCommand>,
+    media: Media,
+    track: u64,
+    since: Instant,
+    art_url: Option<String>,
+    commands: SyncSender<Command>,
 }
 
 impl Player {
     fn send(&self, command: &str, position_ms: i64) {
-        let sid = lock(&self.state).media.session_id;
-        let _ = self.commands.send(json!({
-            "t": "media_cmd", "sid": sid, "cmd": command, "position": position_ms
-        }));
+        let message = Map::from_iter([
+            ("t".to_owned(), Value::from("media_cmd")),
+            ("sid".to_owned(), Value::from(self.media.session_id)),
+            ("cmd".to_owned(), Value::from(command)),
+            ("position".to_owned(), Value::from(position_ms)),
+        ]);
+        // A full queue means Android is not draining; the command is dropped.
+        let _ = self.commands.try_send(message);
+    }
+
+    fn position_us(&self) -> i64 {
+        let mut position = self.media.position_ms;
+        if self.media.status == "Playing" {
+            let elapsed = self.since.elapsed().as_millis() as f64 * self.media.speed;
+            position = position.saturating_add(elapsed as i64);
+        }
+        if self.media.duration_ms > 0 {
+            position = position.min(self.media.duration_ms);
+        }
+        position.max(0).saturating_mul(1000)
+    }
+
+    fn seekable(&self) -> bool {
+        self.media.can_seek && self.media.duration_ms > 0
+    }
+
+    fn speed(&self) -> f64 {
+        if self.media.speed > 0.0 {
+            self.media.speed
+        } else {
+            1.0
+        }
+    }
+
+    fn track_id(&self) -> ObjectPath<'static> {
+        let path = format!(
+            "/org/marathonos/deckard/session{}/track{}",
+            self.media.session_id, self.track
+        );
+        ObjectPath::from_string_unchecked(path)
+    }
+
+    fn track_metadata(&self) -> Changes {
+        let mut metadata = Changes::from([
+            ("mpris:trackid", Variant::from(self.track_id())),
+            ("xesam:title", Variant::from(self.media.title.clone())),
+        ]);
+        if self.media.duration_ms > 0 {
+            let length = self.media.duration_ms.saturating_mul(1000);
+            metadata.insert("mpris:length", Variant::from(length));
+        }
+        if !self.media.artist.is_empty() {
+            let artists = vec![self.media.artist.clone()];
+            metadata.insert("xesam:artist", Variant::from(artists));
+        }
+        if !self.media.album.is_empty() {
+            metadata.insert("xesam:album", Variant::from(self.media.album.clone()));
+        }
+        if let Some(url) = &self.art_url {
+            metadata.insert("mpris:artUrl", Variant::from(url.clone()));
+        }
+        metadata
+    }
+
+    /// Takes a new session state; `art` is `None` when the message left art
+    /// unchanged. Returns the changed properties and any `Seeked` position.
+    fn apply(&mut self, media: Media, art: Option<Option<String>>) -> (Changes, Option<i64>) {
+        let expected = self.position_us();
+        let new_track = media.title != self.media.title
+            || media.artist != self.media.artist
+            || media.album != self.media.album
+            || media.duration_ms != self.media.duration_ms;
+        if new_track {
+            self.track += 1;
+        }
+        let art_changed = art.is_some_and(|url| {
+            let changed = url != self.art_url;
+            self.art_url = url;
+            changed
+        });
+        let old = std::mem::replace(&mut self.media, media);
+        self.since = Instant::now();
+        let mut changed = Changes::new();
+        if new_track || art_changed {
+            changed.insert("Metadata", Variant::from(self.track_metadata()));
+        }
+        if self.media.status != old.status {
+            changed.insert("PlaybackStatus", Variant::from(self.media.status.clone()));
+        }
+        if self.media.speed != old.speed {
+            changed.insert("Rate", Variant::from(self.speed()));
+        }
+        let flags = [
+            ("CanPlay", self.media.can_play, old.can_play),
+            ("CanPause", self.media.can_pause, old.can_pause),
+            ("CanGoNext", self.media.can_next, old.can_next),
+            ("CanGoPrevious", self.media.can_previous, old.can_previous),
+        ];
+        for (name, now, before) in flags {
+            if now != before {
+                changed.insert(name, Variant::from(now));
+            }
+        }
+        changed.insert("CanSeek", Variant::from(self.seekable()));
+        let position = self.position_us();
+        let seeked = (!new_track && (position - expected).abs() > 1_500_000).then_some(position);
+        (changed, seeked)
     }
 }
 
 #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
 impl Player {
-    #[zbus(name = "Next")]
     fn next(&self) {
         self.send("next", 0);
     }
 
-    #[zbus(name = "Previous")]
     fn previous(&self) {
         self.send("previous", 0);
     }
 
-    #[zbus(name = "Pause")]
     fn pause(&self) {
         self.send("pause", 0);
     }
 
-    #[zbus(name = "PlayPause")]
     fn play_pause(&self) {
         self.send("playpause", 0);
     }
 
-    #[zbus(name = "Stop")]
     fn stop(&self) {
         self.send("stop", 0);
     }
 
-    #[zbus(name = "Play")]
     fn play(&self) {
         self.send("play", 0);
     }
 
-    #[zbus(name = "Seek")]
     fn seek(&self, offset_us: i64) {
-        let state = lock(&self.state);
-        let position = state
-            .can_seek()
-            .then(|| state.position_us().saturating_add(offset_us).max(0) / 1000);
-        drop(state);
-        if let Some(position) = position {
-            self.send("seek", position);
+        if self.seekable() {
+            let target = self.position_us().saturating_add(offset_us).max(0);
+            self.send("seek", target / 1000);
         }
     }
 
-    #[zbus(name = "SetPosition")]
     fn set_position(&self, track: OwnedObjectPath, position_us: i64) {
-        let state = lock(&self.state);
-        let allowed = state.can_seek() && track.as_str() == state.track_id() && position_us >= 0;
-        drop(state);
-        if allowed {
+        if self.seekable() && *track == self.track_id() && position_us >= 0 {
             self.send("seek", position_us / 1000);
         }
     }
 
-    #[zbus(name = "OpenUri")]
     fn open_uri(&self, _uri: &str) {}
 
     #[zbus(signal)]
     async fn seeked(
-        ctxt: &zbus::object_server::SignalEmitter<'_>,
-        position_us: i64,
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        position: i64,
     ) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn playback_status(&self) -> String {
-        lock(&self.state).media.status.clone()
+        self.media.status.clone()
     }
 
     #[zbus(property)]
     fn rate(&self) -> f64 {
-        lock(&self.state).rate()
+        self.speed()
     }
 
     #[zbus(property)]
     fn set_rate(&mut self, _rate: f64) {}
 
     #[zbus(property)]
-    fn metadata(&self) -> HashMap<String, OwnedValue> {
-        lock(&self.state).metadata()
+    fn metadata(&self) -> Changes {
+        self.track_metadata()
     }
 
     #[zbus(property)]
@@ -292,42 +277,42 @@ impl Player {
 
     #[zbus(property)]
     fn position(&self) -> i64 {
-        lock(&self.state).position_us()
+        self.position_us()
     }
 
     #[zbus(property)]
     fn minimum_rate(&self) -> f64 {
-        lock(&self.state).rate()
+        self.speed()
     }
 
     #[zbus(property)]
     fn maximum_rate(&self) -> f64 {
-        lock(&self.state).rate()
+        self.speed()
     }
 
     #[zbus(property)]
     fn can_go_next(&self) -> bool {
-        lock(&self.state).media.can_next
+        self.media.can_next
     }
 
     #[zbus(property)]
     fn can_go_previous(&self) -> bool {
-        lock(&self.state).media.can_previous
+        self.media.can_previous
     }
 
     #[zbus(property)]
     fn can_play(&self) -> bool {
-        lock(&self.state).media.can_play
+        self.media.can_play
     }
 
     #[zbus(property)]
     fn can_pause(&self) -> bool {
-        lock(&self.state).media.can_pause
+        self.media.can_pause
     }
 
     #[zbus(property)]
     fn can_seek(&self) -> bool {
-        lock(&self.state).can_seek()
+        self.seekable()
     }
 
     #[zbus(property)]
@@ -338,219 +323,199 @@ impl Player {
 
 struct ActivePlayer {
     connection: Connection,
-    state: Arc<Mutex<State>>,
+    art: Option<PathBuf>,
 }
 
 impl Drop for ActivePlayer {
     fn drop(&mut self) {
-        if let Some(path) = &lock(&self.state).art_path {
+        if let Some(path) = &self.art {
             let _ = fs::remove_file(path);
         }
     }
 }
 
+fn art_url(path: &Option<PathBuf>) -> Option<String> {
+    path.as_ref()
+        .map(|path| format!("file://{}", path.display()))
+}
+
+/// Owns every player of one Android connection and the art cache directory.
 pub struct MprisAdapter {
     address: Option<String>,
     art_dir: PathBuf,
-    commands: Sender<BridgeCommand>,
+    art_serial: u64,
     players: HashMap<i32, ActivePlayer>,
+    sender: SyncSender<Command>,
+    commands: Receiver<Command>,
 }
 
 impl MprisAdapter {
-    pub fn new_session(art_dir: impl Into<PathBuf>, commands: Sender<BridgeCommand>) -> Self {
-        Self::new_at(None, art_dir, commands)
-    }
-
-    pub fn new_at(
-        address: Option<&str>,
-        art_dir: impl Into<PathBuf>,
-        commands: Sender<BridgeCommand>,
-    ) -> Self {
-        Self {
-            address: address.map(str::to_owned),
-            art_dir: art_dir.into(),
-            commands,
-            players: HashMap::new(),
+    /// Players connect to the bus at `address`, or the session bus when it is
+    /// `None`. Art left in `art_dir` by an earlier run is deleted.
+    ///
+    /// # Errors
+    ///
+    /// The art directory cannot be emptied or created.
+    pub fn new(address: Option<&str>, art_dir: impl Into<PathBuf>) -> io::Result<Self> {
+        let art_dir = art_dir.into();
+        match fs::remove_dir_all(&art_dir) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
         }
+        fs::create_dir_all(&art_dir)?;
+        let (sender, commands) = mpsc::sync_channel(MAX_COMMANDS);
+        Ok(Self {
+            address: address.map(str::to_owned),
+            art_dir,
+            art_serial: 0,
+            players: HashMap::new(),
+            sender,
+            commands,
+        })
     }
 
+    #[must_use]
     pub fn active_players(&self) -> usize {
         self.players.len()
     }
 
-    pub fn handle(&mut self, kind: &str, message: &Map<String, Value>) -> Result<(), Error> {
-        match kind {
-            "media_gone" => {
+    /// Applies a `media` or `media_gone` message; other types are ignored.
+    ///
+    /// # Errors
+    ///
+    /// The session is malformed, over the player limit, or its player could
+    /// not be registered, updated or given its art.
+    pub fn handle(&mut self, message: &Map<String, Value>) -> zbus::Result<()> {
+        match message.get("t").and_then(Value::as_str) {
+            Some("media_gone") => {
                 let sid = message.get("sid").and_then(Value::as_i64).unwrap_or(0);
                 if let Ok(sid) = i32::try_from(sid) {
                     self.players.remove(&sid);
                 }
+                Ok(())
             }
-            "media" => {
-                let media = messages::media(message).map_err(Error::InvalidMedia)?;
-                self.upsert(media)?;
+            Some("media") => {
+                let media = messages::media(message).map_err(|error| {
+                    zbus::Error::Failure(format!("invalid media message: {error:?}"))
+                })?;
+                if self.players.contains_key(&media.session_id) {
+                    self.update(media)
+                } else {
+                    self.insert(media)
+                }
             }
-            _ => {}
+            _ => Ok(()),
         }
-        Ok(())
     }
 
+    /// Removes every player and discards commands they had queued.
     pub fn clear(&mut self) {
         self.players.clear();
+        (self.sender, self.commands) = mpsc::sync_channel(MAX_COMMANDS);
     }
 
-    fn connect(&self, name: &str, state: Arc<Mutex<State>>) -> Result<Connection, Error> {
-        let builder = if let Some(address) = &self.address {
-            Builder::address(address.as_str())?
-        } else {
-            Builder::session()?
-        };
-        Ok(builder
-            .name(name)?
-            .serve_at(PATH, Root(Arc::clone(&state)))?
-            .serve_at(
-                PATH,
-                Player {
-                    state,
-                    commands: self.commands.clone(),
-                },
-            )?
-            .build()?)
+    /// `media_cmd` messages for Android, at most one queue's worth per call.
+    #[must_use]
+    pub fn take_commands(&self) -> Vec<Command> {
+        self.commands.try_iter().take(MAX_COMMANDS).collect()
     }
 
-    fn upsert(&mut self, media: Media) -> Result<(), Error> {
-        if let Some(player) = self.players.get_mut(&media.session_id) {
-            update_player(player, media, &self.art_dir)?;
-            return Ok(());
-        }
+    fn insert(&mut self, media: Media) -> zbus::Result<()> {
         if self.players.len() >= MAX_PLAYERS {
-            return Err(Error::TooManyPlayers);
+            let error = format!("more than {MAX_PLAYERS} media sessions");
+            return Err(zbus::Error::Failure(error));
         }
         let sid = media.session_id;
         let name = format!(
             "org.mpris.MediaPlayer2.waydroid_{}.instance{sid}",
             media.package.as_str().replace('.', "_")
         );
-        let state = Arc::new(Mutex::new(State {
+        let art = match &media.art {
+            Some(png) => self.write_art(sid, png)?,
+            None => None,
+        };
+        let root = Root::new(&media);
+        let player = Player {
             media,
             track: 1,
             since: Instant::now(),
-            art_path: None,
-        }));
-        let initial_art = lock(&state).media.art.clone();
-        if let Some(art) = initial_art {
-            let path = write_art(&self.art_dir, sid, &art)?;
-            lock(&state).art_path = path;
-        }
-        let connection = match self.connect(&name, Arc::clone(&state)) {
+            art_url: art_url(&art),
+            commands: self.sender.clone(),
+        };
+        let connection = match self.connect(&name, root, player) {
             Ok(connection) => connection,
             Err(error) => {
-                if let Some(path) = &lock(&state).art_path {
+                if let Some(path) = art {
                     let _ = fs::remove_file(path);
                 }
                 return Err(error);
             }
         };
-        self.players.insert(sid, ActivePlayer { connection, state });
+        self.players.insert(sid, ActivePlayer { connection, art });
         Ok(())
     }
-}
 
-fn write_art(directory: &Path, sid: i32, png: &[u8]) -> Result<Option<PathBuf>, Error> {
-    if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Ok(None);
+    fn connect(&self, name: &str, root: Root, player: Player) -> zbus::Result<Connection> {
+        let builder = match &self.address {
+            Some(address) => Builder::address(address.as_str())?,
+            None => Builder::session()?,
+        };
+        builder
+            .name(name)?
+            .serve_at(PATH, root)?
+            .serve_at(PATH, player)?
+            .build()
     }
-    let Ok((width, height)) =
-        image::ImageReader::with_format(Cursor::new(png), ImageFormat::Png).into_dimensions()
-    else {
-        return Ok(None);
-    };
-    if width == 0 || height == 0 || width > 4096 || height > 4096 {
-        return Ok(None);
-    }
-    let Ok(image) = image::load_from_memory_with_format(png, ImageFormat::Png) else {
-        return Ok(None);
-    };
-    let image = if width.max(height) > 512 {
-        image.resize(512, 512, image::imageops::FilterType::Triangle)
-    } else {
-        image
-    };
-    fs::create_dir_all(directory)?;
-    let serial = ART_SERIAL.fetch_add(1, Ordering::Relaxed);
-    let path = directory.join(format!("{sid}-{serial}.png"));
-    let mut temp = tempfile::NamedTempFile::new_in(directory)?;
-    image
-        .to_rgba8()
-        .write_to(&mut temp, ImageFormat::Png)
-        .map_err(io::Error::other)?;
-    temp.persist(&path).map_err(|error| error.error)?;
-    Ok(Some(path))
-}
 
-fn update_player(player: &mut ActivePlayer, media: Media, art_dir: &Path) -> Result<(), Error> {
-    let replacement_art = media
-        .art
-        .as_ref()
-        .map(|art| write_art(art_dir, media.session_id, art))
-        .transpose()?;
-    let mut state = lock(&player.state);
-    let expected = state.position_us();
-    let new_track = media.title != state.media.title
-        || media.artist != state.media.artist
-        || media.album != state.media.album
-        || media.duration_ms != state.media.duration_ms;
-    if new_track {
-        state.track += 1;
-    }
-    let old_art = state.art_path.clone();
-    let has_replacement = replacement_art.is_some();
-    if let Some(art) = replacement_art {
-        state.art_path = art;
-    }
-    let old = std::mem::replace(&mut state.media, media);
-    state.since = Instant::now();
-    let mut changed = HashMap::new();
-    if new_track || state.art_path != old_art {
-        changed.insert("Metadata".to_owned(), OwnedValue::from(state.metadata()));
-    }
-    if state.media.status != old.status {
-        changed.insert(
-            "PlaybackStatus".to_owned(),
-            OwnedValue::from(Str::from(state.media.status.clone())),
-        );
-    }
-    if state.media.speed != old.speed {
-        changed.insert("Rate".to_owned(), OwnedValue::from(state.rate()));
-    }
-    for (key, new, previous) in [
-        ("CanPlay", state.media.can_play, old.can_play),
-        ("CanPause", state.media.can_pause, old.can_pause),
-        ("CanGoNext", state.media.can_next, old.can_next),
-        ("CanGoPrevious", state.media.can_previous, old.can_previous),
-    ] {
-        if new != previous {
-            changed.insert(key.to_owned(), OwnedValue::from(new));
+    fn update(&mut self, media: Media) -> zbus::Result<()> {
+        let sid = media.session_id;
+        let art = match &media.art {
+            Some(png) => Some(self.write_art(sid, png)?),
+            None => None,
+        };
+        let Some(active) = self.players.get_mut(&sid) else {
+            return Ok(());
+        };
+        let url = art.as_ref().map(art_url);
+        if let Some(path) = art
+            && let Some(old) = std::mem::replace(&mut active.art, path)
+        {
+            let _ = fs::remove_file(old);
         }
+        let server = active.connection.object_server();
+        *server.interface::<_, Root>(PATH)?.get_mut() = Root::new(&media);
+        let (changed, seeked) = server
+            .interface::<_, Player>(PATH)?
+            .get_mut()
+            .apply(media, url);
+        active.connection.emit_signal(
+            None::<&str>,
+            PATH,
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            &(PLAYER, changed, Vec::<String>::new()),
+        )?;
+        if let Some(position) = seeked {
+            active
+                .connection
+                .emit_signal(None::<&str>, PATH, PLAYER, "Seeked", &(position,))?;
+        }
+        Ok(())
     }
-    changed.insert("CanSeek".to_owned(), OwnedValue::from(state.can_seek()));
-    let seeked = (!new_track && (state.position_us() - expected).abs() > 1_500_000)
-        .then(|| state.position_us());
-    drop(state);
-    if has_replacement && let Some(path) = &old_art {
-        let _ = fs::remove_file(path);
+
+    /// Writes bounded, re-encoded art; `None` when the PNG is empty or unsafe.
+    fn write_art(&mut self, sid: i32, png: &[u8]) -> io::Result<Option<PathBuf>> {
+        let Ok(png) = png_guard::sanitize(png, MAX_ART_BYTES, ART_SIDE) else {
+            return Ok(None);
+        };
+        fs::create_dir_all(&self.art_dir)?;
+        self.art_serial += 1;
+        let path = self.art_dir.join(format!("{sid}-{}.png", self.art_serial));
+        let mut file = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o666))
+            .tempfile_in(&self.art_dir)?;
+        file.write_all(&png)?;
+        file.persist(&path).map_err(|error| error.error)?;
+        Ok(Some(path))
     }
-    player.connection.emit_signal(
-        None::<&str>,
-        PATH,
-        PROPERTIES,
-        "PropertiesChanged",
-        &(PLAYER, changed, Vec::<String>::new()),
-    )?;
-    if let Some(position) = seeked {
-        player
-            .connection
-            .emit_signal(None::<&str>, PATH, PLAYER, "Seeked", &(position,))?;
-    }
-    Ok(())
 }
