@@ -6,6 +6,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use deckard_core::ids::PackageName;
+use deckard_core::keel::APP_ID_PREFIX;
 use deckard_core::runtime_state::SHELL_BUS_NAME;
 use deckard_core::sync;
 use deckard_core::text;
@@ -15,16 +16,15 @@ use zbus::blocking::{Connection, MessageIterator, Proxy};
 
 use crate::app_channel::{ChannelEvent, ChannelHandle};
 
-pub const APP_ID_PREFIX: &str = "waydroid.";
-pub const TEXT_INPUT_PATH: &str = "/org/marathonos/Shell/TextInput";
-pub const TEXT_INPUT_INTERFACE: &str = "org.marathonos.Shell.TextInput1";
+const TEXT_INPUT_PATH: &str = "/org/marathonos/Shell/TextInput";
+const TEXT_INPUT_INTERFACE: &str = "org.marathonos.Shell.TextInput1";
 const MAX_TEXT: usize = 4096;
 const MAX_PANELS: usize = 256;
 const HINT_MASK: u32 = 0x3ff;
 
 /// A TextInput1 call.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ShellCall {
+enum ShellCall {
     SetEditor(String, u32, u32),
     SetSurroundingText(String, String, i32, i32),
     ShowPanel(String),
@@ -34,7 +34,7 @@ pub enum ShellCall {
 
 /// The focused Android editor, and the Shell's last panel for each app.
 #[derive(Default)]
-pub struct ImeState {
+struct ImeState {
     app_id: Option<String>,
     panels: HashMap<String, (i32, i32)>,
 }
@@ -57,7 +57,7 @@ fn panel((covered, height): (i32, i32)) -> Map<String, Value> {
 impl ImeState {
     /// Takes a DeckardIme message: the Shell call it makes, and the panel
     /// to replay to Android when an editor starts.
-    pub fn android(
+    fn android(
         &mut self,
         message: &Map<String, Value>,
     ) -> (Option<ShellCall>, Option<Map<String, Value>>) {
@@ -101,7 +101,7 @@ impl ImeState {
     }
 
     /// The calls that withdraw the editor when DeckardIme goes away.
-    pub fn disconnect(&mut self) -> Vec<ShellCall> {
+    fn disconnect(&mut self) -> Vec<ShellCall> {
         let Some(app_id) = self.app_id.take() else {
             return Vec::new();
         };
@@ -113,7 +113,7 @@ impl ImeState {
 
     /// A TextInput1 signal as DeckardIme's message, when it is for the
     /// focused editor.
-    pub fn shell(&mut self, signal: &Message) -> Option<Map<String, Value>> {
+    fn shell(&mut self, signal: &Message) -> Option<Map<String, Value>> {
         let body = signal.body();
         match signal.header().member()?.as_str() {
             "CommitString" => {
@@ -154,19 +154,7 @@ impl ImeState {
     }
 }
 
-/// The Shell's TextInput1 on `bus`.
-///
-/// # Errors
-/// Never in practice: the names are fixed and valid.
-pub fn text_input(bus: &Connection) -> zbus::Result<Proxy<'static>> {
-    Proxy::new(bus, SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)
-}
-
-/// Makes `call` on `shell`.
-///
-/// # Errors
-/// The Shell refused or did not answer.
-pub fn call(shell: &Proxy<'_>, call: &ShellCall) -> zbus::Result<()> {
+fn call(shell: &Proxy<'_>, call: &ShellCall) -> zbus::Result<()> {
     match call {
         ShellCall::SetEditor(app, purpose, hints) => {
             shell.call("SetEditor", &(app, purpose, hints))
@@ -187,10 +175,7 @@ fn send(shell: &Proxy<'_>, calls: &[ShellCall]) {
 }
 
 /// Registers the `waydroid.` app ids with the Shell.
-///
-/// # Errors
-/// The Shell refused or is not running.
-pub fn register(shell: &Proxy<'_>) -> zbus::Result<()> {
+fn register(shell: &Proxy<'_>) -> zbus::Result<()> {
     shell.call("Register", &(APP_ID_PREFIX,))
 }
 
@@ -198,7 +183,8 @@ pub fn register(shell: &Proxy<'_>) -> zbus::Result<()> {
 /// runs on its own thread. Messages to Android are queued under the lock,
 /// which is never held across a D-Bus call.
 pub fn serve(events: &Receiver<ChannelEvent>, handle: &ChannelHandle, bus: &Connection) {
-    let shell = match text_input(bus) {
+    let shell = Proxy::new(bus, SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE);
+    let shell = match shell {
         Ok(shell) => shell,
         Err(error) => return eprintln!("deckard-bridge: no Shell TextInput1: {error}"),
     };
@@ -443,7 +429,7 @@ mod tests {
             .at(TEXT_INPUT_PATH, MockShell(Arc::clone(&calls)))?;
         owner.request_name(SHELL_BUS_NAME)?;
         let bus = Connection::session()?;
-        let shell = text_input(&bus)?;
+        let shell = Proxy::new(&bus, SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)?;
         register(&shell)?;
         let expected = vec![
             ShellCall::SetEditor("waydroid.org.example".into(), 7, 0x200),
