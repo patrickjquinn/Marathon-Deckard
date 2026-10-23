@@ -4,7 +4,7 @@ use crate::mounts::MountLayout;
 use crate::network::Network;
 use crate::{Error, Result};
 
-/// Root-only lifecycle coordinator. It does not expose a D-Bus API or touch systemd.
+/// Root-only lifecycle coordinator. It does not touch systemd.
 pub struct ContainerManager {
     pub lxc: Lxc,
     pub mounts: MountLayout,

@@ -5,6 +5,12 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
+[dependencies]
+async-io = "2"
+blocking = "=1.7.0"
+rustix = { version = "=1.1.5", features = ["process"] }
+zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
+
 # This prototype is intentionally independent of the production workspace.
 [workspace]
 
