@@ -274,7 +274,11 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
         rx.recv_timeout(Duration::from_millis(750)).is_err(),
         "a tapped non-auto-cancel row must not be dismissed"
     );
-    assert_eq!(adapter.snapshot(), json!({}));
+    let saved = std::fs::read(home.path().join("notifications.json"))?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&saved)?,
+        json!({})
+    );
 
     adapter.post(&post("dismiss", "Dismiss", true))?;
     hub.emit_signal(

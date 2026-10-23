@@ -26,9 +26,6 @@ use zbus::zvariant::Value as Variant;
 pub type AdapterError = Box<dyn Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, AdapterError>;
 
-/// Hands a Hub action back to Android.
-pub type ToAndroid = dyn Fn(BridgeEvent) + Send + Sync;
-
 const HUB: &str = "org.freedesktop.Notifications";
 const HUB_PATH: &str = "/org/freedesktop/Notifications";
 const MAX_STATE_BYTES: usize = 1024 * 1024;
@@ -42,7 +39,7 @@ struct Inner {
     state: Mutex<NotificationState>,
     state_path: PathBuf,
     icon_dir: PathBuf,
-    to_android: Box<ToAndroid>,
+    to_android: Box<dyn Fn(BridgeEvent) + Send + Sync>,
     dismissals: SyncSender<Dismissal>,
 }
 
@@ -139,12 +136,6 @@ impl NotificationAdapter {
     /// The Hub refused it, or the state could not be saved.
     pub fn sync(&self, live_keys: &[String]) -> Result<()> {
         self.apply(|state| state.sync(live_keys))
-    }
-
-    /// The state as `notifications.json` holds it.
-    #[must_use]
-    pub fn snapshot(&self) -> Value {
-        sync::lock(&self.inner.state).snapshot()
     }
 
     fn apply(&self, change: impl FnOnce(&mut NotificationState) -> Vec<Command>) -> Result<()> {
@@ -323,7 +314,8 @@ fn image_data(png: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
         image
     };
     let image = image.to_rgba8();
-    let (width, height) = (image.width() as i32, image.height() as i32);
+    let width = i32::try_from(image.width()).ok()?;
+    let height = i32::try_from(image.height()).ok()?;
     Some((width, height, image.into_raw()))
 }
 
