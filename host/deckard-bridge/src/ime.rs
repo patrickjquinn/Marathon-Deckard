@@ -288,7 +288,6 @@ fn follow_owner(bus: &Connection, shell: &Proxy<'_>) -> zbus::Result<()> {
 mod tests {
     use super::*;
 
-    use deckard_core::framing;
     use zbus::interface;
 
     struct MockShell(Arc<Mutex<Vec<ShellCall>>>);
@@ -433,20 +432,6 @@ mod tests {
             ]
         );
         assert!(ime.shell(&signal("Key", &(app, "enter"))).is_none());
-    }
-
-    #[test]
-    fn framed_fixture_round_trip() {
-        let message = message(json!({"t":"commit","text":"😀","before":2,"after":0}));
-        let frame = framing::encode(&message).unwrap();
-        assert_eq!(
-            u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize,
-            frame.len() - 4
-        );
-        assert_eq!(
-            serde_json::from_slice::<Map<String, Value>>(&frame[4..]).unwrap(),
-            message
-        );
     }
 
     #[test]

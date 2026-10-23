@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use deckard_core::pressure::{self, Reason, ReclaimPolicy};
 use deckard_core::sync;
-use deckard_core::validate::clean_text;
+use deckard_core::validate;
 use rustix::event::{PollFd, PollFlags};
 use rustix::fs::inotify::{CreateFlags, WatchFlags};
 use rustix::fs::{Mode, OFlags};
@@ -118,12 +118,15 @@ impl Reclaimer {
             let name = process.get("process").and_then(Value::as_str);
             eprintln!(
                 "deckard-bridge: reclaim ended {}",
-                clean_text(name.unwrap_or(""), 128)
+                validate::clean_text(name.unwrap_or(""), 128)
             );
         }
         if !ok {
             let error = message.get("error").and_then(Value::as_str).unwrap_or("");
-            eprintln!("deckard-bridge: reclaim failed: {}", clean_text(error, 256));
+            eprintln!(
+                "deckard-bridge: reclaim failed: {}",
+                validate::clean_text(error, 256)
+            );
         }
     }
 

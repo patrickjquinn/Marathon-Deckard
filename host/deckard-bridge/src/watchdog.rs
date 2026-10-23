@@ -17,7 +17,6 @@ use deckard_core::runtime_state::{
 };
 use deckard_core::sync;
 use zbus::blocking::{Connection, MessageIterator};
-use zbus::{MatchRule, message};
 
 const EVENT_CAPACITY: usize = 16;
 const EVIDENCE_LOG_LIMIT: u64 = 256 * 1024;
@@ -182,13 +181,7 @@ pub fn follow_shell(
     bus: &Connection,
     restart: impl Fn() + Send + Sync + 'static,
 ) -> zbus::Result<()> {
-    let rule = MatchRule::builder()
-        .msg_type(message::Type::Signal)
-        .sender("org.freedesktop.DBus")?
-        .interface("org.freedesktop.DBus")?
-        .member("NameOwnerChanged")?
-        .add_arg(SHELL_BUS_NAME)?
-        .build();
+    let rule = crate::owner_changes(SHELL_BUS_NAME)?;
     let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
     let follower = Arc::new(Mutex::new(SessionFollower::default()));
     let restart = Arc::new(restart);

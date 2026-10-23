@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use deckard_core::runtime_state::{ResetError, RuntimeState, State, UnitCall};
 use deckard_core::sync;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
 use zbus::{MatchRule, message};
@@ -21,6 +21,7 @@ const SYSTEMD: &str = "org.freedesktop.systemd1";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
 
+/// The runtime state Settings shows; cheap to clone.
 #[derive(Clone)]
 pub struct Runtime {
     state: Arc<Mutex<RuntimeState>>,
@@ -34,15 +35,13 @@ impl Runtime {
         sync::lock(&self.state)
     }
 
+    /// `policy` is Settings' `settings.json`, `applications` the desktop
+    /// entries and `memory` the container's `memory.current`.
+    #[must_use]
     pub fn new(policy: PathBuf, applications: PathBuf, memory: PathBuf) -> Self {
         let mut state = RuntimeState::default();
-        if let Some(enabled) = fs::read(&policy)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|value| value.get("startAtLogin").cloned())
-            .map(|value| value.as_bool().unwrap_or(false))
-        {
-            state.set_start_at_login(enabled);
+        if let Some(enabled) = read_policy(&policy).get("startAtLogin") {
+            state.set_start_at_login(enabled.as_bool().unwrap_or(false));
         }
         Self {
             state: Arc::new(Mutex::new(state)),
@@ -52,6 +51,7 @@ impl Runtime {
         }
     }
 
+    /// `GetRuntime`'s and `RuntimeChanged`'s dictionary.
     pub fn snapshot(&self) -> HashMap<String, OwnedValue> {
         let mut state = self.lock();
         state.set_has_android_apps(has_apps(&self.applications));
@@ -83,14 +83,20 @@ impl Runtime {
         ])
     }
 
+    /// Whether the snapshot changed.
+    #[must_use]
     pub fn set_connected(&self, connected: bool) -> bool {
         !self.lock().set_android_connected(connected).is_empty()
     }
 
+    /// Whether the snapshot changed.
+    #[must_use]
     pub fn set_version(&self, version: &str) -> bool {
         !self.lock().set_android_version(version).is_empty()
     }
 
+    /// Whether the snapshot changed.
+    #[must_use]
     pub fn set_unit(&self, active: &str, entered_ms: i64) -> bool {
         !self.lock().set_unit(active, entered_ms).is_empty()
     }
@@ -100,38 +106,47 @@ impl Runtime {
         self.lock().active_since_ms()
     }
 
+    #[must_use]
     pub fn state(&self) -> State {
         self.lock().state()
     }
 
+    /// Starts a reset; its request id.
+    ///
+    /// # Errors
+    /// A reset is running, or the helper is not `available`.
     pub fn request_reset(&self, available: bool) -> Result<u64, ResetError> {
         self.lock()
             .request_reset(available)
             .map(|(request, _)| request)
     }
 
+    /// Reset `request` waited too long for Android to stop.
     pub fn reset_timeout(&self, request: u64) {
         let mut state = self.lock();
         state.on_stop_timeout(request);
         state.on_reset_helper_failed_to_start(request);
     }
 
+    /// Reset `request`'s helper exited.
     pub fn reset_finished(&self, request: u64, success: bool) {
         self.lock().on_reset_helper_finished(request, success);
     }
 
+    /// Whether Android should start now that the user logged in.
+    #[must_use]
     pub fn at_login(&self) -> bool {
         let mut state = self.lock();
         state.set_has_android_apps(has_apps(&self.applications));
         !state.at_login().is_empty()
     }
 
+    /// Saves the choice in the policy file, keeping its other keys.
+    ///
+    /// # Errors
+    /// The policy file could not be written.
     pub fn set_start_at_login(&self, enabled: bool) -> std::io::Result<()> {
-        let mut policy = fs::read(&self.policy)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
+        let mut policy = read_policy(&self.policy);
         policy.insert("startAtLogin".into(), Value::Bool(enabled));
         let parent = self.policy.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
@@ -143,6 +158,12 @@ impl Runtime {
         self.lock().set_start_at_login(enabled);
         Ok(())
     }
+}
+
+fn read_policy(path: &Path) -> Map<String, Value> {
+    let policy = fs::read(path).ok();
+    let policy = policy.and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    policy.map(crate::object).unwrap_or_default()
 }
 
 fn has_apps(path: &Path) -> bool {
@@ -170,6 +191,10 @@ async fn manager_call(bus: &zbus::Connection, method: &str) -> zbus::Result<()> 
     Ok(())
 }
 
+/// Starts, stops or restarts the session unit.
+///
+/// # Errors
+/// systemd refused the job.
 pub async fn call_unit(bus: &zbus::Connection, call: UnitCall) -> zbus::Result<()> {
     let method = match call {
         UnitCall::Start => "StartUnit",
@@ -180,6 +205,9 @@ pub async fn call_unit(bus: &zbus::Connection, call: UnitCall) -> zbus::Result<(
 }
 
 /// Restarts the session only while it runs.
+///
+/// # Errors
+/// systemd refused the job.
 pub async fn try_restart_unit(bus: &zbus::Connection) -> zbus::Result<()> {
     manager_call(bus, "TryRestartUnit").await
 }
@@ -299,7 +327,7 @@ mod tests {
             dir.path().join("apps"),
             dir.path().join("memory"),
         );
-        runtime.set_unit("active", 1000);
+        let _ = runtime.set_unit("active", 1000);
         let first = runtime.request_reset(true).unwrap();
         assert_eq!(
             runtime.request_reset(true),
@@ -307,7 +335,7 @@ mod tests {
         );
         runtime.reset_timeout(first);
         let second = runtime.request_reset(true).unwrap();
-        runtime.set_unit("inactive", 0);
+        let _ = runtime.set_unit("inactive", 0);
         runtime.reset_timeout(second);
         assert!(runtime.request_reset(true).is_ok());
     }

@@ -1,9 +1,13 @@
+//! DeckardSystem's `manage` requests, answered by id within one connection.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_channel::Sender;
 use async_io::Timer;
+use deckard_core::sync;
+use deckard_core::validate;
 use futures_lite::future;
 use serde_json::{Map, Value};
 
@@ -23,15 +27,17 @@ struct Inner {
     pending: HashMap<String, Pending>,
 }
 
+/// The DeckardSystem connection and its requests in flight; cheap to clone.
 #[derive(Clone, Default)]
 pub struct Manage(Arc<Mutex<Inner>>);
 
 impl Manage {
     fn inner(&self) -> MutexGuard<'_, Inner> {
-        // Nothing panics while holding it: poison is a broken invariant.
-        self.0.lock().unwrap_or_else(|_| std::process::abort())
+        sync::lock(&self.0)
     }
 
+    /// A new DeckardSystem sends through `sender`; its generation.
+    /// Requests to the old one fail.
     pub fn connect(&self, sender: Sender<Map<String, Value>>) -> u64 {
         let mut inner = self.inner();
         inner.generation = inner.generation.wrapping_add(1);
@@ -42,6 +48,7 @@ impl Manage {
         inner.generation
     }
 
+    /// DeckardSystem `generation` went away; a newer one stays.
     pub fn disconnect(&self, generation: u64) {
         let mut inner = self.inner();
         if inner.generation != generation {
@@ -53,15 +60,19 @@ impl Manage {
         }
     }
 
+    #[must_use]
     pub fn connected(&self) -> bool {
         self.inner().outbound.is_some()
     }
 
+    /// Whether `generation` is the one connected.
+    #[must_use]
     pub fn is_generation(&self, generation: u64) -> bool {
         let inner = self.inner();
         inner.generation == generation && inner.outbound.is_some()
     }
 
+    /// Queues `message`; false when offline or the queue is full.
     pub fn send(&self, message: Map<String, Value>) -> bool {
         self.inner()
             .outbound
@@ -69,6 +80,10 @@ impl Manage {
             .is_some_and(|outbound| outbound.try_send(message).is_ok())
     }
 
+    /// Sends `op` with `args` and waits up to 30 s for its `managed` reply.
+    ///
+    /// # Errors
+    /// Android is offline, busy, gone, silent, or answered with an error.
     pub async fn request(
         &self,
         op: &str,
@@ -109,6 +124,7 @@ impl Manage {
         reply.unwrap_or_else(|| Err("Android didn't answer".into()))
     }
 
+    /// Takes `managed` replies from DeckardSystem `generation`.
     pub fn handle(&self, generation: u64, message: &Map<String, Value>) {
         if message.get("t").and_then(Value::as_str) != Some("managed") {
             return;
@@ -130,7 +146,7 @@ impl Manage {
             Ok(message.clone())
         } else {
             let error = message.get("error").and_then(Value::as_str).unwrap_or("");
-            Err(deckard_core::validate::clean_text(error, 256))
+            Err(validate::clean_text(error, 256))
         };
         let _ = pending.sender.try_send(result);
     }
