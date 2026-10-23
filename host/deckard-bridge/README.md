@@ -15,16 +15,21 @@ Wired into the daemon (`main.rs`):
 - IME focus and panel replay to the Shell, packages (app and system routing,
   mutation policy) and notifications (Hub listener, persisted state, actions,
   icons, toasts).
+- The session unit followed through systemd's `PropertiesChanged`, the boot
+  watchdog (`/data/deckard/booted`, `deckard-boot-evidence`) and the Shell
+  follower (`TryRestartUnit` when `org.marathonos.Shell` returns).
+- Memory reclaim from the container's `memory.events` and PSI triggers
+  (`reclaim.rs`), and the ambience palette and Doze written to
+  `/data/deckard/palette` and `/data/deckard/doze` (`shell_sync.rs`).
 
 Present as modules but **not wired** into the daemon: media/MPRIS and audio
 (`mpris.rs`, `audio.rs`), intents/file chooser/capture (`intents.rs`) and
 sharing (`sharing.rs`). Their tests include the sources with `#[path]`.
 
 Not ported yet from C++ `deckardd`: Keel and Pilot app providers, permission
-prompts, location, shared storage (ACLs, media indexing), Doze, PSI/cgroup
-reclamation, palette sync and the boot watchdog. Runtime unit state is polled
-once per second rather than subscribed to systemd property changes. The app
-channel's incoming event queue is unbounded.
+prompts, location and shared storage (ACLs, media indexing). Each app
+channel's incoming queue holds one rate-limiter burst; past that, messages are
+dropped, and a peer that keeps flooding is disconnected.
 
 Run the private-bus tests with:
 

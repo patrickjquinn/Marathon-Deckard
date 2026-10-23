@@ -1,6 +1,6 @@
 use std::env;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -14,7 +14,10 @@ use deckard_bridge::ime::{
 use deckard_bridge::manage::Manage;
 use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
-use deckard_bridge::runtime::{Runtime, call_unit, watch_unit};
+use deckard_bridge::reclaim::Reclaimer;
+use deckard_bridge::runtime::{Runtime, call_unit, try_restart_unit, watch_unit};
+use deckard_bridge::shell_sync;
+use deckard_bridge::watchdog::{self, BootWatchdog};
 use deckard_core::ids::PackageName;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
@@ -51,40 +54,35 @@ fn emit_runtime(bus: &Connection, runtime: &Runtime) {
     );
 }
 
-fn serve_session(
-    mut session: BridgeSession,
-    generation: u64,
-    outgoing: async_channel::Receiver<Map<String, Value>>,
+/// What the authenticated system socket feeds.
+#[derive(Clone)]
+struct System {
     manage: Manage,
     runtime: Runtime,
     bus: Connection,
     packages: PackageBridge,
+    reclaimer: Reclaimer,
+}
+
+fn serve_session(
+    mut session: BridgeSession,
+    generation: u64,
+    outgoing: async_channel::Receiver<Map<String, Value>>,
+    system: System,
 ) {
-    if session
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .is_err()
-    {
-        manage.disconnect(generation);
-        if runtime.set_connected(manage.connected()) {
-            emit_runtime(&bus, &runtime)
-        }
-        return;
-    }
-    loop {
+    let polling = session.set_read_timeout(Some(Duration::from_millis(100)));
+    'session: while polling.is_ok() {
         while let Ok(message) = outgoing.try_recv() {
             if let Err(error) = session.send_message(&message) {
                 eprintln!("deckard-bridge: system bridge write failed: {error}");
-                manage.disconnect(generation);
-                if runtime.set_connected(manage.connected()) {
-                    emit_runtime(&bus, &runtime)
-                }
-                return;
+                break 'session;
             }
         }
         match session.read_message() {
             Ok(Some(message)) => {
-                manage.handle(generation, &message);
-                if let Err(error) = packages.handle(BridgeRoute::System, &message) {
+                system.manage.handle(generation, &message);
+                system.reclaimer.handle(&message);
+                if let Err(error) = system.packages.handle(BridgeRoute::System, &message) {
                     eprintln!("deckard-bridge: system package event failed: {error}");
                 }
             }
@@ -100,65 +98,50 @@ fn serve_session(
             }
         }
     }
-    manage.disconnect(generation);
-    let _ = packages.disconnected(BridgeRoute::System);
-    if runtime.set_connected(manage.connected()) {
-        emit_runtime(&bus, &runtime)
+    system.manage.disconnect(generation);
+    let _ = system.packages.disconnected(BridgeRoute::System);
+    if !system.manage.connected() {
+        system.reclaimer.disconnected();
+    }
+    if system.runtime.set_connected(system.manage.connected()) {
+        emit_runtime(&system.bus, &system.runtime)
     }
 }
 
-fn listen_system(
-    mut listener: BridgeListener,
-    manage: Manage,
-    runtime: Runtime,
-    bus: Connection,
-    packages: PackageBridge,
-) {
+fn listen_system(mut listener: BridgeListener, system: System) {
     let mut reader: Option<thread::JoinHandle<()>> = None;
     let mut info_worker: Option<thread::JoinHandle<()>> = None;
     loop {
         match listener.accept() {
             Ok(session) => {
                 let (tx, rx) = async_channel::bounded(64);
-                let generation = manage.connect(tx);
+                let generation = system.manage.connect(tx);
                 if let Some(worker) = reader.take() {
                     let _ = worker.join();
                 }
                 if let Some(worker) = info_worker.take() {
                     let _ = worker.join();
                 }
-                if runtime.set_connected(true) {
-                    emit_runtime(&bus, &runtime)
+                if system.runtime.set_connected(true) {
+                    emit_runtime(&system.bus, &system.runtime)
                 }
-                let info_manage = manage.clone();
-                let info_runtime = runtime.clone();
-                let info_bus = bus.clone();
+                system.reclaimer.connected();
+                let info = system.clone();
                 info_worker = Some(thread::spawn(move || {
-                    if let Ok(info) = future::block_on(info_manage.request("info", Map::new())) {
-                        if !info_manage.is_generation(generation) {
+                    if let Ok(reply) = future::block_on(info.manage.request("info", Map::new())) {
+                        if !info.manage.is_generation(generation) {
                             return;
                         }
-                        let release = info.get("release").and_then(Value::as_str).unwrap_or("");
+                        let release = reply.get("release").and_then(Value::as_str).unwrap_or("");
                         let release = deckard_core::validate::clean_text(release, 16);
-                        if info_runtime.set_version(&release) {
-                            emit_runtime(&info_bus, &info_runtime)
+                        if info.runtime.set_version(&release) {
+                            emit_runtime(&info.bus, &info.runtime)
                         }
                     }
                 }));
-                let thread_manage = manage.clone();
-                let thread_runtime = runtime.clone();
-                let thread_bus = bus.clone();
-                let thread_packages = packages.clone();
+                let served = system.clone();
                 reader = Some(thread::spawn(move || {
-                    serve_session(
-                        session,
-                        generation,
-                        rx,
-                        thread_manage,
-                        thread_runtime,
-                        thread_bus,
-                        thread_packages,
-                    )
+                    serve_session(session, generation, rx, served)
                 }));
             }
             Err(error) => eprintln!("deckard-bridge: rejected system peer: {error}"),
@@ -368,9 +351,20 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             eprintln!("deckard-bridge: app socket failed: {error}");
         }
     });
-    let bridge_bus = bus.clone();
-    let bridge_runtime = runtime.clone();
-    thread::spawn(move || listen_system(listener, manage, bridge_runtime, bridge_bus, packages));
+    let reclaim_manage = manage.clone();
+    let reclaimer = Reclaimer::new(
+        cgroup,
+        PathBuf::from("/proc/pressure/memory"),
+        move |message| reclaim_manage.send(message),
+    );
+    let system = System {
+        manage,
+        runtime: runtime.clone(),
+        bus: bus.clone(),
+        packages,
+        reclaimer,
+    };
+    thread::spawn(move || listen_system(listener, system));
     let ime_bus = bus.clone();
     thread::spawn(move || serve_ime(ime_events, ime_handle, ime_bus));
     thread::spawn(move || {
@@ -378,11 +372,51 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             eprintln!("deckard-bridge: IME socket failed: {error}");
         }
     });
+    let evidence = Path::new("/usr/libexec/deckard-boot-evidence");
+    let evidence = evidence
+        .exists()
+        .then(|| vec!["pkexec".into(), evidence.into()]);
+    let restart_bus = bus.clone();
+    let boot_watchdog = BootWatchdog::spawn(data.join("deckard/booted"), evidence, move || {
+        if let Err(error) = future::block_on(call_unit(restart_bus.inner(), UnitCall::Restart)) {
+            eprintln!("deckard-bridge: restarting Android failed: {error}");
+        }
+    });
+    let follow_bus = bus.clone();
+    thread::spawn(move || {
+        let restart_bus = follow_bus.clone();
+        let restart = move || {
+            if let Err(error) = future::block_on(try_restart_unit(restart_bus.inner())) {
+                eprintln!("deckard-bridge: restarting Android failed: {error}");
+            }
+        };
+        if let Err(error) = watchdog::follow_shell(&follow_bus, restart) {
+            eprintln!("deckard-bridge: Shell follower failed: {error}");
+        }
+    });
     let watch_bus = bus.clone();
     let watch_runtime = runtime.clone();
     thread::spawn(move || {
-        if let Err(error) = watch_unit(&watch_bus, &watch_runtime) {
+        let changed = || {
+            emit_runtime(&watch_bus, &watch_runtime);
+            boot_watchdog.set_active_since(watch_runtime.active_since_ms());
+        };
+        if let Err(error) = watch_unit(&watch_bus, &watch_runtime, changed) {
             eprintln!("deckard-bridge: unit watch failed: {error}")
+        }
+    });
+    let doze_bus = bus.clone();
+    let doze = data.join("deckard/doze");
+    thread::spawn(move || {
+        if let Err(error) = shell_sync::sync_doze(&doze_bus, &doze) {
+            eprintln!("deckard-bridge: Doze sync failed: {error}");
+        }
+    });
+    let palette_bus = bus.clone();
+    let palette = data.join("deckard/palette");
+    thread::spawn(move || {
+        if let Err(error) = shell_sync::sync_palette(palette_bus.inner(), &palette) {
+            eprintln!("deckard-bridge: palette sync failed: {error}");
         }
     });
     let marker = env::var_os("XDG_RUNTIME_DIR")
