@@ -1,12 +1,13 @@
 use deckard_container::dbus::serve_system_bus;
 use deckard_container::drivers::DriverNodes;
-use deckard_container::hardware::{self, HardwareConfig};
+use deckard_container::hardware;
 use deckard_container::initializer::{LocalImageInit, NodeInventory};
 use deckard_container::lxc::Lxc;
 use deckard_container::manager::ContainerManager;
 use deckard_container::mounts::MountLayout;
 use deckard_container::network::Network;
 use deckard_container::{properties, session_config};
+use deckard_launch::binder::{self, BinderConfig};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
@@ -18,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-fn audit_production() -> Result<(), Box<dyn Error>> {
+fn audit_production() -> Result<(), Box<dyn Error + Send + Sync>> {
     let bus = zbus::blocking::Connection::system()?;
     let manager = zbus::blocking::Proxy::new(
         &bus,
@@ -52,7 +53,7 @@ fn audit_production() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn production_setting(work: &Path, key: &str) -> Result<String, Box<dyn Error>> {
+fn production_setting(work: &Path, key: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
     let config = fs::read_to_string(work.join("waydroid.cfg"))?;
     let value = config
         .lines()
@@ -62,7 +63,7 @@ fn production_setting(work: &Path, key: &str) -> Result<String, Box<dyn Error>> 
     Ok(value.to_owned())
 }
 
-fn production_overlays(work: &Path) -> Result<bool, Box<dyn Error>> {
+fn production_overlays(work: &Path) -> Result<bool, Box<dyn Error + Send + Sync>> {
     match production_setting(work, "mount_overlays")?.as_str() {
         "True" => Ok(true),
         "False" => Ok(false),
@@ -70,21 +71,16 @@ fn production_overlays(work: &Path) -> Result<bool, Box<dyn Error>> {
     }
 }
 
-fn audit_hardware() -> Result<(), Box<dyn Error>> {
-    let work = Path::new("/var/lib/waydroid");
-    let config = HardwareConfig {
-        binder_device: format!("/dev/{}", production_setting(work, "binder")?),
-        service_manager_protocol: Some(production_setting(work, "service_manager_protocol")?),
-        binder_protocol: Some(production_setting(work, "binder_protocol")?),
-    };
-    if !hardware::probe(&config)? {
+fn audit_hardware() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let config = BinderConfig::from_file(Path::new("/var/lib/waydroid/waydroid.cfg"))?;
+    if !binder::service_manager_present(&config)? {
         return Err("Binder service manager is not present".into());
     }
     println!("Binder service manager ABI and connection ready");
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if rustix::process::geteuid().as_raw() != 0 {
         return Err("deckard-containerd requires root".into());
@@ -148,23 +144,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         network: Network::new(bridge.into(), runtime.into())?,
     };
     let hardware_config = if production {
-        Some(HardwareConfig {
-            binder_device: format!(
-                "/dev/{}",
-                production_setting(&manager.mounts.work, "binder")?
-            ),
-            service_manager_protocol: Some(production_setting(
-                &manager.mounts.work,
-                "service_manager_protocol",
-            )?),
-            binder_protocol: Some(production_setting(&manager.mounts.work, "binder_protocol")?),
-        })
+        Some(BinderConfig::from_file(
+            &manager.mounts.work.join("waydroid.cfg"),
+        )?)
     } else {
         None
     };
     let suspend_stops =
         production && production_setting(&manager.mounts.work, "suspend_action")? == "stop";
-    let (hardware_sender, hardware_receiver) = mpsc::channel();
+    let (hardware_sender, hardware_receiver) = mpsc::sync_channel(hardware::QUEUE_DEPTH);
     let terminating = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, terminating.clone())?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, terminating.clone())?;

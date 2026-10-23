@@ -1,8 +1,6 @@
-#![deny(unsafe_code)]
+//! The native Deckard user session (upstream `waydroid session`).
 
 mod desktop;
-#[allow(unsafe_code)]
-mod platform;
 
 use std::collections::HashMap;
 use std::env;
@@ -16,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use deckard_launch::binder::{BinderConfig, Platform as PropertyPlatform};
+use deckard_launch::binder::{BinderConfig, Platform};
 use nix::unistd::{User, getegid, geteuid};
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use zbus::blocking::{Connection, Proxy};
@@ -33,6 +31,7 @@ const SESSION_NAME: &str = "id.waydro.Session";
 const SESSION_PATH: &str = "/SessionManager";
 const SESSION_INTERFACE: &str = "id.waydro.SessionManager";
 const CONTAINER_UNIT: &str = "deckard-container.service";
+const WAYDROID_CONFIG: &str = "/var/lib/waydroid/waydroid.cfg";
 
 #[derive(Clone)]
 struct SessionManager {
@@ -239,17 +238,17 @@ fn android_ready(boot: &str, credential_encrypted: &str) -> bool {
     boot == "1" && credential_encrypted == "true"
 }
 
+/// Waits for Android to boot and unlock user 0, then exports its launchers.
 fn export_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
-    let config = BinderConfig::from_file(Path::new("/var/lib/waydroid/waydroid.cfg"))?;
-    let properties = PropertyPlatform::connect(&config)?;
-    let catalog = platform::Platform::connect(&config)?;
+    let config = BinderConfig::from_file(Path::new(WAYDROID_CONFIG))?;
+    let platform = Platform::connect(&config)?;
     let deadline = Instant::now() + Duration::from_secs(120);
     while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
-        let boot = properties.getprop("sys.boot_completed", "");
-        let unlocked = properties.getprop("sys.user.0.ce_available", "");
+        let boot = platform.getprop("sys.boot_completed", "");
+        let unlocked = platform.getprop("sys.user.0.ce_available", "");
         if let (Ok(boot), Ok(unlocked)) = (boot, unlocked)
             && android_ready(&boot, &unlocked)
-            && let Ok(apps) = catalog.apps()
+            && let Ok(apps) = platform.apps()
             && !apps.is_empty()
         {
             let count = desktop::export(data_home, &apps)?;
@@ -266,13 +265,13 @@ fn export_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
 
 fn monitor_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
     export_installed_apps(data_home, stop)?;
-    let config = BinderConfig::from_file(Path::new("/var/lib/waydroid/waydroid.cfg"))?;
+    let config = BinderConfig::from_file(Path::new(WAYDROID_CONFIG))?;
     while !stop.load(Ordering::Acquire) {
         thread::sleep(Duration::from_secs(15));
         if stop.load(Ordering::Acquire) {
             break;
         }
-        let result = platform::Platform::connect(&config)
+        let result = Platform::connect(&config)
             .and_then(|catalog| catalog.apps())
             .and_then(|apps| desktop::export(data_home, &apps));
         if let Err(error) = result {

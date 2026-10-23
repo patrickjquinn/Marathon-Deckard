@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 async-io = "2"
 blocking = "=1.7.0"
+deckard-launch = { path = "../deckard-launch" }
 futures-lite = "=2.6.1"
 rustix = { version = "=1.1.5", features = ["fs", "process"] }
 serde = { workspace = true }

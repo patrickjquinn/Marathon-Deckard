@@ -3,7 +3,6 @@
 pub mod command;
 pub mod dbus;
 pub mod drivers;
-#[allow(unsafe_code)]
 pub mod hardware;
 pub mod initializer;
 pub mod initializer_dbus;

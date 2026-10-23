@@ -6,7 +6,8 @@ use std::path::Path;
 
 use tempfile::NamedTempFile;
 
-use crate::platform::AppInfo;
+use deckard_launch::binder::AppInfo;
+
 use crate::{Result, invalid};
 
 const LAUNCHER: &str = "android.intent.category.LAUNCHER";

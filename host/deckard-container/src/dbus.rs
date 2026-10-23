@@ -2,13 +2,14 @@
 
 use crate::command::ProcessRunner;
 use crate::drivers::DriverNodes;
-use crate::hardware::{self, HardwareConfig, HardwareRequest};
+use crate::hardware::{self, HardwareRequest};
 use crate::initializer_dbus::{InitializerService, OBJECT_PATH as INITIALIZER_PATH};
 use crate::lxc::{State, validate_property_key, validate_property_value};
 use crate::manager::ContainerManager;
 use crate::properties;
 use crate::session_config;
 use crate::{Error, Result};
+use deckard_launch::binder::BinderConfig;
 use rustix::fd::OwnedFd;
 use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -205,8 +206,8 @@ enum HardwareOutcome {
 
 struct DirectBackend {
     manager: ContainerManager,
-    hardware_config: Option<HardwareConfig>,
-    hardware_sender: Sender<HardwareRequest>,
+    hardware_config: Option<BinderConfig>,
+    hardware_sender: SyncSender<HardwareRequest>,
     hardware_stop: Option<Arc<AtomicBool>>,
     suspend_stops: bool,
 }
@@ -235,13 +236,7 @@ impl Backend for DirectBackend {
             let worker_stop = stop.clone();
             let sender = self.hardware_sender.clone();
             thread::spawn(move || {
-                if let Err(error) = hardware::run(
-                    &config,
-                    move |request| {
-                        let _ = sender.send(request);
-                    },
-                    worker_stop,
-                ) {
+                if let Err(error) = hardware::run(&config, sender, worker_stop) {
                     eprintln!("deckard-containerd: hardware service failed: {error}");
                 }
             });
@@ -281,9 +276,6 @@ impl Backend for DirectBackend {
 
     fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
         match request {
-            HardwareRequest::EnableNfc(_) | HardwareRequest::EnableBluetooth(_) => {
-                Ok(HardwareOutcome::Active)
-            }
             HardwareRequest::Suspend if self.suspend_stops => {
                 self.stop()?;
                 Ok(HardwareOutcome::Stopped)
@@ -310,9 +302,6 @@ impl Backend for DirectBackend {
                 self.stop()?;
                 Ok(HardwareOutcome::Stopped)
             }
-            HardwareRequest::Upgrade { .. } => Err(Error::Invalid(
-                "Android image upgrade is not implemented".into(),
-            )),
         }
     }
 }
@@ -331,8 +320,8 @@ pub struct ContainerService {
 impl ContainerService {
     pub fn new(
         manager: ContainerManager,
-        hardware_config: Option<HardwareConfig>,
-        hardware_sender: Sender<HardwareRequest>,
+        hardware_config: Option<BinderConfig>,
+        hardware_sender: SyncSender<HardwareRequest>,
         suspend_stops: bool,
     ) -> Self {
         Self::with_backend(Box::new(DirectBackend {
@@ -646,8 +635,8 @@ impl ContainerService {
 
 pub async fn serve_system_bus(
     manager: ContainerManager,
-    hardware_config: Option<HardwareConfig>,
-    hardware_sender: Sender<HardwareRequest>,
+    hardware_config: Option<BinderConfig>,
+    hardware_sender: SyncSender<HardwareRequest>,
     suspend_stops: bool,
 ) -> zbus::Result<(Connection, ContainerService)> {
     let service = ContainerService::new(manager, hardware_config, hardware_sender, suspend_stops);

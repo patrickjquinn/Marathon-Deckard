@@ -8,14 +8,13 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 deckard-launch = { path = "../deckard-launch" }
-libloading = "0.8.9"
 nix.workspace = true
 signal-hook.workspace = true
 tempfile.workspace = true
 zbus = { workspace = true, features = ["blocking-api"] }
 
 [lints.rust]
-unsafe_code = "allow"
+unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
