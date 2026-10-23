@@ -142,10 +142,16 @@ where
     }
 }
 
-fn label(value: &Map<String, Value>, pkg: &str) -> String {
-    let raw = clean_text(str_field(value, "label"), 128);
+/// An Android label as Marathon shows it: at most 128 characters, the
+/// runtime called Android, whitespace collapsed.
+pub fn runtime_label(raw: &str) -> String {
+    let raw = clean_text(raw, 128);
     let renamed = RUNTIME_NAME.replace_all(&raw, "Android");
-    let compact = renamed.split_whitespace().collect::<Vec<_>>().join(" ");
+    renamed.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn label(value: &Map<String, Value>, pkg: &str) -> String {
+    let compact = runtime_label(str_field(value, "label"));
     if compact.is_empty() {
         pkg.into()
     } else {
