@@ -152,11 +152,17 @@ screenshot. This qualifies the normal boot-and-grid-launch path; the explicit
 stop-and-immediate-reopen path was tested separately above.
 
 After the r491 hot-deploy and successful stop/relaunch tests, a second cold
-reboot was requested on the Pi. It had not returned to its prior address
-(`192.168.68.79`), mDNS name (`marathon.local`), or another SSH address on
-`192.168.68.0/22` by 12:27 local time on 2026-10-23. The final r491 cold boot
-is therefore **not yet qualified**. Check the device's power, display, and
-local console before attributing the network absence to Deckard or Shell.
+reboot was requested on the Pi. The device did not join the network until its
+PIN was entered locally. After unlock, SSH and mDNS returned at
+`192.168.68.79`; `marathon-waydroid.service` remained masked, the Rust
+`deckard-session.service` and `deckardd.service` were active, and Android
+reported boot-complete with user 0 credential-encrypted storage available.
+The installed r491 Shell binary retained its verified SHA-256. A tap on
+Feeder's app-grid icon visibly opened the app; Shell reported it foreground
+and Android reported its activity top-resumed. No new launch timeout or error
+was found in the Shell crash log. This qualifies the r491 cold-boot path after
+PIN unlock; it does not establish whether networking should be available
+before unlock.
 
 This is a **user-session and desktop launcher cutover**, not a full Deckard
 cutover. `waydroid-container.service` still runs the Python root manager and
