@@ -76,7 +76,7 @@ int main(int argc, char *argv[]) {
         QDBusMessage call = QDBusMessage::createMethodCall(
             QStringLiteral("org.freedesktop.systemd1"), QStringLiteral("/org/freedesktop/systemd1"),
             QStringLiteral("org.freedesktop.systemd1.Manager"), QStringLiteral("TryRestartUnit"));
-        call << QStringLiteral("marathon-waydroid.service") << QStringLiteral("replace");
+        call << QStringLiteral("deckard-session.service") << QStringLiteral("replace");
         QDBusConnection::sessionBus().send(call);
     });
 
@@ -227,7 +227,7 @@ int main(int argc, char *argv[]) {
     if (!systemBridge.listen())
         return 1;
 
-    const QString sessionUnit = QStringLiteral("marathon-waydroid.service");
+    const QString sessionUnit = QStringLiteral("deckard-session.service");
     Manage        manage([&systemBridge](const QJsonObject &message) { systemBridge.send(message); });
     const QString cgroup = qEnvironmentVariable("DECKARD_CGROUP", QStringLiteral("/sys/fs/cgroup/lxc.payload.waydroid"));
     Runtime       runtime({cgroup + QStringLiteral("/memory.current"),

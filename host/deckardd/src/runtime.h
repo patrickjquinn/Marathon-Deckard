@@ -7,7 +7,7 @@
 
 #include <functional>
 
-// The Android session (marathon-waydroid.service) as Settings shows it:
+// The Android session (deckard-session.service) as Settings shows it:
 // stopped, starting, running or stopping; its memory, Android version and
 // uptime; and whether it starts at login.
 class Runtime : public QObject {
@@ -67,7 +67,7 @@ class Runtime : public QObject {
     void runReset(Done done);
 };
 
-// Follows marathon-waydroid.service through the user's systemd and feeds
+// Follows deckard-session.service through the user's systemd and feeds
 // Runtime::setUnit.
 class UnitWatch : public QObject {
     Q_OBJECT
