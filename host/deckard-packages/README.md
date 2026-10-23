@@ -36,10 +36,10 @@ Never trust a caller-supplied app ID or permit mutation based on bus name alone.
 The policy is asynchronous and has a five-second fail-closed timeout.
 
 The adapter caps APKs at 1 GiB, simultaneous staging reservations at 2 GiB,
-outstanding requests at 64, bridge responses at the core's 1 MiB frame size,
-package lists at 2,000 entries, and all returned strings/arrays/icons at the
-C++ limits. One timeout worker serves all requests. Staged files are removed
-on reply, timeout, disconnect, send failure and service drop.
+outstanding requests at 64, package lists at 2,000 entries, and all returned
+strings/arrays/icons at the C++ limits. Each request's timeout runs on the
+bus connection's executor. Staged files are removed on reply, timeout,
+disconnect, send failure and service drop.
 
 `cargo test -p deckard-packages --locked` runs private-bus wire fixtures.
 These are not production cutover tests. Remaining work: integrate the adapter

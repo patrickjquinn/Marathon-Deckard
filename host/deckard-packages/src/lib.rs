@@ -1,63 +1,56 @@
-//! Inactive Rust implementation of Deckard's Packages D-Bus interface.
-//!
-//! The daemon must own the bus name and mount this interface at the existing
-//! object path. It must supply an authenticated caller policy and connected
-//! Android bridge sender; this crate never claims the production bus name.
+//! `org.marathonos.Deckard1.Packages`: installs, removals and package queries
+//! relayed to Android. The host owns the bus name and the bridge sockets.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock, Mutex, Weak};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use async_channel::Sender;
 use async_io::Timer;
-use deckard_core::framing::MAX_FRAME_SIZE;
-use deckard_core::ids::PackageName;
-use deckard_core::validate::{base64_png, clean_text};
+use deckard_core::ids;
+use deckard_core::keel::{array, string};
+use deckard_core::sync::lock;
+use deckard_core::validate::{self, clean_text};
 use futures_lite::future;
-use regex::Regex;
 use serde_json::{Map, Value, json};
 use zbus::blocking::Connection;
+use zbus::export::serde::Serialize;
 use zbus::message::Header;
-use zbus::zvariant::{OwnedValue, Str, Value as Variant};
-use zbus::{fdo, interface};
+use zbus::zvariant::{DynamicType, OwnedValue, Value as Variant};
+use zbus::{DBusError, fdo, interface};
 
 pub const BUS_NAME: &str = "org.marathonos.Deckard";
 pub const OBJECT_PATH: &str = "/org/marathonos/Deckard";
 pub const INTERFACE: &str = "org.marathonos.Deckard1.Packages";
-pub const ANDROID_INSTALL_DIR: &str = "/data/deckard/install/";
-pub const MAX_APK_BYTES: u64 = 1 << 30;
-pub const MAX_STAGED_BYTES: u64 = 2 << 30;
 pub const MAX_PENDING: usize = 64;
+const ANDROID_INSTALL_DIR: &str = "/data/deckard/install/";
+const MAX_APK_BYTES: u64 = 1 << 30;
+const MAX_STAGED_BYTES: u64 = 2 << 30;
 const MAX_STALE_ENTRIES: usize = 4096;
-
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
-const SWEEP_INTERVAL: Duration = Duration::from_millis(100);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
-static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:waydroid|lineageos|lineage os)\b")
-        .unwrap_or_else(|error| panic!("invalid fixed runtime-name pattern: {error}"))
-});
 
 pub type VariantMap = HashMap<String, OwnedValue>;
-pub type PackageList = Vec<VariantMap>;
 pub type BridgeSend = dyn Fn(BridgeRoute, &Value) -> bool + Send + Sync;
 pub type MayChange = dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync;
+type Answer = fdo::Result<Map<String, Value>>;
 
+/// The authenticated Android socket a message travels on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BridgeRoute {
     User,
     System,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Inspect,
     Install,
@@ -66,18 +59,51 @@ enum Kind {
     Packages,
 }
 
-enum Reply {
-    Map(VariantMap),
-    List(PackageList),
-    Error(fdo::Error),
+impl Kind {
+    /// The message type that answers the request.
+    fn result(self) -> &'static str {
+        match self {
+            Self::Inspect => "inspect_result",
+            Self::Install | Self::Uninstall => "install_result",
+            Self::Device => "device_result",
+            Self::Packages => "packages_result",
+        }
+    }
+}
+
+/// An `a{sv}` of `entries`; a value that cannot be owned is left out.
+pub fn dict<'a>(entries: impl IntoIterator<Item = (&'a str, Variant<'a>)>) -> VariantMap {
+    let mut map = VariantMap::new();
+    for (key, value) in entries {
+        if let Ok(value) = OwnedValue::try_from(value) {
+            map.insert(key.to_owned(), value);
+        }
+    }
+    map
+}
+
+/// A staged APK and its share of the staging budget, both given back on drop.
+struct Staged {
+    path: Option<PathBuf>,
+    bytes: u64,
+    budget: Arc<AtomicU64>,
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = fs::remove_file(path);
+        }
+        self.budget.fetch_sub(self.bytes, Ordering::SeqCst);
+    }
 }
 
 struct Pending {
     kind: Kind,
     route: BridgeRoute,
     staged: Option<Staged>,
-    reply: Option<Sender<Reply>>,
-    deadline: Instant,
+    /// None for a job, which ends with `Finished`.
+    reply: Option<Sender<Answer>>,
 }
 
 struct Inner {
@@ -86,50 +112,26 @@ struct Inner {
     bridge: Arc<BridgeSend>,
     may_change: Arc<MayChange>,
     pending: Mutex<HashMap<String, Pending>>,
-    staged_bytes: Arc<Mutex<u64>>,
-}
-
-struct Staged {
-    path: Option<PathBuf>,
-    bytes: u64,
-    budget: Arc<Mutex<u64>>,
-}
-
-impl Drop for Staged {
-    fn drop(&mut self) {
-        if let Some(path) = self.path.take() {
-            let _ = fs::remove_file(path);
-        }
-        if let Ok(mut used) = self.budget.lock() {
-            *used = used.saturating_sub(self.bytes);
-        }
-    }
+    staged: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
 pub struct Packages(Arc<Inner>);
 
-/// Register this interface on the host-owned connection. Its weak reference
-/// avoids a Connection -> object server -> Packages -> Connection cycle.
+/// The served interface; weak, so the bus does not keep the service alive.
 pub struct PackagesInterface(Weak<Inner>);
 
-impl PackagesInterface {
-    fn service(&self) -> fdo::Result<Packages> {
-        self.0
-            .upgrade()
-            .map(Packages)
-            .ok_or_else(|| fdo::Error::Failed("package service stopped".to_owned()))
-    }
+fn failed(why: &str) -> fdo::Error {
+    fdo::Error::Failed(why.to_owned())
 }
 
 impl Packages {
-    pub fn interface(&self) -> PackagesInterface {
-        PackagesInterface(Arc::downgrade(&self.0))
-    }
-
-    /// `may_change` receives the D-Bus unique sender name, not a caller-supplied
-    /// app ID. The host must resolve its process and Shell app identity and fail
-    /// closed; only Settings, Store and the verified store handler may mutate.
+    /// Makes `install_dir` and removes the APKs a previous run left there.
+    /// `may_change` gets the caller's unique bus name and fails closed.
+    ///
+    /// # Errors
+    ///
+    /// When the directory cannot be made or cleaned.
     pub fn new(
         bus: Connection,
         install_dir: impl Into<PathBuf>,
@@ -140,449 +142,299 @@ impl Packages {
         fs::create_dir_all(&install_dir)?;
         fs::set_permissions(&install_dir, fs::Permissions::from_mode(0o755))?;
         reap_stale(&install_dir)?;
-        let inner = Arc::new(Inner {
+        Ok(Self(Arc::new(Inner {
             bus,
             install_dir,
             bridge,
             may_change,
-            pending: Mutex::new(HashMap::new()),
-            staged_bytes: Arc::new(Mutex::new(0)),
-        });
-        let weak = Arc::downgrade(&inner);
-        thread::Builder::new()
-            .name("deckard-packages-timeouts".to_owned())
-            .spawn(move || sweep_timeouts(weak))?;
-        Ok(Self(inner))
+            pending: Mutex::default(),
+            staged: Arc::default(),
+        })))
     }
 
-    /// Called only for messages from the authenticated Android bridge.
+    pub fn interface(&self) -> PackagesInterface {
+        PackagesInterface(Arc::downgrade(&self.0))
+    }
+
+    fn emit<B: Serialize + DynamicType>(&self, member: &str, body: &B) -> zbus::Result<()> {
+        self.0
+            .bus
+            .emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body)
+    }
+
+    /// A message of type `kind` from the authenticated bridge on `route`.
+    ///
+    /// # Errors
+    ///
+    /// When a signal cannot be sent.
     pub fn handle(
         &self,
         route: BridgeRoute,
         kind: &str,
         message: &Map<String, Value>,
     ) -> zbus::Result<()> {
-        if serde_json::to_vec(message).is_ok_and(|bytes| bytes.len() > MAX_FRAME_SIZE) {
-            return Ok(());
-        }
+        let id = string(message, "id");
         if kind == "package_changed" {
-            if route != BridgeRoute::User {
-                return Ok(());
-            }
-            let package = field_str(message, "pkg");
-            let change = field_str(message, "change");
-            if PackageName::try_from(package).is_ok()
-                && matches!(change, "installed" | "updated" | "removed")
-            {
-                self.0.bus.emit_signal(
-                    None::<&str>,
-                    OBJECT_PATH,
-                    INTERFACE,
-                    "PackageChanged",
-                    &(package, change),
-                )?;
+            let (pkg, change) = (string(message, "pkg"), string(message, "change"));
+            let known = matches!(change, "installed" | "updated" | "removed");
+            if route == BridgeRoute::User && known && ids::is_package_name(pkg) {
+                return self.emit("PackageChanged", &(pkg, change));
             }
             return Ok(());
         }
-        let id = field_str(message, "id");
-        if id.len() != 16 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Ok(());
-        }
+        let mut pending = lock(&self.0.pending);
         if kind == "install_progress" {
-            let pending = self
-                .0
-                .pending
-                .lock()
-                .map_err(|_| zbus::Error::Failure("pending lock poisoned".into()))?;
-            if pending
-                .get(id)
-                .is_some_and(|item| item.kind == Kind::Install && item.route == route)
-            {
-                let percent = integer(message, "percent", 0, 100, 0) as i32;
+            let installing = |item: &Pending| item.kind == Kind::Install && item.route == route;
+            if pending.get(id).is_some_and(installing) {
                 drop(pending);
-                self.0.bus.emit_signal(
-                    None::<&str>,
-                    OBJECT_PATH,
-                    INTERFACE,
-                    "Progress",
-                    &(id, percent),
-                )?;
+                let percent = (number(message, "percent") as i32).clamp(0, 100);
+                return self.emit("Progress", &(id, percent));
             }
             return Ok(());
         }
-        let expected = match kind {
-            "inspect_result" => Kind::Inspect,
-            "device_result" => Kind::Device,
-            "packages_result" => Kind::Packages,
-            // DeckardSystem deliberately uses the same completion type for removal.
-            "install_result" => Kind::Install,
-            _ => return Ok(()),
-        };
-        let pending = {
-            let mut active = self
-                .0
-                .pending
-                .lock()
-                .map_err(|_| zbus::Error::Failure("pending lock poisoned".into()))?;
-            if active.get(id).is_none_or(|item| {
-                item.route != route
-                    || (item.kind != expected
-                        && !(kind == "install_result" && item.kind == Kind::Uninstall))
-            }) {
-                return Ok(());
-            }
-            active.remove(id)
-        };
-        if let Some(pending) = pending {
-            self.finish(id, pending, kind, message)?;
+        let answers = |item: &Pending| item.route == route && item.kind.result() == kind;
+        if !pending.get(id).is_some_and(answers) {
+            return Ok(());
         }
-        Ok(())
+        let Some(Pending { staged, reply, .. }) = pending.remove(id) else {
+            return Ok(());
+        };
+        drop((pending, staged));
+        if let Some(reply) = reply {
+            let _ = reply.try_send(Ok(message.clone()));
+            return Ok(());
+        }
+        let pkg = Some(string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
+        let why = text(message, "message", 512);
+        self.emit(
+            "Finished",
+            &(id, flag(message, "ok"), pkg.unwrap_or(""), why),
+        )
     }
 
-    /// Complete only the requests owned by a disconnected Android bridge.
+    /// Fails the requests that went to the bridge on `route`.
+    ///
+    /// # Errors
+    ///
+    /// When a `Finished` signal cannot be sent.
     pub fn bridge_lost(&self, route: BridgeRoute) -> zbus::Result<()> {
-        let pending = {
-            let mut active = self
-                .0
-                .pending
-                .lock()
-                .map_err(|_| zbus::Error::Failure("pending lock poisoned".into()))?;
-            let ids = active
-                .iter()
-                .filter(|(_, item)| item.route == route)
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .filter_map(|id| active.remove(&id).map(|item| (id, item)))
-                .collect::<Vec<_>>()
-        };
-        for (id, item) in pending {
+        let lost: Vec<_> = lock(&self.0.pending)
+            .extract_if(|_, item| item.route == route)
+            .collect();
+        for (id, item) in lost {
             self.fail(&id, item, "Android stopped")?;
         }
         Ok(())
     }
 
     pub fn pending_count(&self) -> usize {
-        self.0.pending.lock().map_or(0, |active| active.len())
+        lock(&self.0.pending).len()
     }
 
-    fn finish(
-        &self,
-        id: &str,
-        item: Pending,
-        kind: &str,
-        message: &Map<String, Value>,
-    ) -> zbus::Result<()> {
+    fn fail(&self, id: &str, item: Pending, why: &str) -> zbus::Result<()> {
         drop(item.staged);
-        match kind {
-            "inspect_result" => {
-                let map = if boolean(message, "ok") {
-                    inspect_info(message)
-                } else {
-                    failure(&text(message, "message", 512))
-                };
-                send_reply(item.reply, Reply::Map(map));
-            }
-            "device_result" => send_reply(item.reply, Reply::Map(device_profile(message))),
-            "packages_result" => send_reply(item.reply, Reply::List(package_list(message))),
-            "install_result" => {
-                let package = valid_package(field_str(message, "pkg")).unwrap_or_default();
-                let text = text(message, "message", 512);
-                self.0.bus.emit_signal(
-                    None::<&str>,
-                    OBJECT_PATH,
-                    INTERFACE,
-                    "Finished",
-                    &(id, boolean(message, "ok"), package, text),
-                )?;
-            }
-            _ => {}
-        }
+        let Some(reply) = item.reply else {
+            return self.emit("Finished", &(id, false, "", why));
+        };
+        let _ = reply.try_send(Err(failed(why)));
         Ok(())
     }
 
-    fn fail(&self, id: &str, item: Pending, reason: &str) -> zbus::Result<()> {
-        drop(item.staged);
-        match item.kind {
-            Kind::Inspect => send_reply(item.reply, Reply::Map(failure(reason))),
-            Kind::Device | Kind::Packages => send_reply(
-                item.reply,
-                Reply::Error(fdo::Error::Failed(reason.to_owned())),
-            ),
-            Kind::Install | Kind::Uninstall => {
-                self.0.bus.emit_signal(
-                    None::<&str>,
-                    OBJECT_PATH,
-                    INTERFACE,
-                    "Finished",
-                    &(id, false, "", reason),
-                )?;
-            }
-        }
-        Ok(())
-    }
-
+    /// Sends `message` as a new request and fails it after its timeout.
     fn start(
         &self,
         kind: Kind,
         route: BridgeRoute,
-        message: Value,
+        mut message: Value,
         staged: Option<Staged>,
-        reply: Option<Sender<Reply>>,
+        reply: Option<Sender<Answer>>,
     ) -> fdo::Result<String> {
-        let id = message
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| fdo::Error::Failed("missing request id".to_owned()))?
-            .to_owned();
+        let id = random_id()?;
+        message["id"] = json!(id);
         {
-            let mut active = self
-                .0
-                .pending
-                .lock()
-                .map_err(|_| fdo::Error::Failed("pending lock poisoned".to_owned()))?;
-            if active.len() >= MAX_PENDING || active.contains_key(&id) {
-                return Err(fdo::Error::LimitsExceeded(
-                    "too many pending package requests".to_owned(),
-                ));
+            let mut pending = lock(&self.0.pending);
+            if pending.len() >= MAX_PENDING {
+                let why = "too many pending package requests";
+                return Err(fdo::Error::LimitsExceeded(why.to_owned()));
             }
-            active.insert(
-                id.clone(),
-                Pending {
-                    kind,
-                    route,
-                    staged,
-                    reply,
-                    deadline: Instant::now()
-                        + if kind == Kind::Install {
-                            INSTALL_TIMEOUT
-                        } else {
-                            INSPECT_TIMEOUT
-                        },
-                },
-            );
+            let item = Pending {
+                kind,
+                route,
+                staged,
+                reply,
+            };
+            pending.insert(id.clone(), item);
         }
         if !(self.0.bridge)(route, &message) {
-            if let Ok(mut active) = self.0.pending.lock() {
-                active.remove(&id);
-            }
-            return Err(fdo::Error::Failed("Android isn't running".to_owned()));
+            lock(&self.0.pending).remove(&id);
+            return Err(failed("Android isn't running"));
         }
+        let (inner, timed) = (Arc::downgrade(&self.0), id.clone());
+        let limit = match kind {
+            Kind::Install => INSTALL_TIMEOUT,
+            _ => INSPECT_TIMEOUT,
+        };
+        let timeout = async move {
+            Timer::after(limit).await;
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            let item = lock(&inner.pending).remove(&timed);
+            if let Some(item) = item {
+                let _ = Packages(inner).fail(&timed, item, "Android didn't answer");
+            }
+        };
+        let executor = self.0.bus.inner().executor();
+        executor.spawn(timeout, "deckard-package-timeout").detach();
         Ok(id)
     }
 
+    async fn query(&self, kind: Kind, message: Value, staged: Option<Staged>) -> Answer {
+        let (reply, answer) = async_channel::bounded(1);
+        self.start(kind, BridgeRoute::User, message, staged, Some(reply))?;
+        let interrupted = |_| Err(failed("package request interrupted"));
+        answer.recv().await.unwrap_or_else(interrupted)
+    }
+
+    /// Copies the APK at `path` into the install directory; its path in Android.
     fn stage(&self, path: &str) -> fdo::Result<(String, Staged)> {
-        if path.len() > 4096 {
-            return Err(fdo::Error::Failed("not a file".to_owned()));
-        }
-        let mut input =
-            File::open(path).map_err(|_| fdo::Error::Failed("not a file".to_owned()))?;
-        let metadata = input
-            .metadata()
-            .map_err(|_| fdo::Error::Failed("not a file".to_owned()))?;
-        if !metadata.is_file() || !(5..=MAX_APK_BYTES).contains(&metadata.len()) {
-            return Err(fdo::Error::Failed("not a file".to_owned()));
+        let mut input = File::open(path).map_err(|_| failed("not a file"))?;
+        let metadata = input.metadata().ok().filter(fs::Metadata::is_file);
+        let bytes = metadata.map_or(0, |metadata| metadata.len());
+        if !(5..=MAX_APK_BYTES).contains(&bytes) {
+            return Err(failed("not a file"));
         }
         let mut magic = [0_u8; 4];
-        input
-            .read_exact(&mut magic)
-            .map_err(|_| fdo::Error::Failed("not an Android app".to_owned()))?;
-        if magic != *b"PK\x03\x04" {
-            return Err(fdo::Error::Failed("not an Android app".to_owned()));
+        if input.read_exact(&mut magic).is_err() || magic != *b"PK\x03\x04" {
+            return Err(failed("not an Android app"));
         }
-        input
-            .seek(SeekFrom::Start(0))
-            .map_err(|_| fdo::Error::Failed("cannot copy the app into Android".to_owned()))?;
-        {
-            let mut used = self
-                .0
-                .staged_bytes
-                .lock()
-                .map_err(|_| fdo::Error::Failed("staging budget unavailable".to_owned()))?;
-            if *used > MAX_STAGED_BYTES - metadata.len() {
-                return Err(fdo::Error::LimitsExceeded(
-                    "too many staged Android apps".to_owned(),
-                ));
-            }
-            *used += metadata.len();
+        let copy_failed = || failed("cannot copy the app into Android");
+        input.rewind().map_err(|_| copy_failed())?;
+        let fits = |used| (used <= MAX_STAGED_BYTES - bytes).then_some(used + bytes);
+        let (budget, order) = (Arc::clone(&self.0.staged), Ordering::SeqCst);
+        if budget.fetch_update(order, order, fits).is_err() {
+            let why = "too many staged Android apps";
+            return Err(fdo::Error::LimitsExceeded(why.to_owned()));
         }
-        let mut reservation = Staged {
+        let mut staged = Staged {
             path: None,
-            bytes: metadata.len(),
-            budget: Arc::clone(&self.0.staged_bytes),
+            bytes,
+            budget,
         };
-        for _ in 0..4 {
-            let name = format!(
-                "{}.apk",
-                random_id().map_err(|_| fdo::Error::Failed("cannot stage the app".to_owned()))?
-            );
-            let staged = self.0.install_dir.join(&name);
-            let output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o644)
-                .open(&staged);
-            let Ok(mut output) = output else {
-                continue;
-            };
-            reservation.path = Some(staged);
-            let copied = io::copy(
-                &mut Read::by_ref(&mut input).take(metadata.len() + 1),
-                &mut output,
-            );
-            if copied.is_ok_and(|count| count == metadata.len()) && output.flush().is_ok() {
-                return Ok((name, reservation));
-            }
-            return Err(fdo::Error::Failed(
-                "cannot copy the app into Android".to_owned(),
-            ));
+        let name = format!("{}.apk", random_id()?);
+        let target = self.0.install_dir.join(&name);
+        let mut options = OpenOptions::new();
+        let output = options
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&target);
+        let mut output = output.map_err(|_| failed("cannot stage the app"))?;
+        staged.path = Some(target);
+        let copied = io::copy(&mut input.take(bytes + 1), &mut output);
+        if copied.ok() != Some(bytes) {
+            return Err(copy_failed());
         }
-        Err(fdo::Error::Failed("cannot stage the app".to_owned()))
+        Ok((format!("{ANDROID_INSTALL_DIR}{name}"), staged))
     }
 
-    async fn allowed(&self, header: Header<'_>) -> fdo::Result<()> {
-        let sender = header
-            .sender()
-            .map(|sender| sender.as_str().to_owned())
-            .unwrap_or_default();
-        let allowed = if sender.is_empty() {
+    async fn allowed(&self, header: &Header<'_>) -> fdo::Result<()> {
+        let sender = header.sender().map(ToString::to_string);
+        let timeout = async {
+            Timer::after(AUTH_TIMEOUT).await;
             false
-        } else {
-            future::or((self.0.may_change)(sender), async {
-                Timer::after(AUTH_TIMEOUT).await;
-                false
-            })
-            .await
         };
-        if allowed {
-            Ok(())
-        } else {
-            Err(fdo::Error::AccessDenied(
-                "Not allowed for this caller".to_owned(),
-            ))
+        if let Some(sender) = sender
+            && future::or((self.0.may_change)(sender), timeout).await
+        {
+            return Ok(());
         }
+        let why = "Not allowed for this caller".to_owned();
+        Err(fdo::Error::AccessDenied(why))
     }
+}
 
-    async fn query_map(
-        &self,
-        kind: Kind,
-        route: BridgeRoute,
-        message: Value,
-        staged: Option<Staged>,
-    ) -> fdo::Result<VariantMap> {
-        let (tx, rx) = async_channel::bounded(1);
-        self.start(kind, route, message, staged, Some(tx))?;
-        match rx.recv().await {
-            Ok(Reply::Map(map)) => Ok(map),
-            Ok(Reply::Error(error)) => Err(error),
-            _ => Err(fdo::Error::Failed("package request interrupted".to_owned())),
-        }
-    }
+fn random_id() -> fdo::Result<String> {
+    let random = getrandom::u64().map_err(|_| failed("no random id"))?;
+    Ok(format!("{random:016x}"))
+}
 
-    async fn query_list(&self, message: Value) -> fdo::Result<PackageList> {
-        let (tx, rx) = async_channel::bounded(1);
-        self.start(Kind::Packages, BridgeRoute::User, message, None, Some(tx))?;
-        match rx.recv().await {
-            Ok(Reply::List(list)) => Ok(list),
-            Ok(Reply::Error(error)) => Err(error),
-            _ => Err(fdo::Error::Failed("package request interrupted".to_owned())),
-        }
+impl PackagesInterface {
+    fn service(&self) -> fdo::Result<Packages> {
+        let service = self.0.upgrade().map(Packages);
+        service.ok_or_else(|| failed("package service stopped"))
     }
 }
 
 #[interface(name = "org.marathonos.Deckard1.Packages")]
 impl PackagesInterface {
-    #[zbus(name = "InspectPackage")]
     async fn inspect_package(&self, path: &str) -> fdo::Result<VariantMap> {
         let service = self.service()?;
-        let (name, staged) = match service.stage(path) {
-            Ok(staged) => staged,
-            Err(error) => return Ok(failure(&fdo_message(error))),
+        let asked = async {
+            let (path, staged) = service.stage(path)?;
+            let message = json!({"t": "inspect", "path": path});
+            service.query(Kind::Inspect, message, Some(staged)).await
         };
-        let id =
-            random_id().map_err(|_| fdo::Error::Failed("cannot create request id".to_owned()))?;
-        let message =
-            json!({"t":"inspect", "id":id, "path":format!("{ANDROID_INSTALL_DIR}{name}")});
-        match service
-            .query_map(Kind::Inspect, BridgeRoute::User, message, Some(staged))
-            .await
-        {
-            Ok(map) => Ok(map),
-            Err(error) => Ok(failure(&fdo_message(error))),
-        }
+        Ok(match asked.await {
+            Ok(reply) if flag(&reply, "ok") => inspect(&reply),
+            Ok(reply) => failure(text(&reply, "message", 512)),
+            Err(error) => failure(error.description().unwrap_or("").to_owned()),
+        })
     }
 
-    #[zbus(name = "InstallPackage")]
     async fn install_package(
         &self,
         path: &str,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<String> {
         let service = self.service()?;
-        service.allowed(header).await?;
-        let (name, staged) = service.stage(path)?;
-        let id =
-            random_id().map_err(|_| fdo::Error::Failed("cannot create request id".to_owned()))?;
+        service.allowed(&header).await?;
+        let (path, staged) = service.stage(path)?;
+        let message = json!({"t": "install", "path": path});
         service.start(
             Kind::Install,
             BridgeRoute::User,
-            json!({"t":"install", "id":id, "path":format!("{ANDROID_INSTALL_DIR}{name}")}),
+            message,
             Some(staged),
             None,
         )
     }
 
-    #[zbus(name = "UninstallPackage")]
     async fn uninstall_package(
         &self,
         package: &str,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<String> {
         let service = self.service()?;
-        service.allowed(header).await?;
-        let package = PackageName::try_from(package)
-            .map_err(|_| fdo::Error::InvalidArgs("bad package name".to_owned()))?;
-        let id =
-            random_id().map_err(|_| fdo::Error::Failed("cannot create request id".to_owned()))?;
-        service.start(
-            Kind::Uninstall,
-            BridgeRoute::System,
-            json!({"t":"uninstall", "id":id, "pkg":package.as_str()}),
-            None,
-            None,
-        )
+        service.allowed(&header).await?;
+        if !ids::is_package_name(package) {
+            return Err(fdo::Error::InvalidArgs("bad package name".to_owned()));
+        }
+        let message = json!({"t": "uninstall", "pkg": package});
+        service.start(Kind::Uninstall, BridgeRoute::System, message, None, None)
     }
 
-    #[zbus(name = "DeviceProfile")]
     async fn device_profile(&self) -> fdo::Result<VariantMap> {
         let service = self.service()?;
-        let id =
-            random_id().map_err(|_| fdo::Error::Failed("cannot create request id".to_owned()))?;
-        service
-            .query_map(
-                Kind::Device,
-                BridgeRoute::User,
-                json!({"t":"device", "id":id}),
-                None,
-            )
-            .await
+        let reply = service.query(Kind::Device, json!({"t": "device"}), None);
+        let reply = reply.await?;
+        let sdk = ("sdk", Variant::from(number(&reply, "sdk") as i32));
+        Ok(dict(hardware(&reply).into_iter().chain([sdk])))
     }
 
-    #[zbus(name = "ListPackages")]
-    async fn list_packages(&self) -> fdo::Result<PackageList> {
+    async fn list_packages(&self) -> fdo::Result<Vec<VariantMap>> {
         let service = self.service()?;
-        let id =
-            random_id().map_err(|_| fdo::Error::Failed("cannot create request id".to_owned()))?;
-        service.query_list(json!({"t":"packages", "id":id})).await
+        let reply = service.query(Kind::Packages, json!({"t": "packages"}), None);
+        Ok(packages(&reply.await?))
     }
 
-    #[zbus(signal, name = "Progress")]
+    #[zbus(signal)]
     async fn progress(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         job: &str,
         percent: i32,
     ) -> zbus::Result<()>;
-    #[zbus(signal, name = "Finished")]
+    #[zbus(signal)]
     async fn finished(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         job: &str,
@@ -590,50 +442,12 @@ impl PackagesInterface {
         package: &str,
         message: &str,
     ) -> zbus::Result<()>;
-    #[zbus(signal, name = "PackageChanged")]
+    #[zbus(signal)]
     async fn package_changed(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         package: &str,
         change: &str,
     ) -> zbus::Result<()>;
-}
-
-fn sweep_timeouts(weak: Weak<Inner>) {
-    loop {
-        thread::sleep(SWEEP_INTERVAL);
-        let Some(inner) = weak.upgrade() else {
-            break;
-        };
-        let overdue = if let Ok(mut active) = inner.pending.lock() {
-            let now = Instant::now();
-            let ids: Vec<String> = active
-                .iter()
-                .filter(|(_, item)| item.deadline <= now)
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.into_iter()
-                .filter_map(|id| active.remove(&id).map(|item| (id, item)))
-                .collect::<Vec<_>>()
-        } else {
-            break;
-        };
-        let service = Packages(inner);
-        for (id, item) in overdue {
-            let _ = service.fail(&id, item, "Android didn't answer");
-        }
-    }
-}
-
-fn send_reply(reply: Option<Sender<Reply>>, value: Reply) {
-    if let Some(reply) = reply {
-        let _ = reply.try_send(value);
-    }
-}
-
-fn random_id() -> io::Result<String> {
-    let mut bytes = [0_u8; 8];
-    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(format!("{:016x}", u64::from_le_bytes(bytes)))
 }
 
 fn reap_stale(directory: &Path) -> io::Result<()> {
@@ -643,163 +457,99 @@ fn reap_stale(directory: &Path) -> io::Result<()> {
             return Ok(());
         };
         let entry = entry?;
-        if entry.file_type()?.is_file() && entry.path().extension().is_some_and(|ext| ext == "apk")
-        {
+        let apk = entry.path().extension().is_some_and(|ext| ext == "apk");
+        if apk && entry.file_type()?.is_file() {
             fs::remove_file(entry.path())?;
         }
     }
-    if entries.next().is_some() {
-        return Err(io::Error::other(
+    match entries.next() {
+        None => Ok(()),
+        Some(_) => Err(io::Error::other(
             "too many entries in Android install staging directory",
-        ));
-    }
-    Ok(())
-}
-
-fn field_str<'a>(value: &'a Map<String, Value>, key: &str) -> &'a str {
-    value.get(key).and_then(Value::as_str).unwrap_or("")
-}
-
-fn boolean(value: &Map<String, Value>, key: &str) -> bool {
-    value.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
-
-fn integer(value: &Map<String, Value>, key: &str, min: i64, max: i64, fallback: i64) -> i64 {
-    let Some(number) = value.get(key).and_then(Value::as_f64) else {
-        return fallback;
-    };
-    if !number.is_finite() {
-        return fallback;
-    }
-    number.clamp(min as f64, max as f64) as i64
-}
-
-fn text(value: &Map<String, Value>, key: &str, max_units: usize) -> String {
-    clean_text(field_str(value, key), max_units)
-}
-
-fn label(value: &Map<String, Value>) -> String {
-    let raw = text(value, "label", 128);
-    let renamed = RUNTIME_NAME.replace_all(&raw, "Android");
-    renamed.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn valid_package(value: &str) -> Option<String> {
-    PackageName::try_from(value)
-        .ok()
-        .map(|package| package.as_str().to_owned())
-}
-
-fn names(value: &Map<String, Value>, key: &str, limit: usize) -> Vec<String> {
-    value
-        .get(key)
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .take(4096)
-        .filter_map(Value::as_str)
-        .filter(|name| name.encode_utf16().count() <= 160 && PackageName::try_from(*name).is_ok())
-        .take(limit)
-        .map(str::to_owned)
-        .collect()
-}
-
-fn abis(value: &Map<String, Value>) -> Vec<String> {
-    value
-        .get("abis")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .take(1024)
-        .filter_map(Value::as_str)
-        .filter(|abi| {
-            (1..=16).contains(&abi.len())
-                && abi.bytes().all(|byte| {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || byte == b'_'
-                        || byte == b'-'
-                })
-        })
-        .take(16)
-        .map(str::to_owned)
-        .collect()
-}
-
-fn put<T: Into<OwnedValue>>(map: &mut VariantMap, key: &str, value: T) {
-    map.insert(key.to_owned(), value.into());
-}
-fn put_str(map: &mut VariantMap, key: &str, value: &str) {
-    put(map, key, Str::from(value));
-}
-fn put_array(map: &mut VariantMap, key: &str, value: Vec<String>) {
-    if let Ok(value) = OwnedValue::try_from(Variant::from(value)) {
-        map.insert(key.to_owned(), value);
+        )),
     }
 }
 
-fn failure(reason: &str) -> VariantMap {
-    let mut map = VariantMap::new();
-    put(&mut map, "ok", false);
-    put_str(&mut map, "message", reason);
-    map
+fn flag(message: &Map<String, Value>, key: &str) -> bool {
+    message.get(key).and_then(Value::as_bool) == Some(true)
 }
 
-fn fdo_message(error: fdo::Error) -> String {
-    match error {
-        fdo::Error::Failed(message) | fdo::Error::LimitsExceeded(message) => message,
-        other => other.to_string(),
+/// A JSON number, or 0; callers cast it, saturating.
+fn number(message: &Map<String, Value>, key: &str) -> f64 {
+    message.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+}
+
+fn text(message: &Map<String, Value>, key: &str, limit: usize) -> String {
+    clean_text(string(message, key), limit)
+}
+
+/// The first `limit` strings at `key` that pass `valid`.
+fn names(
+    message: &Map<String, Value>,
+    key: &str,
+    limit: usize,
+    valid: fn(&str) -> bool,
+) -> Variant<'static> {
+    let mut out = Vec::new();
+    for name in array(message, key) {
+        let name = name.as_str().unwrap_or("");
+        if out.len() < limit && valid(name) {
+            out.push(name.to_owned());
+        }
     }
+    out.into()
 }
 
-fn device_profile(message: &Map<String, Value>) -> VariantMap {
-    let mut map = VariantMap::new();
-    put_array(&mut map, "features", names(message, "features", 64));
-    put_array(&mut map, "libraries", names(message, "libraries", 64));
-    put_array(&mut map, "abis", abis(message));
-    put(
-        &mut map,
-        "sdk",
-        integer(message, "sdk", i32::MIN as i64, i32::MAX as i64, 0) as i32,
-    );
-    put(&mut map, "gms", boolean(message, "gms"));
-    map
+fn dotted(name: &str) -> bool {
+    name.len() <= 160 && ids::is_package_name(name)
 }
 
-fn package_list(message: &Map<String, Value>) -> PackageList {
+fn abi(name: &str) -> bool {
+    let allowed = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b);
+    (1..=16).contains(&name.len()) && name.bytes().all(allowed)
+}
+
+fn failure(why: String) -> VariantMap {
+    dict([("ok", false.into()), ("message", why.into())])
+}
+
+fn hardware(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 4] {
+    [
+        ("features", names(message, "features", 64, dotted)),
+        ("libraries", names(message, "libraries", 64, dotted)),
+        ("abis", names(message, "abis", 16, abi)),
+        ("gms", flag(message, "gms").into()),
+    ]
+}
+
+fn identity(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 4] {
+    let pkg = Some(string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
+    [
+        ("pkg", pkg.unwrap_or("").to_owned().into()),
+        ("label", validate::label(string(message, "label")).into()),
+        ("versionName", text(message, "versionName", 64).into()),
+        (
+            "versionCode",
+            (number(message, "versionCode") as i64).into(),
+        ),
+    ]
+}
+
+fn packages(message: &Map<String, Value>) -> Vec<VariantMap> {
     let mut list = Vec::new();
-    for entry in message
-        .get("packages")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .take(4096)
-    {
+    for entry in array(message, "packages") {
         let Some(entry) = entry.as_object() else {
             continue;
         };
-        let Some(package) = valid_package(field_str(entry, "pkg")) else {
+        if !ids::is_package_name(string(entry, "pkg")) {
             continue;
-        };
-        let mut map = VariantMap::new();
-        put_str(&mut map, "pkg", &package);
-        put_str(&mut map, "label", &label(entry));
-        put_str(&mut map, "versionName", &text(entry, "versionName", 64));
-        put(
-            &mut map,
-            "versionCode",
-            integer(entry, "versionCode", i64::MIN, i64::MAX, 0),
-        );
-        put(&mut map, "system", boolean(entry, "system"));
-        put(
-            &mut map,
-            "launchable",
-            entry
-                .get("launchable")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-        );
-        list.push(map);
+        }
+        let launchable = entry.get("launchable").and_then(Value::as_bool);
+        let more = [
+            ("system", flag(entry, "system").into()),
+            ("launchable", launchable.unwrap_or(true).into()),
+        ];
+        list.push(dict(identity(entry).into_iter().chain(more)));
         if list.len() == 2000 {
             break;
         }
@@ -807,51 +557,23 @@ fn package_list(message: &Map<String, Value>) -> PackageList {
     list
 }
 
-fn inspect_info(message: &Map<String, Value>) -> VariantMap {
-    let mut map = VariantMap::new();
-    put(&mut map, "ok", true);
-    put_str(
-        &mut map,
-        "pkg",
-        &valid_package(field_str(message, "pkg")).unwrap_or_default(),
-    );
-    put_str(&mut map, "label", &label(message));
-    put_str(&mut map, "versionName", &text(message, "versionName", 64));
-    put(
-        &mut map,
-        "versionCode",
-        integer(message, "versionCode", i64::MIN, i64::MAX, 0),
-    );
-    put(
-        &mut map,
-        "minSdk",
-        integer(message, "minSdk", i32::MIN as i64, i32::MAX as i64, 0) as i32,
-    );
-    put(
-        &mut map,
-        "targetSdk",
-        integer(message, "targetSdk", i32::MIN as i64, i32::MAX as i64, 0) as i32,
-    );
-    put_array(&mut map, "permissions", names(message, "permissions", 200));
-    let icon = base64_png(field_str(message, "icon"), 256 * 1024).unwrap_or_default();
-    if let Ok(icon) = OwnedValue::try_from(Variant::from(icon)) {
-        map.insert("icon".to_owned(), icon);
-    }
-    put_array(&mut map, "features", names(message, "features", 64));
-    put_array(&mut map, "libraries", names(message, "libraries", 64));
-    put_array(&mut map, "abis", abis(message));
-    put(&mut map, "gms", boolean(message, "gms"));
+fn inspect(message: &Map<String, Value>) -> VariantMap {
+    let icon = validate::base64_png(string(message, "icon"), 256 * 1024);
+    let mut map = dict(identity(message).into_iter().chain(hardware(message)));
+    map.extend(dict([
+        ("ok", true.into()),
+        ("minSdk", (number(message, "minSdk") as i32).into()),
+        ("targetSdk", (number(message, "targetSdk") as i32).into()),
+        ("permissions", names(message, "permissions", 200, dotted)),
+        ("icon", icon.unwrap_or_default().into()),
+    ]));
     if message.contains_key("installedVersionCode") {
-        put(
-            &mut map,
-            "installedVersionCode",
-            integer(message, "installedVersionCode", i64::MIN, i64::MAX, 0),
-        );
-        put_str(
-            &mut map,
-            "installedVersionName",
-            &text(message, "installedVersionName", 64),
-        );
+        let code = number(message, "installedVersionCode") as i64;
+        let name = text(message, "installedVersionName", 64);
+        map.extend(dict([
+            ("installedVersionCode", code.into()),
+            ("installedVersionName", name.into()),
+        ]));
     }
     map
 }
