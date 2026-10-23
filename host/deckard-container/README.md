@@ -31,12 +31,30 @@ never executes the Waydroid Python CLI or network script.
   `Unfreeze()`, and `GetSession() -> a{ss}` signatures. Credentials come from
   the D-Bus daemon for the unique sender name, never from caller-supplied
   fields. Non-root starts require exact `user_id` and `pid` matches; subsequent
-  control and session reads require that same session owner (or root). This is
-  deliberately stricter than Python's unauthenticated `Stop`/freeze paths.
+  `Stop` and `Freeze` require that same session owner (or root). `GetSession`
+  and `Unfreeze` also admit the separate `deckard-launch` CLI when its D-Bus
+  daemon-provided UID matches the active session, its kernel `/proc/PID/exe`
+  inode matches the root-owned, non-group/world-writable
+  `/opt/deckard/bin/deckard-launch`, and both processes reside under the same
+  `user@UID.service` cgroup. Every directory from `/opt` to the binary must
+  also be root-owned and non-group/world-writable, and the binary may not be
+  a symlink. This is deliberately narrower than granting all
+  same-UID processes control, and stricter than Python's unauthenticated
+  `Stop`/freeze paths. If the launcher is installed elsewhere, this policy
+  fails closed until its exact installed path is updated. It does not admit
+  other CLI executables or a launcher from another user manager.
+  On the 2026-10-23 Hackberry Pi, `/usr/bin` is UID 1000-owned and writable,
+  and `/opt/deckard/bin/deckard-launch` is not installed. The policy therefore
+  fails closed on that device. Before activation, packaging must install the
+  launcher at that path beneath a genuinely root-controlled directory;
+  changing permissions or trusting UID alone would
+  weaken the authorization boundary. No packaging is changed in this slice.
   `Stop(true)` signals the original session through a retained Linux pidfd.
   Blocking LXC/mount/network calls run outside the D-Bus executor.
-- A private-bus test exercises the actual wire methods and credential lookup
-  with an inert backend, so no host network, mounts, or LXC state is changed.
+- Private-bus tests exercise the actual wire methods and credential lookup
+  with an inert backend, including a launcher-shaped process permitted to
+  read/unfreeze while another same-UID D-Bus process is denied. No host
+  network, mounts, or LXC state is changed.
 - Root-only `GetProperty(s) -> s` and `SetProperty(ss)` methods use direct,
   three-second-bounded `lxc-attach --clear-env -- /system/bin/getprop|setprop`.
   Keys and values are validated before execution, stopped containers are
@@ -51,6 +69,30 @@ never executes the Waydroid Python CLI or network script.
   `config_session` as one new LXC instance directory. It refuses to replace
   an existing instance. The only CLI entry is root-only
   `--experimental-prepare-local`; it does not start, stop, or mount anything.
+- The same **uninstalled experimental** bus server now exposes `/Initializer`
+  with the installed `id.waydro.Initializer` wire contract:
+  `Init(a{ss})`, `Cancel()`, `ProgressChanged(s)`, `Finished()`, and
+  `Interrupted()`. Credentials are resolved from the unique D-Bus sender.
+  Both methods require root; unlike upstream, the default-channel exemption
+  and interactive Polkit authorization are deliberately unsupported.
+  Upstream's three-field `Init` request fails with `NotSupported` and performs
+  no work. The only accepted extension is `mode=prepare-local-scratch` plus
+  exactly `work`, `images`, `templates`, `name`, `bridge`, `arch`, `lxc_major`,
+  `binder`, `vndbinder`, and `hwbinder`. `work` must be an existing direct child
+  of a real `/tmp/deckard-init-scratch` directory, with `work/lxc` present.
+  `images` and `templates` must each be direct children of `work`; all these
+  directories must be daemon-owned and not group/world-writable.
+  This runs the existing offline local-image preparation there only. It does
+  not write `/var/lib/waydroid` or `/var/lib/deckard`.
+  One worker is allowed at a time; a second `Init` fails. `Cancel` sets a
+  cooperative flag and returns without joining or blocking the D-Bus loop.
+  The worker checks cancellation and a 10-second deadline before each write
+  and final publication, removes staging files on failure, and emits
+  `Interrupted` rather than `Finished`. Individual kernel filesystem calls
+  and D-Bus signal sends cannot be preempted, so this is not a hard wall-clock
+  timeout. Cancellation after publication cannot undo the new scratch output.
+  Private-bus tests exercise the wire signatures, credential check, unsupported
+  legacy request, and scratch completion without claiming the production bus.
 
 ## Not parity-complete
 
@@ -59,10 +101,13 @@ The installed Python source at `/usr/lib/waydroid/tools/actions/container_manage
 `tools/interfaces/IHardware.py`, and `data/scripts/waydroid-net.sh` is the
 reference. Specifically unsupported:
 
-- **System D-Bus initialization and rename**: no `/Initializer`
-  `id.waydro.Initializer.Init(a{ss})` or `Cancel()` and no `ProgressChanged(s)`,
-  `Finished()`, or `Interrupted()` signals or Polkit check. The adapter retains
-  the old bus/interface names for client compatibility; no renamed
+- **Production initialization and rename**: the installed GUI's standard
+  three-field `Init` remains unsupported, including default and custom OTA
+  channels, `system_type` selection, URL fetch/hash verification, replacing
+  images, config/property/driver generation, stopped or running container
+  coordination, and restart. There is no Polkit check or authorization path
+  for non-root callers. The adapter retains the old bus/interface names for
+  client compatibility; no renamed
   `org.marathonos.Deckard.Container` API or migration alias exists yet.
 - **User-session property broker**: these property methods intentionally
   reject non-root D-Bus callers, including the current user session. There is
