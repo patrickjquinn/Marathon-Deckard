@@ -6,7 +6,7 @@ use std::time::Duration;
 pub const BOOT_TIMEOUT_MS: u64 = 60_000;
 pub const EVIDENCE_TIMEOUT_MS: u64 = 90_000;
 pub const SHELL_SETTLE_MS: u64 = 2_000;
-pub const SHELL_MIN_GAP_MS: u64 = 30_000;
+const SHELL_MIN_GAP_MS: u64 = 30_000;
 pub const SHELL_BUS_NAME: &str = "org.marathonos.Shell";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

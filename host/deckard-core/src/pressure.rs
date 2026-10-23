@@ -14,9 +14,9 @@ pub const SYSTEM_TRIGGER: &str = "some 2000000 10000000";
 /// Processes each request asks DeckardSystem to end.
 pub const COUNT: u64 = 2;
 /// The least time between two requests.
-pub const GAP: Duration = Duration::from_secs(2);
+const GAP: Duration = Duration::from_secs(2);
 /// The gap after a reclaim that found nothing to end.
-pub const IDLE_GAP: Duration = Duration::from_secs(10);
+const IDLE_GAP: Duration = Duration::from_secs(10);
 
 /// What ran short, sent as the request's `reason`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

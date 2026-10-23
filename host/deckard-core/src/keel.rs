@@ -551,18 +551,24 @@ fn quoted(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+const NAMED_FLAGS: [(i64, &str); 6] = [
+    (flags::LONG_CLICKABLE, "long-press"),
+    (flags::SELECTED, "selected"),
+    (flags::FOCUSED, "focused"),
+    (flags::SCROLLABLE, "scrolls"),
+    (flags::HEADING, "heading"),
+    (flags::DISABLED, "disabled"),
+];
+
 fn line(snapshot: i64, node: &Node) -> String {
     let role = role(node);
-    let mut line = format!(
-        "{}[{snapshot}.{}] {role}",
-        " ".repeat(2 * node.depth.min(16) as usize),
-        node.index
-    );
-    if node.flags & flags::PASSWORD != 0 {
+    let has = |flag: i64| node.flags & flag != 0;
+    let indent = " ".repeat(2 * node.depth.min(16) as usize);
+    let mut line = format!("{indent}[{snapshot}.{}] {role}", node.index);
+    if has(flags::PASSWORD) {
         line.push_str(" password (hidden)");
     } else if !node.text.is_empty() {
-        line.push(' ');
-        line.push_str(&quoted(&node.text));
+        let _ = write!(line, " {}", quoted(&node.text));
     }
     if !node.desc.is_empty() && node.desc != node.text {
         let _ = write!(line, " ({})", validate::simplified(&node.desc));
@@ -575,26 +581,18 @@ fn line(snapshot: i64, node: &Node) -> String {
         let _ = write!(line, " #{view}");
     }
     let mut state = Vec::new();
-    if node.flags & flags::CHECKABLE != 0 {
-        state.push(if node.flags & flags::CHECKED != 0 {
+    if has(flags::CHECKABLE) {
+        state.push(if has(flags::CHECKED) {
             "checked"
         } else {
             "unchecked"
         });
     }
-    if node.flags & flags::CLICKABLE != 0 && !TAPPABLE.contains(&role) {
+    if has(flags::CLICKABLE) && !TAPPABLE.contains(&role) {
         state.push("tappable");
     }
-    let named = [
-        (flags::LONG_CLICKABLE, "long-press"),
-        (flags::SELECTED, "selected"),
-        (flags::FOCUSED, "focused"),
-        (flags::SCROLLABLE, "scrolls"),
-        (flags::HEADING, "heading"),
-        (flags::DISABLED, "disabled"),
-    ];
-    for (flag, name) in named {
-        if node.flags & flag != 0 {
+    for (flag, name) in NAMED_FLAGS {
+        if has(flag) {
             state.push(name);
         }
     }

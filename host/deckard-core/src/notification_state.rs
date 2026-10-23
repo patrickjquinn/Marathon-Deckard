@@ -12,9 +12,9 @@ use serde_json::{Map, Value, json};
 use crate::messages::Post;
 use crate::validate;
 
-pub const MAX_TRACKED: usize = 200;
-pub const DISMISS_DELAY_MS: u64 = 500;
-pub const TAP_GRACE_MS: i64 = 3_000;
+const MAX_TRACKED: usize = 200;
+const DISMISS_DELAY_MS: u64 = 500;
+const TAP_GRACE_MS: i64 = 3_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
