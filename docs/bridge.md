@@ -499,7 +499,7 @@ through MediaProvider's rules; nothing else of the home is mounted, links
 inside the folders resolve inside the container, and submounts are not
 carried over.
 
-Host tests: `test-deckard-shared-folders.py` (mapping, creation, moving
+Host tests: `host/deckard-host-tools/tests/shared_folders.rs` (mapping, creation, moving
 Android's files, refusing links and data outside the home) and
 `test_sharedstorage` (ACLs, inheritance, the paths sent for scanning).
 

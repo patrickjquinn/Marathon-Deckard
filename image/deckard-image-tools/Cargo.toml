@@ -9,6 +9,7 @@ license = "GPL-3.0-only"
 [dependencies]
 deckard-core = { path = "../../host/deckard-core" }
 regex.workspace = true
+sha2 = "=0.10.9"
 tempfile.workspace = true
 
 [lints]

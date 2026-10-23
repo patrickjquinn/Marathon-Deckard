@@ -74,8 +74,6 @@ if(BUILD_TESTING)
     add_executable(test_sharedstorage tests/test_sharedstorage.cpp)
     target_link_libraries(test_sharedstorage PRIVATE deckardcore Qt6::Test)
     add_test(NAME sharedstorage COMMAND test_sharedstorage)
-    add_test(NAME shared_folders_hook COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/tests/test-deckard-shared-folders.py
-                                                 ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/deckard-shared-folders)
     add_executable(test_reclaimer tests/test_reclaimer.cpp)
     target_link_libraries(test_reclaimer PRIVATE deckardcore Qt6::Test)
     add_test(NAME reclaimer COMMAND test_reclaimer)
