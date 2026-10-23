@@ -10,3 +10,4 @@ pub mod notifications;
 pub mod packages;
 pub mod runtime;
 pub mod shell_sync;
+pub mod watchdog;

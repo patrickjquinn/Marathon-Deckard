@@ -1,6 +1,6 @@
 use std::env;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -14,8 +14,9 @@ use deckard_bridge::ime::{
 use deckard_bridge::manage::Manage;
 use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
-use deckard_bridge::runtime::{Runtime, call_unit, watch_unit};
+use deckard_bridge::runtime::{Runtime, call_unit, try_restart_unit, watch_unit};
 use deckard_bridge::shell_sync;
+use deckard_bridge::watchdog::{self, BootWatchdog};
 use deckard_core::ids::PackageName;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
@@ -379,10 +380,35 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             eprintln!("deckard-bridge: IME socket failed: {error}");
         }
     });
+    let evidence = Path::new("/usr/libexec/deckard-boot-evidence");
+    let evidence = evidence
+        .exists()
+        .then(|| vec!["pkexec".into(), evidence.into()]);
+    let restart_bus = bus.clone();
+    let boot_watchdog = BootWatchdog::spawn(data.join("deckard/booted"), evidence, move || {
+        if let Err(error) = future::block_on(call_unit(restart_bus.inner(), UnitCall::Restart)) {
+            eprintln!("deckard-bridge: restarting Android failed: {error}");
+        }
+    });
+    let follow_bus = bus.clone();
+    thread::spawn(move || {
+        let restart_bus = follow_bus.clone();
+        let restart = move || {
+            if let Err(error) = future::block_on(try_restart_unit(restart_bus.inner())) {
+                eprintln!("deckard-bridge: restarting Android failed: {error}");
+            }
+        };
+        if let Err(error) = watchdog::follow_shell(&follow_bus, restart) {
+            eprintln!("deckard-bridge: Shell follower failed: {error}");
+        }
+    });
     let watch_bus = bus.clone();
     let watch_runtime = runtime.clone();
     thread::spawn(move || {
-        let changed = || emit_runtime(&watch_bus, &watch_runtime);
+        let changed = || {
+            emit_runtime(&watch_bus, &watch_runtime);
+            boot_watchdog.set_active_since(watch_runtime.active_since_ms());
+        };
         if let Err(error) = watch_unit(&watch_bus, &watch_runtime, changed) {
             eprintln!("deckard-bridge: unit watch failed: {error}")
         }
