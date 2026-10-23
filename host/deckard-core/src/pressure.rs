@@ -21,12 +21,16 @@ pub const IDLE_GAP: Duration = Duration::from_secs(10);
 /// What ran short, sent as the request's `reason`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
+    /// `memory.events` counted a trip over `memory.high` or `memory.max`.
     ContainerHigh,
+    /// The container's PSI trigger fired.
     ContainerStall,
+    /// The phone-wide PSI trigger fired.
     PhoneStall,
 }
 
 impl Reason {
+    /// The wire name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ContainerHigh => "container-high",
@@ -60,6 +64,7 @@ pub struct ReclaimPolicy {
 }
 
 impl ReclaimPolicy {
+    /// Whether DeckardSystem is there to ask.
     pub fn set_connected(&mut self, connected: bool) {
         self.connected = connected;
     }
