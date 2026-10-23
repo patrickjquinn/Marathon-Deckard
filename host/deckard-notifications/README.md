@@ -8,6 +8,9 @@ and transport. `NotificationAdapter::listen` subscribes to Hub signals, while
 `post`, `remove`, and `sync` accept already-validated `deckard-core` inputs.
 Use a dedicated connection with a five-second method timeout to match the old
 handler; close that connection on shutdown to stop the signal listener.
+Delayed dismissals use one timer worker per adapter and a 512-entry deadline
+queue; repeated timers for the same Hub ID are coalesced. A full queue applies
+backpressure rather than dropping an Android dismissal.
 
 The state path should be the existing
 `~/.local/state/deckard/notifications.json`; the icon directory should be the
