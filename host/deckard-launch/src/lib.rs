@@ -23,6 +23,7 @@ pub trait Backend {
     fn launch_app(&mut self, package: &str) -> Result<()>;
     fn launch_intent(&mut self, action: &str, uri: &str) -> Result<String>;
     fn settings_put_string(&mut self, table: i32, key: &str, value: &str) -> Result<()>;
+    fn show_android_app(&mut self, package: &str) -> Result<()>;
 }
 
 fn immersive<B: Backend>(backend: &mut B) -> Result<()> {
@@ -42,6 +43,7 @@ pub fn launch_app<B: Backend>(backend: &mut B, package: &str) -> Result<()> {
     backend.unfreeze_for_launch()?;
     backend.setprop("waydroid.active_apps", package)?;
     backend.launch_app(package)?;
+    backend.show_android_app(package)?;
     immersive(backend)
 }
 
@@ -61,6 +63,9 @@ pub fn launch_intent<B: Backend>(backend: &mut B, action: &str, uri: &str) -> Re
         &package
     };
     backend.setprop("waydroid.active_apps", active)?;
+    if package != "android" {
+        backend.show_android_app(&package)?;
+    }
     immersive(backend)
 }
 
@@ -154,6 +159,10 @@ mod tests {
             self.calls.push(format!("settings:{table}:{key}:{value}"));
             Ok(())
         }
+        fn show_android_app(&mut self, package: &str) -> Result<()> {
+            self.calls.push(format!("show:{package}"));
+            Ok(())
+        }
     }
 
     #[test]
@@ -170,6 +179,7 @@ mod tests {
                 "unfreeze",
                 "set:waydroid.active_apps:org.example.app",
                 "app:org.example.app",
+                "show:org.example.app",
                 "get:persist.waydroid.multi_windows:false",
                 "settings:2:policy_control:immersive.status=*"
             ]
@@ -194,7 +204,8 @@ mod tests {
             "intent:android.intent.action.VIEW:https://example.org"
         );
         assert_eq!(fake.calls[3], "set:waydroid.active_apps:org.example.app");
-        assert_eq!(fake.calls[5], "settings:2:policy_control:immersive.full=*");
+        assert_eq!(fake.calls[4], "show:org.example.app");
+        assert_eq!(fake.calls[6], "settings:2:policy_control:immersive.full=*");
     }
 
     #[test]
@@ -212,6 +223,7 @@ mod tests {
         };
         launch_intent(&mut fake, "VIEW", "package:org.example").unwrap();
         assert_eq!(fake.calls[3], "set:waydroid.active_apps:Waydroid");
+        assert!(!fake.calls.iter().any(|call| call.starts_with("show:")));
     }
 
     #[test]

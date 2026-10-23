@@ -139,9 +139,10 @@ impl Backend for NativeBackend {
                 return Err("Deckard session is stopped".into());
             }
             self.start_session()?;
-            self.wait_for_user_ready()?;
         }
         if start_session {
+            // The bus name can be owned before Android has booted or unlocked.
+            self.wait_for_user_ready()?;
             Ok(false)
         } else {
             self.container_frozen()
@@ -169,6 +170,20 @@ impl Backend for NativeBackend {
     }
     fn launch_intent(&mut self, action: &str, uri: &str) -> Result<String> {
         self.platform()?.launch_intent(action, uri)
+    }
+    fn show_android_app(&mut self, package: &str) -> Result<()> {
+        let app_id = format!("waydroid.{package}");
+        let proxy = Proxy::new(
+            &self.session_bus,
+            "org.marathonos.Shell",
+            "/org/marathonos/Shell/Navigation",
+            "org.marathonos.Shell.Navigation1",
+        )?;
+        let shown: bool = proxy.call("ShowAndroidApp", &(app_id,))?;
+        if !shown {
+            return Err(format!("Shell rejected Android window handoff for {package}").into());
+        }
+        Ok(())
     }
     fn settings_put_string(&mut self, table: i32, key: &str, value: &str) -> Result<()> {
         self.platform()?.settings_put_string(table, key, value)
