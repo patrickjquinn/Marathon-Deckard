@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use deckard_core::palette::{Color, Theme};
 use regex::Regex;
@@ -36,10 +37,7 @@ pub fn render(highlight: Color, theme: Theme) -> String {
         highlight.hex()
     );
     for (name, color) in deckard_core::palette::generate(highlight, theme) {
-        xml.push_str(&format!(
-            "    <color name=\"{name}\">{}</color>\n",
-            color.hex()
-        ));
+        let _ = writeln!(xml, "    <color name=\"{name}\">{}</color>", color.hex());
     }
     xml.push_str("</resources>\n");
     xml

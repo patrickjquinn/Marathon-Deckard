@@ -1,13 +1,14 @@
 //! The per-session Android property file, from the initialized base file.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use deckard_host_tools::files;
 
-use crate::{Result, ensure};
+use crate::Result;
 
 const MAX_BASE_BYTES: u64 = 1024 * 1024;
 const SESSION_KEYS: &[&str] = &[
@@ -43,31 +44,31 @@ pub fn render(
     sensors_available: bool,
 ) -> Result<String> {
     let base_ok = !base.is_empty() && base.len() as u64 <= MAX_BASE_BYTES && !base.contains('\0');
-    ensure(base_ok, "invalid base property file")?;
+    crate::ensure(base_ok, "invalid base property file")?;
     let uid = value(fields, "user_id")?;
     let gid = value(fields, "group_id")?;
-    ensure(uid.parse::<u32>().is_ok(), "invalid user ID")?;
-    ensure(gid.parse::<u32>().is_ok(), "invalid group ID")?;
+    crate::ensure(uid.parse::<u32>().is_ok(), "invalid user ID")?;
+    crate::ensure(gid.parse::<u32>().is_ok(), "invalid group ID")?;
     let user = value(fields, "user_name")?;
     let plain = user
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
-    ensure(user.len() <= 64 && plain, "invalid user name")?;
+    crate::ensure(user.len() <= 64 && plain, "invalid user name")?;
     let data = value(fields, "waydroid_data")?;
-    ensure(data.starts_with('/'), "Android data path must be absolute")?;
+    crate::ensure(data.starts_with('/'), "Android data path must be absolute")?;
     let background = value(fields, "background_start")?;
-    ensure(
+    crate::ensure(
         matches!(background, "true" | "false"),
         "invalid background_start",
     )?;
     let density: u16 = value(fields, "lcd_density")?
         .parse()
         .map_err(|_| "invalid LCD density")?;
-    ensure(density <= 1000, "LCD density is out of range")?;
+    crate::ensure(density <= 1000, "LCD density is out of range")?;
 
     let mut result = String::new();
     for line in base.lines() {
-        ensure(!line.contains('\r'), "invalid base property line")?;
+        crate::ensure(!line.contains('\r'), "invalid base property line")?;
         let key = line.split_once('=').map_or(line, |(key, _)| key);
         if !SESSION_KEYS.contains(&key) || (key == "ro.sf.lcd_density" && density == 0) {
             result.push_str(line);
@@ -84,13 +85,13 @@ pub fn render(
         ("waydroid.pulse_runtime_path", "/run/xdg/pulse"),
         ("waydroid.wayland_display", "wayland-0"),
     ] {
-        result.push_str(&format!("{key}={entry}\n"));
+        let _ = writeln!(result, "{key}={entry}");
     }
     if !sensors_available {
         result.push_str("waydroid.stub_sensors_hal=1\n");
     }
     if density != 0 {
-        result.push_str(&format!("ro.sf.lcd_density={density}\n"));
+        let _ = writeln!(result, "ro.sf.lcd_density={density}");
     }
     Ok(result)
 }
@@ -98,7 +99,7 @@ pub fn render(
 fn owned(path: &Path, message: &str) -> Result<fs::Metadata> {
     let metadata = fs::symlink_metadata(path)?;
     let mine = metadata.uid() == rustix::process::geteuid().as_raw();
-    ensure(mine && !metadata.is_symlink(), message)?;
+    crate::ensure(mine && !metadata.is_symlink(), message)?;
     Ok(metadata)
 }
 
@@ -111,8 +112,8 @@ pub fn write(work: &Path, fields: &HashMap<String, String>, uid: u32) -> Result<
     let base_path = work.join("waydroid_base.prop");
     let untrusted = "untrusted base property file";
     let base = owned(&base_path, untrusted)?;
-    ensure(base.is_file() && base.len() <= MAX_BASE_BYTES, untrusted)?;
-    ensure(
+    crate::ensure(base.is_file() && base.len() <= MAX_BASE_BYTES, untrusted)?;
+    crate::ensure(
         value(fields, "user_id")? == uid.to_string(),
         "session UID does not match property UID",
     )?;
@@ -121,7 +122,7 @@ pub fn write(work: &Path, fields: &HashMap<String, String>, uid: u32) -> Result<
     let properties = render(&base, fields, sensors)?;
     let untrusted = "untrusted Android work directory";
     let directory = owned(work, untrusted)?;
-    ensure(
+    crate::ensure(
         directory.is_dir() && directory.mode() & 0o022 == 0,
         untrusted,
     )?;

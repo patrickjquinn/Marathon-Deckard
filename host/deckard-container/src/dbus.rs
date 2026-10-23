@@ -27,7 +27,7 @@ use crate::hardware::{self, HardwareRequest};
 use crate::initializer_dbus::{self, InitializerService};
 use crate::lxc::{self, ContainerManager, State};
 use crate::session_config::{self, Stage};
-use crate::{Result, config, ensure, properties};
+use crate::{Result, config, properties};
 
 pub const BUS_NAME: &str = "id.waydro.Container";
 pub const OBJECT_PATH: &str = "/ContainerManager";
@@ -228,11 +228,11 @@ impl DirectBackend {
     fn prepare_production(&mut self) -> Result<()> {
         let base = self.manager.mounts.work.join("waydroid_base.prop");
         let initialized = self.initialized_instance() && base.is_file();
-        ensure(initialized, "Waydroid is not initialized")?;
+        crate::ensure(initialized, "Waydroid is not initialized")?;
         let text = config::read(&self.config_path())?;
         let images =
             PathBuf::from(cfg::get(&text, "images_path").unwrap_or("/var/lib/waydroid/images"));
-        ensure(images.is_absolute(), "images_path must be absolute")?;
+        crate::ensure(images.is_absolute(), "images_path must be absolute")?;
         self.manager.mounts.images = images;
         self.manager.mounts.overlays = match config::get_or_default(&text, "mount_overlays") {
             Some("True") => true,
@@ -282,7 +282,7 @@ impl Backend for DirectBackend {
 
     fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
         let stopped = self.manager.lxc.status(&mut ProcessRunner)? == State::Stopped;
-        ensure(
+        crate::ensure(
             stopped,
             "container must be stopped before updating session files",
         )?;

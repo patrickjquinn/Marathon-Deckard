@@ -1,5 +1,6 @@
 //! Writing `waydroid.cfg`; reading is `deckard_host_tools::cfg`.
 
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
@@ -47,7 +48,7 @@ pub fn set(text: &str, updates: &[(&str, &str)]) -> Result<String> {
     let append_missing = |result: &mut String, seen: &[String]| {
         for (key, value) in updates {
             if !seen.iter().any(|name| name == key) {
-                result.push_str(&format!("{key} = {value}\n"));
+                let _ = writeln!(result, "{key} = {value}");
             }
         }
     };
@@ -70,7 +71,7 @@ pub fn set(text: &str, updates: &[(&str, &str)]) -> Result<String> {
                 return Err(format!("duplicate config key: {key}").into());
             }
             seen.push(key);
-            result.push_str(&format!("{name} = {value}\n"));
+            let _ = writeln!(result, "{name} = {value}");
             continue;
         }
         result.push_str(line);

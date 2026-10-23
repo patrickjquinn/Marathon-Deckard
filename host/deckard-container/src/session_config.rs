@@ -10,6 +10,7 @@
 //! names only the stage.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -20,8 +21,8 @@ use rustix::fs::{CWD, FileType, Mode, OFlags, ResolveFlags};
 use rustix::io::Errno;
 use rustix::mount::{MoveMountFlags, OpenTreeFlags, UnmountFlags};
 
-use crate::mounts::owner_controlled;
-use crate::{Result, ensure};
+use crate::Result;
+use crate::mounts;
 
 /// Where the pinned session sources are mounted for LXC.
 pub struct Stage {
@@ -73,7 +74,7 @@ impl Stage {
             .recursive(true)
             .mode(0o700)
             .create(&self.root)?;
-        owner_controlled(&self.root)?;
+        mounts::owner_controlled(&self.root)?;
         if fs::symlink_metadata(self.data()).is_err() {
             DirBuilder::new().mode(0o700).create(self.data())?;
         }
@@ -87,7 +88,7 @@ impl Stage {
             }
         }
         for target in [self.wayland(), self.pulse(), self.data()] {
-            owner_controlled(&target)?;
+            mounts::owner_controlled(&target)?;
         }
         Ok(())
     }
@@ -104,7 +105,7 @@ fn safe_path(path: &Path) -> Result<()> {
     let value = path.to_string_lossy();
     let safe =
         path.is_absolute() && !value.chars().any(char::is_whitespace) && !value.contains('\0');
-    ensure(safe, format!("unsafe LXC mount path: {value}"))
+    crate::ensure(safe, format!("unsafe LXC mount path: {value}"))
 }
 
 /// `path` resolved once, then opened without following any link and checked
@@ -121,7 +122,7 @@ fn pin(path: &Path, uid: u32, expected: FileType) -> Result<(PathBuf, OwnedFd)> 
         "directory"
     };
     let matches = stat.st_uid == uid && FileType::from_raw_mode(stat.st_mode) == expected;
-    ensure(
+    crate::ensure(
         matches,
         format!(
             "session path is not a {kind} owned by UID {uid}: {}",
@@ -153,24 +154,24 @@ fn sources(fields: &HashMap<String, String>, uid: u32, runtime_root: &Path) -> R
     let runtime = runtime_root.join(uid.to_string());
     safe_path(&runtime)?;
     let expected = Path::new(field(fields, "xdg_runtime_dir")?) == runtime;
-    ensure(expected, "unexpected XDG runtime directory")?;
-    ensure(
+    crate::ensure(expected, "unexpected XDG runtime directory")?;
+    crate::ensure(
         runtime.metadata()?.uid() == uid,
         "XDG runtime directory has wrong owner",
     )?;
     let display = field(fields, "wayland_display")?;
     let plain =
         !display.is_empty() && !display.contains('/') && !display.chars().any(char::is_whitespace);
-    ensure(plain, "invalid Wayland display name")?;
+    crate::ensure(plain, "invalid Wayland display name")?;
     let (wayland_path, wayland) = pin(&runtime.join(display), uid, FileType::Socket)?;
-    ensure(
+    crate::ensure(
         wayland_path.starts_with(&runtime),
         "Wayland socket escapes runtime directory",
     )?;
     let pulse_path = Path::new(field(fields, "pulse_runtime_path")?).join("native");
     let pulse = if pulse_path.exists() {
         let (canonical, fd) = pin(&pulse_path, uid, FileType::Socket)?;
-        ensure(
+        crate::ensure(
             canonical.starts_with(&runtime),
             "Pulse socket escapes runtime directory",
         )?;
@@ -198,15 +199,17 @@ pub fn render(stage: &Stage, pulse: bool) -> String {
     if pulse {
         let pulse = stage.pulse();
         let pulse = pulse.display();
-        config.push_str(&format!(
-            "lxc.mount.entry = {pulse} run/xdg/pulse/native none rbind,create=file 0 0\n"
-        ));
+        let _ = writeln!(
+            config,
+            "lxc.mount.entry = {pulse} run/xdg/pulse/native none rbind,create=file 0 0"
+        );
     }
     let data = stage.data();
-    config.push_str(&format!(
-        "lxc.mount.entry = {} data none rbind 0 0\n",
+    let _ = writeln!(
+        config,
+        "lxc.mount.entry = {} data none rbind 0 0",
         data.display()
-    ));
+    );
     config
 }
 
@@ -229,7 +232,7 @@ pub fn write(
     let trusted = directory.is_dir()
         && directory.uid() == rustix::process::geteuid().as_raw()
         && directory.mode() & 0o022 == 0;
-    ensure(trusted, "untrusted LXC instance directory")?;
+    crate::ensure(trusted, "untrusted LXC instance directory")?;
     stage.release()?;
     stage.prepare()?;
     let binds = [

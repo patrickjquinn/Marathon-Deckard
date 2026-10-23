@@ -18,7 +18,7 @@ use deckard_host_tools::cfg;
 
 use crate::command::{Command, Runner};
 use crate::drivers::DriverNodes;
-use crate::{Result, config, ensure, lxc, mounts};
+use crate::{Result, config, lxc, mounts};
 
 const CONFIG_BASE: &str = include_str!("../lxc/config_base");
 const CONFIG_3: &str = include_str!("../lxc/config_3");
@@ -81,7 +81,7 @@ impl Images {
         if let Some(dir) = preinstalled.iter().find(|dir| has_images(dir)) {
             return Ok(Self::Preinstalled(dir.clone()));
         }
-        ensure(
+        crate::ensure(
             has_images(installed),
             "Android images are not installed; Deckard does not download them",
         )?;
@@ -105,7 +105,7 @@ fn validate_token(token: &str) -> Result<()> {
     let unsafe_byte = token
         .bytes()
         .any(|byte| byte.is_ascii_whitespace() || byte == 0 || byte == b'\\');
-    ensure(!token.is_empty() && !unsafe_byte, "unsafe LXC token")
+    crate::ensure(!token.is_empty() && !unsafe_byte, "unsafe LXC token")
 }
 
 /// The device nodes and paths the host has, of those [`NODES`] can mount.
@@ -171,7 +171,7 @@ impl Host {
     pub fn probe(runner: &mut impl Runner) -> Result<Self> {
         let halium = env::var_os("PATH")
             .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join("getprop").is_file()));
-        ensure(!halium, "Halium hosts (with getprop) are not supported")?;
+        crate::ensure(!halium, "Halium hosts (with getprop) are not supported")?;
         let (arch, lxc_arch) = match env::consts::ARCH {
             "aarch64" => ("arm64", "aarch64"),
             "x86_64" => ("x86_64", "x86_64"),
@@ -185,7 +185,7 @@ impl Host {
             .next()
             .and_then(|major| major.parse().ok());
         let lxc_major: u32 = major.ok_or("invalid LXC version")?;
-        ensure(lxc_major >= 3, "LXC 3 or newer is required")?;
+        crate::ensure(lxc_major >= 3, "LXC 3 or newer is required")?;
         let drm = Path::new("/sys/class/drm");
         let render_node = render_node(Path::new("/dev/dri"), drm);
         let driver = render_node
@@ -476,11 +476,11 @@ impl Init<'_> {
     pub fn run(&self, cancelled: &AtomicBool, deadline: Option<Instant>) -> Result<()> {
         let check = || {
             let late = deadline.is_some_and(|end| Instant::now() >= end);
-            ensure(
+            crate::ensure(
                 !cancelled.load(Ordering::Acquire),
                 "initialization cancelled",
             )?;
-            ensure(!late, "initialization timed out")
+            crate::ensure(!late, "initialization timed out")
         };
         check()?;
         let work = &self.instance.work;
@@ -491,7 +491,7 @@ impl Init<'_> {
         let rootfs = work.join("rootfs");
         let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
         let mounted = !mounts::mountpoints_beneath(&rootfs, &mountinfo).is_empty();
-        ensure(
+        crate::ensure(
             !mounted,
             "the Android rootfs is still mounted; stop the container first",
         )?;
@@ -603,7 +603,7 @@ fn trusted(path: &Path, kind: Kind) -> Result<()> {
     } else {
         "file"
     };
-    ensure(
+    crate::ensure(
         right_kind && owned,
         format!("untrusted {noun}: {}", path.display()),
     )
@@ -616,7 +616,7 @@ fn validate_image(path: &Path) -> Result<()> {
     image.seek(SeekFrom::Start(1024 + 56))?;
     let mut magic = [0; 2];
     image.read_exact(&mut magic)?;
-    ensure(
+    crate::ensure(
         magic == [0x53, 0xef],
         format!("not an ext image: {}", path.display()),
     )
