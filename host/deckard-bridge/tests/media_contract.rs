@@ -13,6 +13,7 @@ mod mpris;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::thread;
 use std::time::Duration;
 
 use serde_json::json;
@@ -98,6 +99,17 @@ fn owner(bus: &Connection, name: &str) -> zbus::Result<String> {
     proxy.call("GetNameOwner", &(name,))
 }
 
+/// Whether `name` loses its owner within two seconds.
+fn released(bus: &Connection, name: &str) -> bool {
+    for _ in 0..100 {
+        if owner(bus, name).is_err() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
 #[test]
 fn media_bridge_owns_distinct_players_and_routes_commands() -> TestResult<()> {
     let bus = PrivateBus::start()?;
@@ -135,7 +147,7 @@ fn media_bridge_owns_distinct_players_and_routes_commands() -> TestResult<()> {
     assert_eq!(bridge.active_players(), 2);
     bridge.handle_authenticated(7, json!({"t":"media_gone","sid":3}).as_object().unwrap())?;
     assert_eq!(bridge.active_players(), 1);
-    assert!(owner(&client, &first).is_err());
+    assert!(released(&client, &first));
     assert!(owner(&client, &second).is_ok());
     Ok(())
 }
@@ -152,7 +164,7 @@ fn disconnect_and_reconnect_drop_stale_players() -> TestResult<()> {
     assert!(owner(&client, &old).is_ok());
     bridge.connected(11);
     assert_eq!(bridge.active_players(), 0);
-    assert!(owner(&client, &old).is_err());
+    assert!(released(&client, &old));
     bridge.handle_authenticated(10, &media(1, "org.example.old"))?;
     assert_eq!(bridge.active_players(), 0);
     bridge.handle_authenticated(11, &media(2, "org.example.new"))?;
@@ -160,7 +172,7 @@ fn disconnect_and_reconnect_drop_stale_players() -> TestResult<()> {
     assert_eq!(bridge.active_players(), 1);
     bridge.disconnected(11);
     assert_eq!(bridge.active_players(), 0);
-    assert!(owner(&client, &name(2, "org.example.new")).is_err());
+    assert!(released(&client, &name(2, "org.example.new")));
     assert!(bridge.drain_commands().is_empty());
     Ok(())
 }
