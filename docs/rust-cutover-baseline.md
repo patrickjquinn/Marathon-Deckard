@@ -128,6 +128,20 @@ the session PID, incremented `NRestarts` to 1, and Android returned to
 user-owned `/usr`, `/usr/bin`, `/usr/lib`, and `/usr/libexec` parent directories
 were corrected to root ownership before moving the binaries from the initial
 `/opt` staging location to their package-compliant `/usr/libexec` paths.
+The packaged `deckardd` was hot-deployed with its unit watcher retargeted to
+`deckard-session.service`. Its `GetRuntime` changed from an incorrect
+`state=stopped, memoryBytes=0` to `state=running` with approximately 1.07 GB
+of Android memory. The final `deckard-0.1.0-r10.apk` passed Alpine's package
+checks and includes the Rust binaries, PATH symlink, and user unit.
+
+One device lifecycle edge remains: calling Shell `LaunchApp` immediately after
+explicitly stopping a session that still has a visible Android task can reuse
+the stale surface and fail to start the new session. A second call starts it,
+but the Shell may then lose the handoff and remain on a splash even while
+Android reports Feeder top-resumed. A Shell reset followed by normal Rust
+launch restored a visible Feeder window. This stop-and-immediate-reopen race
+needs a separate Shell task/window invalidation fix; it is not a root-container
+or Binder transport failure.
 
 This is a **user-session and desktop launcher cutover**, not a full Deckard
 cutover. `waydroid-container.service` still runs the Python root manager and

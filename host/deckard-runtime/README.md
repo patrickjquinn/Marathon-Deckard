@@ -1,7 +1,8 @@
 # deckard-runtime (session slice)
 
 This crate is the native Rust Deckard-owned user session. The Deckard package
-installs `deckard-session.service`, which starts it on demand. It is not a
+installs `deckard-session.service`; `deckard-launch` starts it on demand, and
+`deckardd` honors the user's start-at-login preference. It is not a
 complete replacement for upstream Waydroid's Python root control plane.
 
 `deckard-runtime session start` validates the graphical user and Wayland
