@@ -86,10 +86,19 @@ fn serve_session(
 ) {
     let polling = session.set_read_timeout(Some(Duration::from_millis(100)));
     'session: while polling.is_ok() {
-        while let Ok(message) = outgoing.try_recv() {
-            if let Err(error) = session.send_message(&message) {
-                eprintln!("deckard-bridge: system bridge write failed: {error}");
-                break 'session;
+        loop {
+            match outgoing.try_recv() {
+                Ok(message) => {
+                    if let Err(error) = session.send_message(&message) {
+                        eprintln!("deckard-bridge: system bridge write failed: {error}");
+                        break 'session;
+                    }
+                }
+                Err(async_channel::TryRecvError::Empty) => break,
+                Err(async_channel::TryRecvError::Closed) => {
+                    eprintln!("deckard-bridge: system bridge replaced by a new connection");
+                    break 'session;
+                }
             }
         }
         match session.read_message() {
