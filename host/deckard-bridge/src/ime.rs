@@ -195,7 +195,8 @@ pub fn register(shell: &Proxy<'_>) -> zbus::Result<()> {
 }
 
 /// Relays between DeckardIme (`events`, `handle`) and the Shell on `bus`;
-/// runs on its own thread. The lock is never held across a D-Bus call.
+/// runs on its own thread. Messages to Android are queued under the lock,
+/// which is never held across a D-Bus call.
 pub fn serve(events: &Receiver<ChannelEvent>, handle: &ChannelHandle, bus: &Connection) {
     let shell = match text_input(bus) {
         Ok(shell) => shell,
@@ -222,11 +223,13 @@ pub fn serve(events: &Receiver<ChannelEvent>, handle: &ChannelHandle, bus: &Conn
                 crate::report("IME register failed", register(&shell));
             }
             ChannelEvent::Message(generation, message) if current == Some(generation) => {
-                let (call, replay) = sync::lock(&state).android(&message);
-                send(&shell, call.as_slice());
+                let mut ime = sync::lock(&state);
+                let (call, replay) = ime.android(&message);
                 if let Some(replay) = replay {
                     let _ = handle.send_to(generation, replay);
                 }
+                drop(ime);
+                send(&shell, call.as_slice());
             }
             ChannelEvent::Disconnected(generation) if current == Some(generation) => {
                 current = None;
@@ -251,8 +254,8 @@ fn listen(
     for signal in signals {
         match signal {
             Ok(signal) => {
-                let message = sync::lock(state).shell(&signal);
-                if let Some(message) = message {
+                let mut ime = sync::lock(state);
+                if let Some(message) = ime.shell(&signal) {
                     let _ = handle.send(message);
                 }
             }
