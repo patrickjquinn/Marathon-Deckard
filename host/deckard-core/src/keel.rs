@@ -113,24 +113,13 @@ pub struct Manifest {
     pub shortcuts: HashMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Node {
-    pub index: i64,
-    pub depth: i64,
-    pub class: String,
-    pub text: String,
-    pub desc: String,
-    pub hint: String,
-    pub view_id: String,
-    pub flags: i64,
-}
-
+/// A validated `screen` reply, one rendered line per node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Screen {
     pub pkg: String,
     pub snapshot: i64,
     pub title: String,
-    pub nodes: Vec<Node>,
+    lines: Vec<String>,
 }
 
 /// A screen as text, at most the asked length.
@@ -492,52 +481,36 @@ pub fn screen(message: &Map<String, Value>) -> Option<Screen> {
     {
         return None;
     }
-    let mut nodes = Vec::new();
+    let snapshot = snapshot as i64;
+    let mut lines = Vec::new();
     let sent = json::array(message, "nodes")
         .iter()
         .filter_map(Value::as_object);
     for node in sent {
-        if nodes.len() >= MAX_NODES {
+        if lines.len() >= MAX_NODES {
             break;
         }
-        let Some(index) = int(node, "i").filter(|index| *index >= 0) else {
-            continue;
-        };
-        let flags = int(node, "f").unwrap_or(0) & flags::ALL;
-        nodes.push(Node {
-            index: index.min(9999),
-            depth: int(node, "d").unwrap_or(0).clamp(0, 63),
-            class: json::text(node, "c", 128),
-            text: if flags & flags::PASSWORD == 0 {
-                json::text(node, "t", 1000)
-            } else {
-                String::new()
-            },
-            desc: json::text(node, "cd", 500),
-            hint: json::text(node, "h", 200),
-            view_id: json::text(node, "v", 128),
-            flags,
-        });
+        lines.extend(line(snapshot, node));
     }
     Some(Screen {
         pkg: pkg.to_owned(),
-        snapshot: snapshot as i64,
+        snapshot,
         title: validate::simplified(&json::text(message, "title", 256)),
-        nodes,
+        lines,
     })
 }
 
 /// The role `screen.read` gives a node.
-fn role(node: &Node) -> &'static str {
-    let class = node.class.rsplit('.').next().unwrap_or("");
-    if node.flags & flags::EDITABLE != 0 || class.contains("EditText") {
+fn role(class: &str, flags: i64) -> &'static str {
+    let class = class.rsplit('.').next().unwrap_or("");
+    if flags & flags::EDITABLE != 0 || class.contains("EditText") {
         return "field";
     }
     let matches = |classes: &str| classes.split('|').any(|name| class.contains(name));
     let found = ROLES.iter().find(|(classes, _)| matches(classes));
     match found {
         Some((_, role)) => role,
-        None if node.flags & flags::CLICKABLE != 0 => "item",
+        None if flags & flags::CLICKABLE != 0 => "item",
         None => "group",
     }
 }
@@ -560,23 +533,32 @@ const NAMED_FLAGS: [(i64, &str); 6] = [
     (flags::DISABLED, "disabled"),
 ];
 
-fn line(snapshot: i64, node: &Node) -> String {
-    let role = role(node);
-    let has = |flag: i64| node.flags & flag != 0;
-    let indent = " ".repeat(2 * node.depth.min(16) as usize);
-    let mut line = format!("{indent}[{snapshot}.{}] {role}", node.index);
+/// A node's line; `None` for a node without a valid index.
+fn line(snapshot: i64, node: &Map<String, Value>) -> Option<String> {
+    let index = int(node, "i").filter(|index| *index >= 0)?.min(9999);
+    let flags = int(node, "f").unwrap_or(0) & flags::ALL;
+    let has = |flag: i64| flags & flag != 0;
+    let depth = int(node, "d").unwrap_or(0).clamp(0, 16) as usize;
+    let text = match has(flags::PASSWORD) {
+        true => String::new(),
+        false => json::text(node, "t", 1000),
+    };
+    let (desc, hint) = (json::text(node, "cd", 500), json::text(node, "h", 200));
+    let role = role(&json::text(node, "c", 128), flags);
+    let mut line = format!("{}[{snapshot}.{index}] {role}", " ".repeat(2 * depth));
     if has(flags::PASSWORD) {
         line.push_str(" password (hidden)");
-    } else if !node.text.is_empty() {
-        let _ = write!(line, " {}", quoted(&node.text));
+    } else if !text.is_empty() {
+        let _ = write!(line, " {}", quoted(&text));
     }
-    if !node.desc.is_empty() && node.desc != node.text {
-        let _ = write!(line, " ({})", validate::simplified(&node.desc));
+    if !desc.is_empty() && desc != text {
+        let _ = write!(line, " ({})", validate::simplified(&desc));
     }
-    if !node.hint.is_empty() && node.hint != node.text {
-        let _ = write!(line, " hint {}", quoted(&node.hint));
+    if !hint.is_empty() && hint != text {
+        let _ = write!(line, " hint {}", quoted(&hint));
     }
-    let view = node.view_id.rsplit(":id/").next().unwrap_or("");
+    let view_id = json::text(node, "v", 128);
+    let view = view_id.rsplit(":id/").next().unwrap_or("");
     if !view.is_empty() {
         let _ = write!(line, " #{view}");
     }
@@ -599,7 +581,7 @@ fn line(snapshot: i64, node: &Node) -> String {
     if !state.is_empty() {
         let _ = write!(line, " {{{}}}", state.join(", "));
     }
-    line
+    Some(line)
 }
 
 /// One line per node, indented by depth, at most `max_units` UTF-16 units.
@@ -609,9 +591,8 @@ pub fn render(screen: &Screen, max_units: usize) -> Rendered {
         truncated: false,
     };
     let mut length = 0;
-    for node in &screen.nodes {
-        let line = line(screen.snapshot, node);
-        length += units(&line) + 1;
+    for line in &screen.lines {
+        length += units(line) + 1;
         if length > max_units {
             out.truncated = true;
             break;
@@ -822,8 +803,7 @@ mod tests {
         }));
         let screen = screen(&message).unwrap();
         assert_eq!(screen.snapshot, 3);
-        assert_eq!(screen.nodes.len(), 7);
-        assert!(screen.nodes[4].text.is_empty());
+        assert_eq!(screen.lines.len(), 7);
 
         let rendered = render(&screen, 16000);
         assert!(!rendered.truncated);
