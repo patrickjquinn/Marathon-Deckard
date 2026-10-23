@@ -370,16 +370,16 @@ impl Backend for DirectBackend {
                 self.manager.lxc.start(&mut ProcessRunner)?;
                 Ok(HardwareOutcome::Active)
             }
-            HardwareRequest::ShutdownRequest(reason) if reason.starts_with('1') => {
+            HardwareRequest::ShutdownRequest(reason) => {
                 self.manager.lxc.wait_for(
                     &mut ProcessRunner,
                     State::Stopped,
                     Duration::from_secs(30),
                 )?;
-                self.manager.lxc.start(&mut ProcessRunner)?;
-                Ok(HardwareOutcome::Active)
-            }
-            HardwareRequest::ShutdownRequest(_) => {
+                if reason.starts_with('1') {
+                    self.manager.lxc.start(&mut ProcessRunner)?;
+                    return Ok(HardwareOutcome::Active);
+                }
                 self.stop()?;
                 Ok(HardwareOutcome::Stopped)
             }
