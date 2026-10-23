@@ -13,7 +13,6 @@ use deckard_core::ids::PackageName;
 use deckard_core::validate::clean_text;
 use futures_lite::future;
 use serde_json::{Map, Value, json};
-use zbus::message::{Flags, Message};
 use zbus::zvariant::{OwnedValue, Str};
 
 use crate::Outbound;
@@ -219,17 +218,10 @@ impl PermissionPrompts {
     fn cancel(&self, id: String) {
         let bus = self.bus.clone();
         let cancel = async move {
-            let message = Message::method_call(PATH, "CancelAndroidPrompt")
-                .and_then(|builder| builder.destination(SHELL))
-                .and_then(|builder| builder.interface(INTERFACE))
-                .and_then(|builder| builder.with_flags(Flags::NoReplyExpected))
-                .and_then(|builder| builder.build(&(id,)));
-            let sent = match message {
-                Ok(message) => bus.send(&message).await,
-                Err(error) => Err(error),
-            };
-            if let Err(error) = sent {
-                eprintln!("deckard-bridge: CancelAndroidPrompt: {error}");
+            let (method, body) = ("CancelAndroidPrompt", (id,));
+            let reply = bus.call_method(Some(SHELL), PATH, Some(INTERFACE), method, &body);
+            if let Err(error) = reply.await {
+                eprintln!("deckard-bridge: {method}: {error}");
             }
         };
         self.bus

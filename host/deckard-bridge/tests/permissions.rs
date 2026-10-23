@@ -18,40 +18,37 @@ use zbus::interface;
 use zbus::zvariant::{OwnedValue, Str};
 
 const WAIT: Duration = Duration::from_secs(5);
+const QUIET: Duration = Duration::from_millis(200);
 
-type Answer = async_channel::Sender<(String, bool)>;
-
-struct Prompt {
-    app_id: String,
-    permission: String,
-    options: VariantMap,
-    answer: Answer,
-}
+/// A prompt the fake Shell holds: app id, permission, options, and where its
+/// answer goes.
+type Prompt = (String, String, Value, async_channel::Sender<(String, bool)>);
 
 /// The Shell's Permissions1: holds each prompt until the test answers it.
-struct Permissions {
-    prompts: mpsc::Sender<Prompt>,
-    cancelled: mpsc::Sender<String>,
-}
+struct Permissions(mpsc::Sender<Prompt>, mpsc::Sender<String>);
 
 #[interface(name = "org.marathonos.Shell.Permissions1")]
 impl Permissions {
     #[zbus(name = "PromptAndroid")]
     async fn prompt_android(
         &self,
-        app_id: String,
+        app: String,
         permission: String,
         options: VariantMap,
     ) -> VariantMap {
+        let options = options.iter().map(|(key, value)| {
+            let text = value.downcast_ref::<&str>().map(Value::from);
+            (
+                key.clone(),
+                text.or_else(|_| value.downcast_ref::<bool>().map(Value::from))
+                    .unwrap(),
+            )
+        });
         let (answer, answered) = async_channel::bounded(1);
-        let prompt = Prompt {
-            app_id,
-            permission,
-            options,
-            answer,
-        };
-        self.prompts.send(prompt).unwrap();
-        let (answer, precise) = answered.recv().await.unwrap_or(("cancel".into(), false));
+        self.0
+            .send((app, permission, options.collect(), answer))
+            .unwrap();
+        let (answer, precise) = answered.recv().await.unwrap();
         VariantMap::from([
             ("answer".to_owned(), OwnedValue::from(Str::from(answer))),
             ("precise".to_owned(), precise.into()),
@@ -60,7 +57,7 @@ impl Permissions {
 
     #[zbus(name = "CancelAndroidPrompt")]
     fn cancel_android_prompt(&self, request: String) {
-        self.cancelled.send(request).unwrap();
+        self.1.send(request).unwrap();
     }
 }
 
@@ -72,18 +69,6 @@ impl Navigation {
     fn app_id_for_pid(&self, _pid: u32) -> String {
         "settings".into()
     }
-}
-
-fn option(prompt: &Prompt, key: &str) -> OwnedValue {
-    prompt.options[key].try_clone().unwrap()
-}
-
-fn text(prompt: &Prompt, key: &str) -> String {
-    String::try_from(option(prompt, key)).unwrap()
-}
-
-fn flag(prompt: &Prompt, key: &str) -> bool {
-    bool::try_from(option(prompt, key)).unwrap()
 }
 
 fn ask(id: &str, perms: &[&str], extra: Value) -> Map<String, Value> {
@@ -99,18 +84,12 @@ fn ask(id: &str, perms: &[&str], extra: Value) -> Map<String, Value> {
     ask.as_object().unwrap().clone()
 }
 
-fn prompts(bus: &Connection) -> (PermissionPrompts, Receiver<Map<String, Value>>) {
-    let (tx, rx) = mpsc::channel();
-    let tx = Mutex::new(tx);
-    let send = Arc::new(move |message| tx.lock().unwrap().send(message).is_ok());
-    (PermissionPrompts::new(bus.inner().clone(), send), rx)
+fn answer(prompt: &Prompt, answer: &str, precise: bool) {
+    prompt.3.send_blocking((answer.into(), precise)).unwrap();
 }
 
-fn answer(prompt: &Prompt, answer: &str, precise: bool) {
-    prompt
-        .answer
-        .send_blocking((answer.into(), precise))
-        .unwrap();
+fn reply(sent: &Receiver<Map<String, Value>>) -> Value {
+    Value::Object(sent.recv_timeout(WAIT).unwrap())
 }
 
 #[test]
@@ -130,61 +109,56 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
         return Ok(());
     }
     let bus = Connection::session()?;
+    let (tx, sent) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let send = Arc::new(move |message| tx.lock().unwrap().send(message).is_ok());
+    let prompter = PermissionPrompts::new(bus.inner().clone(), send);
+    let unsupported =
+        |id| json!({"t":"perm_answer", "id":id, "answer":"unsupported", "precise":false});
 
     // Without the Shell, Android asks.
-    let (prompter, sent) = prompts(&bus);
     prompter.handle(&ask("0000000000000010", &["RECORD_AUDIO"], json!({})));
-    assert_eq!(sent.recv_timeout(WAIT)?["answer"], "unsupported");
+    assert_eq!(reply(&sent), unsupported("0000000000000010"));
 
     let shell = Connection::session()?;
-    let (prompt_tx, shown) = mpsc::channel();
+    let (shown_tx, shown) = mpsc::channel();
     let (cancel_tx, cancelled) = mpsc::channel();
-    shell.object_server().at(
+    let server = shell.object_server();
+    server.at(
         "/org/marathonos/Shell/Permissions",
-        Permissions {
-            prompts: prompt_tx,
-            cancelled: cancel_tx,
-        },
+        Permissions(shown_tx, cancel_tx),
     )?;
-    shell
-        .object_server()
-        .at("/org/marathonos/Shell/Navigation", Navigation)?;
+    server.at("/org/marathonos/Shell/Navigation", Navigation)?;
     shell.request_name("org.marathonos.Shell")?;
 
     // A request becomes the Shell's prompt.
     prompter.handle(&ask("0123456789abcdef", &["CAMERA"], json!({"once":true})));
     let prompt = shown.recv_timeout(WAIT)?;
-    assert_eq!(prompt.app_id, "waydroid.me.hackerchick.catima");
-    assert_eq!(prompt.permission, "camera");
-    assert_eq!(text(&prompt, "request"), "0123456789abcdef");
-    assert_eq!(text(&prompt, "kind"), "foreground");
-    assert!(flag(&prompt, "once"));
-    assert_eq!(text(&prompt, "accuracy"), "");
+    assert_eq!(
+        (prompt.0.as_str(), prompt.1.as_str()),
+        ("waydroid.me.hackerchick.catima", "camera")
+    );
+    let options = json!({"request":"0123456789abcdef", "kind":"foreground", "once":true,
+        "accuracy":"", "preciseDefault":false});
+    assert_eq!(prompt.2, options);
     assert!(sent.try_recv().is_err());
     answer(&prompt, "once", false);
-    let reply = sent.recv_timeout(WAIT)?;
-    assert_eq!(
-        Value::Object(reply),
-        json!({"t":"perm_answer", "id":"0123456789abcdef", "answer":"once", "precise":false})
-    );
+    let once =
+        json!({"t":"perm_answer", "id":"0123456789abcdef", "answer":"once", "precise":false});
+    assert_eq!(reply(&sent), once);
 
     // Location keeps its choices.
-    let fine = ask(
-        "00000000000000aa",
-        &["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"],
-        json!({"once":true, "accuracy":"choice", "preciseDefault":true}),
-    );
-    prompter.handle(&fine);
+    let perms = ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"];
+    let choices = json!({"once":true, "accuracy":"choice", "preciseDefault":true});
+    prompter.handle(&ask("00000000000000aa", &perms, choices));
     let prompt = shown.recv_timeout(WAIT)?;
-    assert_eq!(prompt.permission, "location");
-    assert_eq!(text(&prompt, "accuracy"), "choice");
-    assert!(flag(&prompt, "preciseDefault"));
-    answer(&prompt, "allow", true);
-    let reply = sent.recv_timeout(WAIT)?;
+    assert_eq!(prompt.1, "location");
     assert_eq!(
-        (&reply["answer"], &reply["precise"]),
-        (&json!("allow"), &json!(true))
+        (&prompt.2["accuracy"], &prompt.2["preciseDefault"]),
+        (&json!("choice"), &json!(true))
     );
+    answer(&prompt, "allow", true);
+    assert_eq!(reply(&sent)["precise"], true);
     let background = json!({"kind":"background"});
     prompter.handle(&ask(
         "00000000000000ab",
@@ -192,9 +166,9 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
         background,
     ));
     let prompt = shown.recv_timeout(WAIT)?;
-    assert_eq!(text(&prompt, "kind"), "background");
+    assert_eq!(prompt.2["kind"], "background");
     answer(&prompt, "sideways", false);
-    assert_eq!(sent.recv_timeout(WAIT)?["answer"], "cancel");
+    assert_eq!(reply(&sent)["answer"], "cancel");
 
     // Requests Marathon can't draw go back to Android's own dialog.
     let bad = [
@@ -212,37 +186,23 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
     ];
     for message in &bad {
         prompter.handle(message);
-        let reply = sent.recv_timeout(WAIT)?;
-        assert_eq!(
-            (&reply["id"], &reply["answer"]),
-            (&message["id"], &json!("unsupported"))
-        );
+        assert_eq!(reply(&sent), unsupported(message["id"].as_str().unwrap()));
     }
     prompter.handle(&ask("not-an-id", &["CAMERA"], json!({})));
 
     // Cancels reach the Shell, and no answer follows.
     prompter.handle(&ask("0000000000000020", &["CAMERA"], json!({})));
     prompter.handle(&ask("0000000000000021", &["READ_CALENDAR"], json!({})));
-    let first = shown.recv_timeout(WAIT)?;
-    let second = shown.recv_timeout(WAIT)?;
-    prompter.handle(
-        &json!({"t":"perm_cancel", "id":"0000000000000020"})
-            .as_object()
-            .unwrap()
-            .clone(),
-    );
-    prompter.handle(
-        &json!({"t":"perm_cancel", "id":"00000000000000ff"})
-            .as_object()
-            .unwrap()
-            .clone(),
-    );
+    let (first, second) = (shown.recv_timeout(WAIT)?, shown.recv_timeout(WAIT)?);
+    for id in ["0000000000000020", "00000000000000ff"] {
+        prompter.handle(json!({"t":"perm_cancel", "id":id}).as_object().unwrap());
+    }
     assert_eq!(cancelled.recv_timeout(WAIT)?, "0000000000000020");
     answer(&first, "allow", false);
     prompter.system_lost();
     assert_eq!(cancelled.recv_timeout(WAIT)?, "0000000000000021");
     answer(&second, "deny", false);
-    assert!(sent.recv_timeout(Duration::from_millis(200)).is_err());
+    assert!(sent.recv_timeout(QUIET).is_err());
 
     // Waiting is bounded, and a repeated id is the same request.
     for i in 0..=MAX_WAITING {
@@ -252,105 +212,82 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
             json!({}),
         ));
     }
-    let reply = sent.recv_timeout(WAIT)?;
-    assert_eq!(
-        (&reply["id"], &reply["answer"]),
-        (&json!("0000000000000108"), &json!("unsupported"))
-    );
+    assert_eq!(reply(&sent), unsupported("0000000000000108"));
     let held: Vec<Prompt> = (0..MAX_WAITING)
-        .map(|_| shown.recv_timeout(WAIT).unwrap())
+        .flat_map(|_| shown.recv_timeout(WAIT))
         .collect();
     prompter.handle(&ask("0000000000000100", &["CAMERA"], json!({})));
-    assert!(sent.recv_timeout(Duration::from_millis(200)).is_err());
     prompter.system_lost();
-    for prompt in &held {
-        answer(prompt, "cancel", false);
-    }
-    assert!(shown.recv_timeout(Duration::from_millis(200)).is_err());
+    held.iter()
+        .for_each(|prompt| answer(prompt, "cancel", false));
+    assert_eq!(held.len(), MAX_WAITING);
+    assert!(sent.recv_timeout(QUIET).is_err() && shown.try_recv().is_err());
 
-    // Settings: Marathon's names in, Android's permissions out.
+    // Settings: arguments are checked before anything reaches Android, then
+    // Marathon's names go in and Android's permissions come out.
     let manage = Manage::default();
     let dir = tempfile::tempdir()?;
     let runtime = Runtime::new(
-        dir.path().join("settings.json"),
-        dir.path().join("applications"),
-        dir.path().join("memory.current"),
+        dir.path().join("s.json"),
+        dir.path().join("a"),
+        dir.path().join("m"),
     );
     let api_bus = Connection::session()?;
+    let icon_dirs = vec![];
     let api = SettingsApi {
         bus: api_bus.inner().clone(),
         runtime,
         manage: manage.clone(),
-        icon_dirs: vec![],
+        icon_dirs,
     };
     api_bus.object_server().at(OBJECT_PATH, api)?;
     api_bus.request_name(BUS_NAME)?;
     let (tx, android) = async_channel::bounded(4);
-    let generation = manage.connect(tx);
-    let replier = manage.clone();
+    let (generation, replier) = (manage.connect(tx), manage.clone());
     let responder = std::thread::spawn(move || {
         let mut ops = Vec::new();
-        while let Ok(sent) = android.recv_blocking() {
+        while let Ok(mut sent) = android.recv_blocking() {
             let apps = json!([{"pkg":"org.fdroid.fdroid", "label":"F-Droid", "granted":true, "fixed":true}]);
-            let reply = json!({"t":"managed", "id":sent["id"], "ok":true, "apps":apps});
+            let reply = json!({"t":"managed", "id":sent.remove("id"), "ok":true, "apps":apps});
             replier.handle(generation, reply.as_object().unwrap());
             ops.push(Value::Object(sent));
         }
         ops
     });
     let settings = Proxy::new(&bus, BUS_NAME, OBJECT_PATH, "org.marathonos.Deckard1")?;
-    let invalid =
-        |method: &str, args: &(&str, &str, bool)| match settings.call::<_, _, ()>(method, args) {
-            Err(zbus::Error::MethodError(name, ..)) => {
-                name.as_str() == "org.freedesktop.DBus.Error.InvalidArgs"
-            }
-            _ => false,
-        };
-    assert!(invalid(
-        "SetPermission",
-        &(
+    let set = |pkg: &str, name: &str, on: bool| {
+        settings.call::<_, _, ()>("SetPermission", &(pkg, name, on))
+    };
+    assert!(
+        set(
             "org.fdroid.fdroid",
             "android.permission.INSTALL_PACKAGES",
             true
         )
-    ));
-    assert!(invalid(
-        "SetPermission",
-        &("org.fdroid.fdroid", "nearby", true)
-    ));
-    assert!(invalid("SetPermission", &("not a package", "camera", true)));
-    settings.call::<_, _, ()>("SetPermission", &("org.fdroid.fdroid", "bluetooth", false))?;
-    settings.call::<_, _, ()>(
-        "SetPermission",
-        &("org.fdroid.fdroid", "notifications", true),
-    )?;
-    let apps: Vec<VariantMap> = settings.call("GetPermissionApps", &("camera",))?;
-    assert_eq!(String::try_from(apps[0]["label"].try_clone()?)?, "F-Droid");
-    assert!(bool::try_from(apps[0]["fixed"].try_clone()?)?);
-    let _: Vec<VariantMap> = settings.call("GetPermissionApps", &("notifications",))?;
-    assert!(
-        settings
-            .call::<_, _, Vec<VariantMap>>("GetPermissionApps", &("system",))
-            .is_err()
+        .is_err()
     );
-    manage.disconnect(generation);
-    let ops = responder.join().unwrap();
-    assert_eq!(ops.len(), 4);
-    assert_eq!(ops[0]["op"], "perm");
-    assert!(
-        ops[0]["permissions"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("android.permission.BLUETOOTH_SCAN"))
-    );
-    assert_eq!(ops[0]["granted"], false);
+    assert!(set("org.fdroid.fdroid", "nearby", true).is_err());
+    assert!(set("not a package", "camera", true).is_err());
+    set("org.fdroid.fdroid", "bluetooth", false)?;
+    set("org.fdroid.fdroid", "notifications", true)?;
+    let apps = |name: &str| settings.call::<_, _, Vec<VariantMap>>("GetPermissionApps", &(name,));
+    let camera = apps("camera")?;
     assert_eq!(
-        (&ops[1]["op"], &ops[1]["enabled"]),
-        (&json!("notifications"), &json!(true))
+        String::try_from(camera[0]["label"].try_clone()?)?,
+        "F-Droid"
     );
-    assert_eq!(ops[2]["op"], "perm_apps");
-    assert_eq!(ops[2]["permissions"], json!(["android.permission.CAMERA"]));
-    assert_eq!(ops[3]["op"], "notif_apps");
+    assert!(bool::try_from(camera[0]["fixed"].try_clone()?)?);
+    apps("notifications")?;
+    assert!(apps("system").is_err());
+    manage.disconnect(generation);
+    let bluetooth = contract::permission("bluetooth").unwrap();
+    let expected = json!([
+        {"t":"manage", "op":"perm", "pkg":"org.fdroid.fdroid", "permissions":bluetooth, "granted":false},
+        {"t":"manage", "op":"notifications", "pkg":"org.fdroid.fdroid", "enabled":true},
+        {"t":"manage", "op":"perm_apps", "permissions":["android.permission.CAMERA"]},
+        {"t":"manage", "op":"notif_apps"},
+    ]);
+    assert_eq!(Value::Array(responder.join().unwrap()), expected);
     api_bus.release_name(BUS_NAME)?;
     shell.release_name("org.marathonos.Shell")?;
     Ok(())
