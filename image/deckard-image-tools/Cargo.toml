@@ -8,8 +8,11 @@ license = "GPL-3.0-only"
 
 [dependencies]
 deckard-core = { path = "../../host/deckard-core" }
+deckard-host-tools = { path = "../../host/deckard-host-tools" }
 regex.workspace = true
 sha2 = "=0.10.9"
+
+[dev-dependencies]
 tempfile.workspace = true
 
 [lints]
