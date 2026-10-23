@@ -1,22 +1,16 @@
 [package]
 name = "deckard-fonts-sync"
-version = "0.4.0"
-edition = "2024"
-rust-version = "1.88"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license = "Apache-2.0"
 
-[workspace]
-
 [dependencies]
-rustix = { version = "=1.1.5", features = ["fs"] }
+rustix.workspace = true
 
 [dev-dependencies]
-tempfile = "=3.27.0"
+tempfile.workspace = true
 
-[lints.rust]
-unsafe_code = "deny"
-
-[lints.clippy]
-unwrap_used = "warn"
-expect_used = "warn"
+[lints]
+workspace = true

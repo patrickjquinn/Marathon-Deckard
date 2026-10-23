@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod framing;
 pub mod ids;
+pub mod messages;
 pub mod palette;
 pub mod png_guard;
 pub mod text;

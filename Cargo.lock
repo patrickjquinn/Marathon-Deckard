@@ -74,11 +74,20 @@ version = "0.4.0"
 dependencies = [
  "base64",
  "image",
+ "regex",
  "rustix",
  "serde",
  "serde_json",
  "tempfile",
  "unicode-general-category",
+]
+
+[[package]]
+name = "deckard-fonts-sync"
+version = "0.4.0"
+dependencies = [
+ "rustix",
+ "tempfile",
 ]
 
 [[package]]
@@ -97,6 +106,14 @@ version = "0.4.0"
 dependencies = [
  "deckard-core",
  "regex",
+ "tempfile",
+]
+
+[[package]]
+name = "deckard-overlay-sync"
+version = "0.4.0"
+dependencies = [
+ "rustix",
  "tempfile",
 ]
 
