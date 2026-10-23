@@ -1,5 +1,6 @@
 pub mod acl;
 pub mod ids;
+pub mod json;
 pub mod keel;
 pub mod messages;
 pub mod notification_state;

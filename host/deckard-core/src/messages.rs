@@ -3,6 +3,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::ids::PackageName;
+use crate::json::{self, text};
 use crate::validate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,36 +56,19 @@ pub struct Media {
     pub can_stop: bool,
 }
 
-fn field<'a>(message: &'a Map<String, Value>, name: &str) -> &'a Value {
-    message.get(name).unwrap_or(&Value::Null)
-}
-
-fn string<'a>(message: &'a Map<String, Value>, name: &str) -> &'a str {
-    field(message, name).as_str().unwrap_or("")
-}
-
-fn boolean(message: &Map<String, Value>, name: &str) -> bool {
-    field(message, name).as_bool().unwrap_or(false)
-}
-
-fn text(message: &Map<String, Value>, name: &str, max_units: usize) -> String {
-    validate::clean_text(string(message, name), max_units)
-}
-
 fn integer(message: &Map<String, Value>, name: &str, min: i64, max: i64, fallback: i64) -> i64 {
-    let value = field(message, name).as_f64().unwrap_or(fallback as f64);
-    if !value.is_finite() {
-        return fallback;
+    match message.get(name).and_then(Value::as_f64) {
+        Some(value) => value.clamp(min as f64, max as f64) as i64,
+        None => fallback,
     }
-    value.clamp(min as f64, max as f64) as i64
 }
 
 fn label(message: &Map<String, Value>, package: &PackageName) -> String {
-    let compact = validate::label(string(message, "label"));
-    if compact.is_empty() {
+    let label = validate::label(json::string(message, "label"));
+    if label.is_empty() {
         package.as_str().to_owned()
     } else {
-        compact
+        label
     }
 }
 
@@ -100,13 +84,13 @@ fn category(value: &str) -> String {
         "sys" => "device",
         _ => "",
     };
-    if !known.is_empty() {
-        known.to_owned()
-    } else if (1..=32).contains(&value.len())
+    let custom = (1..=32).contains(&value.len())
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
-    {
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_');
+    if !known.is_empty() {
+        known.to_owned()
+    } else if custom {
         format!("x-android.{value}")
     } else {
         String::new()
@@ -114,34 +98,11 @@ fn category(value: &str) -> String {
 }
 
 fn package(message: &Map<String, Value>) -> Result<PackageName, MessageError> {
-    PackageName::try_from(string(message, "pkg")).map_err(|_| MessageError::Package)
+    PackageName::try_from(json::string(message, "pkg")).map_err(|_| MessageError::Package)
 }
 
 fn image(message: &Map<String, Value>, name: &str, max_bytes: usize) -> Vec<u8> {
-    validate::base64_png(string(message, name), max_bytes).unwrap_or_default()
-}
-
-fn conversation(value: &Value) -> Option<Value> {
-    let object = value.as_object()?;
-    let messages = field(object, "messages")
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let recent = messages.iter().rev().take(10).rev().map(|entry| {
-        let empty = Map::new();
-        let item = entry.as_object().unwrap_or(&empty);
-        json!({
-            "sender": text(item, "sender", 128),
-            "text": text(item, "text", 1024),
-            "time": integer(item, "time", 0, 1_i64 << 50, 0),
-        })
-    });
-    Some(json!({
-        "title": text(object, "title", 256),
-        "self": text(object, "self", 128),
-        "group": boolean(object, "group"),
-        "messages": recent.collect::<Vec<_>>(),
-    }))
+    validate::base64_png(json::string(message, name), max_bytes).unwrap_or_default()
 }
 
 fn action_id(value: &str) -> bool {
@@ -150,79 +111,82 @@ fn action_id(value: &str) -> bool {
     })
 }
 
+fn conversation(object: &Map<String, Value>) -> Value {
+    let messages = json::array(object, "messages");
+    let empty = Map::new();
+    let mut recent = Vec::new();
+    for entry in &messages[messages.len().saturating_sub(10)..] {
+        let item = entry.as_object().unwrap_or(&empty);
+        recent.push(json!({
+            "sender": text(item, "sender", 128),
+            "text": text(item, "text", 1024),
+            "time": integer(item, "time", 0, 1_i64 << 50, 0),
+        }));
+    }
+    json!({
+        "title": text(object, "title", 256),
+        "self": text(object, "self", 128),
+        "group": json::boolean(object, "group"),
+        "messages": recent,
+    })
+}
+
+fn progress(object: &Map<String, Value>) -> Option<i32> {
+    let max = integer(object, "max", 0, i32::MAX.into(), 0);
+    let current = integer(object, "current", 0, i32::MAX.into(), 0);
+    if json::boolean(object, "indeterminate") {
+        Some(-1)
+    } else if max > 0 {
+        Some((current * 100 / max).clamp(0, 100) as i32)
+    } else {
+        None
+    }
+}
+
+/// Validates a `post`.
+///
+/// # Errors
+/// The key or package is invalid.
 pub fn post(message: &Map<String, Value>) -> Result<Post, MessageError> {
-    let key = string(message, "key");
+    let key = json::string(message, "key");
     if !validate::is_notification_key(key) {
         return Err(MessageError::Key);
     }
     let package = package(message)?;
-    let reply = field(message, "reply").as_object();
-    let reply_action = reply
-        .map(|item| string(item, "action"))
-        .filter(|action| action_id(action))
-        .unwrap_or("")
-        .to_owned();
-    let reply_placeholder = if reply_action.is_empty() {
-        String::new()
-    } else {
-        reply
-            .map(|item| text(item, "placeholder", 128))
-            .unwrap_or_default()
-    };
+    let empty = Map::new();
+    let reply = json::object(message, "reply").unwrap_or(&empty);
+    let reply_action = Some(json::string(reply, "action")).filter(|action| action_id(action));
+    let reply_action = reply_action.unwrap_or("").to_owned();
+    let mut reply_placeholder = String::new();
     let mut actions = Vec::new();
-    if boolean(message, "content") {
+    if json::boolean(message, "content") {
         actions.push(("default".to_owned(), "Open".to_owned()));
     }
     if !reply_action.is_empty() {
-        let reply_label = reply
-            .map(|item| text(item, "label", 64))
-            .unwrap_or_default();
-        actions.push((
-            "inline-reply".to_owned(),
-            if reply_label.trim().is_empty() {
-                "Reply".to_owned()
-            } else {
-                reply_label
-            },
-        ));
+        reply_placeholder = text(reply, "placeholder", 128);
+        let label = text(reply, "label", 64);
+        let label = if label.trim().is_empty() {
+            "Reply".to_owned()
+        } else {
+            label
+        };
+        actions.push(("inline-reply".to_owned(), label));
     }
-    if let Some(extras) = field(message, "actions").as_array() {
-        for item in extras {
-            let Some(item) = item.as_object() else {
-                continue;
-            };
-            let id = string(item, "id");
-            let name = text(item, "label", 64);
-            if !action_id(id)
-                || id == reply_action
-                || name.trim().is_empty()
-                || actions.iter().any(|(existing, _)| existing == id)
-            {
-                continue;
-            }
+    let limit = actions.len() + 5;
+    let extras = json::array(message, "actions")
+        .iter()
+        .filter_map(Value::as_object);
+    for item in extras {
+        if actions.len() >= limit {
+            break;
+        }
+        let id = json::string(item, "id");
+        let name = text(item, "label", 64);
+        let taken = id == reply_action || actions.iter().any(|(existing, _)| existing == id);
+        if action_id(id) && !taken && !name.trim().is_empty() {
             actions.push((id.to_owned(), name));
-            if actions.len()
-                >= 5 + usize::from(boolean(message, "content"))
-                    + usize::from(!reply_action.is_empty())
-            {
-                break;
-            }
         }
     }
-    let progress = field(message, "progress")
-        .as_object()
-        .map(|p| {
-            let max = integer(p, "max", 0, i32::MAX as i64, 0);
-            let current = integer(p, "current", 0, i32::MAX as i64, 0);
-            if boolean(p, "indeterminate") {
-                -1
-            } else if max > 0 {
-                (current * 100 / max).clamp(0, 100) as i32
-            } else {
-                -2
-            }
-        })
-        .filter(|value| *value != -2);
     Ok(Post {
         key: key.to_owned(),
         label: label(message, &package),
@@ -233,35 +197,34 @@ pub fn post(message: &Map<String, Value>) -> Result<Post, MessageError> {
         actions,
         reply_action,
         reply_placeholder,
-        conversation: conversation(field(message, "conversation")),
+        conversation: json::object(message, "conversation").map(conversation),
         image: image(message, "image", 512 * 1024),
-        ongoing: boolean(message, "ongoing"),
-        auto_cancel: boolean(message, "autoCancel"),
-        silent: boolean(message, "silent"),
+        ongoing: json::boolean(message, "ongoing"),
+        auto_cancel: json::boolean(message, "autoCancel"),
+        silent: json::boolean(message, "silent"),
         urgency: integer(message, "urgency", 0, 2, 1) as u8,
-        progress,
+        progress: json::object(message, "progress").and_then(progress),
     })
 }
 
+/// Validates a `media` update.
+///
+/// # Errors
+/// The session id or package is invalid.
 pub fn media(message: &Map<String, Value>) -> Result<Media, MessageError> {
-    let session_id = integer(message, "sid", 0, i32::MAX as i64, 0) as i32;
+    let session_id = integer(message, "sid", 0, i32::MAX.into(), 0) as i32;
     if session_id == 0 {
         return Err(MessageError::Session);
     }
     let package = package(message)?;
-    let speed = field(message, "speed").as_f64().unwrap_or(1.0);
-    let speed = if speed.is_finite() {
-        speed.clamp(-16.0, 16.0)
-    } else {
-        1.0
-    };
-    let status = match string(message, "state") {
+    let speed = message.get("speed").and_then(Value::as_f64).unwrap_or(1.0);
+    let status = match json::string(message, "state") {
         "Playing" => "Playing",
         "Paused" => "Paused",
         _ => "Stopped",
     };
-    let can = field(message, "can").as_object();
-    let capability = |name| can.is_some_and(|values| boolean(values, name));
+    let empty = Map::new();
+    let can = json::object(message, "can").unwrap_or(&empty);
     Ok(Media {
         session_id,
         label: label(message, &package),
@@ -269,19 +232,19 @@ pub fn media(message: &Map<String, Value>) -> Result<Media, MessageError> {
         status: status.to_owned(),
         position_ms: integer(message, "position", 0, 100_000_000_000, 0),
         duration_ms: integer(message, "duration", 0, 100_000_000_000, 0),
-        speed,
+        speed: speed.clamp(-16.0, 16.0),
         title: text(message, "title", 256),
         artist: text(message, "artist", 256),
         album: text(message, "album", 256),
         art: message
             .contains_key("art")
             .then(|| image(message, "art", 768 * 1024)),
-        can_play: capability("play"),
-        can_pause: capability("pause"),
-        can_next: capability("next"),
-        can_previous: capability("previous"),
-        can_seek: capability("seek"),
-        can_stop: capability("stop"),
+        can_play: json::boolean(can, "play"),
+        can_pause: json::boolean(can, "pause"),
+        can_next: json::boolean(can, "next"),
+        can_previous: json::boolean(can, "previous"),
+        can_seek: json::boolean(can, "seek"),
+        can_stop: json::boolean(can, "stop"),
     })
 }
 
