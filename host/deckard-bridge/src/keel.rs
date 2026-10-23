@@ -472,24 +472,34 @@ impl Shared {
         if locked(&self.state).apps.len() >= MAX_APPS {
             return eprintln!("deckard-bridge: keel: too many apps; not publishing {id}");
         }
-        let (connection, tick) = match self.serve(&app.pkg, &id).await {
+        let (connection, tick) = match self.serve(&app.pkg).await {
             Ok(served) => served,
             Err(error) => return eprintln!("deckard-bridge: keel: cannot publish {id}: {error}"),
         };
         let tools = manifest.json["tools"].as_array().map_or(0, Vec::len);
-        eprintln!("deckard-bridge: keel: published {id} with {tools} actions");
         let pkg = app.pkg.clone();
         let entry = Entry {
             app,
             manifest,
-            connection,
+            connection: connection.clone(),
             _tick: tick,
             snapshot: 0,
         };
-        locked(&self.state).apps.insert(pkg, entry);
+        // In the catalogue before the name is owned: Describe never answers {}.
+        locked(&self.state).apps.insert(pkg.clone(), entry);
+        let flags = RequestNameFlags::DoNotQueue.into();
+        match connection.request_name_with_flags(id.as_str(), flags).await {
+            Ok(RequestNameReply::PrimaryOwner) => {
+                eprintln!("deckard-bridge: keel: published {id} with {tools} actions");
+            }
+            owned => {
+                locked(&self.state).apps.remove(&pkg);
+                eprintln!("deckard-bridge: keel: cannot publish {id}: {owned:?}");
+            }
+        }
     }
 
-    async fn serve(self: &Arc<Self>, pkg: &str, id: &str) -> zbus::Result<(Connection, Task<()>)> {
+    async fn serve(self: &Arc<Self>, pkg: &str) -> zbus::Result<(Connection, Task<()>)> {
         let provider = Provider {
             apps: Arc::downgrade(self),
             pkg: pkg.to_owned(),
@@ -505,11 +515,7 @@ impl Shared {
                 ticker.executor().tick().await;
             }
         });
-        let flags = RequestNameFlags::DoNotQueue.into();
-        match connection.request_name_with_flags(id, flags).await? {
-            RequestNameReply::PrimaryOwner => Ok((connection, tick)),
-            _ => Err(zbus::Error::NameTaken),
-        }
+        Ok((connection, tick))
     }
 
     /// Releases the name before the next owner asks for it.
