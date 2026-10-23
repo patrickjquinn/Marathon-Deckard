@@ -1,8 +1,8 @@
 # deckard-runtime (session slice)
 
-This crate is a native Rust candidate for the Deckard-owned user-session
-launcher. It is **not selected by the package or service units** and is not a
-complete replacement for upstream Waydroid's Python control plane.
+This crate is the native Rust Deckard-owned user session. The Deckard package
+installs `deckard-session.service`, which starts it on demand. It is not a
+complete replacement for upstream Waydroid's Python root control plane.
 
 `deckard-runtime session start` validates the graphical user and Wayland
 socket, owns `id.waydro.Session` without queueing, exports `/SessionManager`
@@ -23,20 +23,20 @@ catalog export. It waits for boot completion and user 0 credential-encrypted
 storage unlock, reads `IPlatform.getAppsInfo` through libgbinder, and atomically
 updates `waydroid.<package>.desktop` launchers under the graphical user's
 `XDG_DATA_HOME/applications`. Existing localized/custom fields are retained;
-the launcher identity, `waydroid app launch` and app-settings action, categories,
+the launcher identity, Rust `deckard-launch` app and app-settings commands, categories,
 form factor, system-app visibility, and Android-written icon paths match the
 installed Python exporter. An empty or malformed snapshot leaves existing
-launchers untouched. `deckard-runtime session export` reruns this export for
+launchers untouched. The session refreshes the catalog every 15 seconds;
+`deckard-runtime session export` reruns this export for
 the current non-root user; it is useful for a manual repair or isolated test.
 
-The upstream `IUserMonitor` callback and package-change monitor, optional
+The upstream `IUserMonitor` callback and event-driven package-change monitor, optional
 clipboard bridge, auto-ADB, session-wide boot-completion wait, and host
 timezone propagation are **not implemented**. The icon PNGs are created by
 Android; this crate references them but does not generate them. The Python container service,
 Android app launch/property Binder client, and image/network lifecycle also
-remain. Replacing the installed wrapper with this binary now would regress
-those functions. Do not activate it until those contracts are implemented and
-verified on device.
+remain. The root container manager and C++ bridge remain selected; this
+session cutover must not be mistaken for replacing them.
 
 Run the D-Bus contract tests on an isolated bus with:
 

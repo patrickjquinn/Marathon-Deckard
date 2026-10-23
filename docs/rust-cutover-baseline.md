@@ -100,3 +100,26 @@ SSH/user session took 43.9 ms through `deckard-launch` and 1,351.3 ms through
 the installed Python `waydroid prop get`. This is a small warm CLI-overhead
 sample (about 8.8 ms versus 270.3 ms per invocation), not a cold-start, app
 launch, or end-to-end UI benchmark.
+
+## Pi user-session cutover (2026-10-23)
+
+Installed dynamic-musl `deckard-runtime` and `deckard-launch` under root-owned
+`/opt/deckard/bin` and a new on-demand `deckard-session.service` on the Pi.
+Stopped `marathon-waydroid.service`; the new Rust service became active and
+owned the existing `id.waydro.Session` bus name. Its catalog export rewrote all
+eight Android launchers to use `/opt/deckard/bin/deckard-launch` while retaining
+their `waydroid.*` desktop IDs and icons. A warm Feeder launch returned success,
+Shell reported `waydroid.com.nononsenseapps.feeder` foreground, Android reported
+Feeder top-resumed, and a device screenshot showed the app. Stopping the Rust
+unit stopped LXC; launching Feeder from that state restarted the unit and
+container in 10.91 seconds and restored the visible app. The app-settings
+intent opened the Android Settings page; a relay-package handoff error was
+fixed and the action then exited 0.
+
+This is a **user-session and desktop launcher cutover**, not a full Deckard
+cutover. `waydroid-container.service` still runs the Python root manager and
+`deckardd` remains C++. The Rust session does not yet implement the upstream
+user monitor, clipboard bridge, auto-ADB, or timezone propagation. Shell
+restart overlap and a full reboot under the packaged unit still require
+qualification. Rollback is to stop `deckard-session.service`, start
+`marathon-waydroid.service`, and restore desktop `Exec=` lines to `waydroid`.

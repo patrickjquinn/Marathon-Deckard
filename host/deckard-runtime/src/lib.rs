@@ -253,6 +253,24 @@ fn export_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
     Err(unavailable("Android app catalog did not become ready"))
 }
 
+fn monitor_installed_apps(data_home: &Path, stop: &AtomicBool) -> Result<()> {
+    export_installed_apps(data_home, stop)?;
+    let config = BinderConfig::from_file(Path::new("/var/lib/waydroid/waydroid.cfg"))?;
+    while !stop.load(Ordering::Acquire) {
+        thread::sleep(Duration::from_secs(15));
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        let result = platform::Platform::connect(&config)
+            .and_then(|catalog| catalog.apps())
+            .and_then(|apps| desktop::export(data_home, &apps));
+        if let Err(error) = result {
+            eprintln!("deckard-runtime: Android desktop refresh failed: {error}");
+        }
+    }
+    Ok(())
+}
+
 pub fn export_current_user_apps() -> Result<()> {
     if geteuid().as_raw() == 0 {
         return Err(invalid("desktop export must run as the graphical user"));
@@ -300,7 +318,7 @@ pub fn session_start() -> Result<()> {
     let data_home = PathBuf::from(&payload["xdg_data_home"]);
     let export_stop = Arc::clone(&stop);
     thread::spawn(move || {
-        if let Err(error) = export_installed_apps(&data_home, &export_stop) {
+        if let Err(error) = monitor_installed_apps(&data_home, &export_stop) {
             eprintln!("deckard-runtime: Android desktop export failed: {error}");
         }
     });

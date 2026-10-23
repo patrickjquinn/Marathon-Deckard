@@ -59,7 +59,8 @@ pub fn launch_intent<B: Backend>(backend: &mut B, action: &str, uri: &str) -> Re
         &package
     };
     backend.setprop("waydroid.active_apps", active)?;
-    if package != "android" {
+    // DeckardSystem relays system intents but is not itself a visible app.
+    if package != "android" && package != "org.marathonos.deckard.system" {
         backend.show_android_app(&package)?;
     }
     immersive(backend)
@@ -218,6 +219,25 @@ mod tests {
         };
         launch_intent(&mut fake, "VIEW", "package:org.example").unwrap();
         assert_eq!(fake.calls[2], "set:waydroid.active_apps:Waydroid");
+        assert!(!fake.calls.iter().any(|call| call.starts_with("show:")));
+    }
+
+    #[test]
+    fn bridge_intent_does_not_request_a_nonexistent_window() {
+        let mut fake = Fake {
+            intent_result: "org.marathonos.deckard.system".into(),
+            ..Fake::default()
+        };
+        launch_intent(
+            &mut fake,
+            "android.settings.APPLICATION_DETAILS_SETTINGS",
+            "package:org.example",
+        )
+        .unwrap();
+        assert!(fake
+            .calls
+            .iter()
+            .any(|call| { call == "set:waydroid.active_apps:org.marathonos.deckard.system" }));
         assert!(!fake.calls.iter().any(|call| call.starts_with("show:")));
     }
 

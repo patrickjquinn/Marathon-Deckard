@@ -10,6 +10,7 @@ use crate::platform::AppInfo;
 use crate::{Result, invalid};
 
 const LAUNCHER: &str = "android.intent.category.LAUNCHER";
+const DECKARD_LAUNCH: &str = "/opt/deckard/bin/deckard-launch";
 const SYSTEM_APPS: &[&str] = &[
     "com.android.calculator2",
     "com.android.camera2",
@@ -120,7 +121,7 @@ fn render_app(existing: &str, app: &AppInfo, icon_dir: &Path) -> String {
     desktop.set(
         "Desktop Entry",
         "Exec",
-        &format!("waydroid app launch {}", app.package),
+        &format!("{DECKARD_LAUNCH} app launch {}", app.package),
     );
     desktop.set(
         "Desktop Entry",
@@ -146,7 +147,7 @@ fn render_app(existing: &str, app: &AppInfo, icon_dir: &Path) -> String {
         "Desktop Action app-settings",
         "Exec",
         &format!(
-            "waydroid app intent android.settings.APPLICATION_DETAILS_SETTINGS package:{}",
+            "{DECKARD_LAUNCH} app intent android.settings.APPLICATION_DETAILS_SETTINGS package:{}",
             app.package
         ),
     );
@@ -262,7 +263,9 @@ mod tests {
             root.path()
                 .join("applications/waydroid.com.nononsenseapps.feeder.desktop"),
         )?;
-        assert!(entry.contains("Exec=waydroid app launch com.nononsenseapps.feeder\n"));
+        assert!(entry.contains(
+            "Exec=/opt/deckard/bin/deckard-launch app launch com.nononsenseapps.feeder\n"
+        ));
         assert!(entry.contains(&format!(
                 "Icon={}\n",
                 root.path()
@@ -271,7 +274,7 @@ mod tests {
             )));
         assert!(entry.contains("Categories=X-WayDroid-App;\n"));
         assert!(entry.contains("Actions=app-settings;\n"));
-        assert!(entry.contains("Exec=waydroid app intent android.settings.APPLICATION_DETAILS_SETTINGS package:com.nononsenseapps.feeder\n"));
+        assert!(entry.contains("Exec=/opt/deckard/bin/deckard-launch app intent android.settings.APPLICATION_DETAILS_SETTINGS package:com.nononsenseapps.feeder\n"));
         Ok(())
     }
 

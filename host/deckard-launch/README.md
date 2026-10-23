@@ -2,8 +2,8 @@
 
 Native Rust replacement for the generated desktop-file commands
 `waydroid app launch`, `waydroid app intent`, and the user-facing `waydroid prop`
-operations. This crate is in the root Cargo workspace but does not change live
-desktop files, packages, or services.
+operations. The Deckard package installs it at `/opt/deckard/bin/deckard-launch`;
+the native session exporter writes that path into Android desktop files.
 
 ```text
 deckard-launch app launch PACKAGE
@@ -12,7 +12,7 @@ deckard-launch prop get KEY
 deckard-launch prop set KEY VALUE
 ```
 
-The default config is `/var/lib/waydroid/waydroid.cfg`. The future native session
+The default config is `/var/lib/waydroid/waydroid.cfg`. The native session
 unit is `deckard-session.service`. `DECKARD_CONFIG` and `DECKARD_SESSION_UNIT`
 can override those values for integration. The upstream `id.waydro.*` D-Bus and
 `lineageos.waydroid.IPlatform` Binder names remain unchanged while the Android
@@ -83,9 +83,9 @@ and Wayland path validation. They do not prove device Binder round trips.
 
 ## Cutover gaps
 
-- The future `deckard-session.service` is not yet installed. The current device
-  still runs `marathon-waydroid.service` and Python. Selecting that legacy unit
-  for a test would preserve startup behavior but would not be Python-free.
+- The Pi now uses `deckard-session.service`; `marathon-waydroid.service` is
+  inactive. This does not replace the Python root container manager or C++
+  `deckardd`.
 - When the Python launcher starts a stopped session, its callback waits for
   `IUserMonitor.userUnlocked` before launching. This client waits for session
   D-Bus ownership, `waydroidplatform`, Android boot completion, and Android
@@ -98,12 +98,12 @@ and Wayland path validation. They do not prove device Binder round trips.
   Feeder visible through two stable-Shell cold session cycles on the Pi. See
   `docs/rust-cutover-baseline.md` for the failed and passing evidence; Shell
   restart overlap and production service activation remain unqualified.
-- Desktop/icon export is owned by the session manager. It must emit `Exec=`
-  lines for this binary and the app-settings intent action after both the
-  launcher and native session service are packaged and device-tested.
+- Desktop/icon export is owned by the native session manager and emits `Exec=`
+  lines for this binary and the app-settings intent action. An intent relayed
+  through the nonvisual DeckardSystem bridge does not request a Shell window.
 - This crate does not replace the root container manager, Android image
   initializer, app install/remove/list commands, or other Python Waydroid CLI
   paths. It also does not rename the Android Binder and D-Bus contracts.
-- No live desktop file was edited and no binary was deployed to the device in
-  this isolated worktree. Integration must test real launch, intent, properties,
-  frozen container, stopped session, and Wayland-not-ready behavior on device.
+- The Pi has been tested for warm and cold app launch, intent, visible window,
+  and session stop/restart. Root container replacement and Shell restart overlap
+  remain unqualified.
