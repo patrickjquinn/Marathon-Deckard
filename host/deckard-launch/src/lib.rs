@@ -44,7 +44,6 @@ pub fn launch_app<B: Backend>(backend: &mut B, package: &str) -> Result<()> {
     backend.setprop("waydroid.active_apps", package)?;
     backend.show_android_app(package)?;
     backend.launch_app(package)?;
-    backend.show_android_app(package)?;
     immersive(backend)
 }
 
@@ -181,7 +180,6 @@ mod tests {
                 "set:waydroid.active_apps:org.example.app",
                 "show:org.example.app",
                 "app:org.example.app",
-                "show:org.example.app",
                 "get:persist.waydroid.multi_windows:false",
                 "settings:2:policy_control:immersive.status=*"
             ]

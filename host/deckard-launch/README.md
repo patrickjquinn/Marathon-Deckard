@@ -44,10 +44,11 @@ Inspected on the Hackberry Pi from `/usr/lib/waydroid/tools/actions/app_manager.
   the user systemd D-Bus manager. Every app launch waits for
   `sys.boot_completed=1` and `sys.user.0.ce_available=true`, including when
   the session bus name was already acquired during Android boot.
-- App launch calls Shell `ShowAndroidApp` before and after the Binder request.
-  The pre-launch call registers a future window; the second can raise a window
-  that appeared while Binder was handling the request. Intent launch can only
-  request the handoff after Binder returns the resolved package.
+- App launch calls Shell `ShowAndroidApp` before the Binder request so the
+  Shell owns the future window even if the Binder call is slow. It does not
+  reassert foreground afterward, which could steal focus if the user switched
+  apps while Android was starting. Intent launch can only request the handoff
+  after Binder returns the resolved package.
 
 The Binder FFI uses libgbinder 1.1 APIs and loads the device's
 `libgbinder.so.1` and `libglib-2.0.so.0` at runtime. It does not invoke
