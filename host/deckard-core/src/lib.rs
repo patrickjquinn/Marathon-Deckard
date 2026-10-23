@@ -17,7 +17,6 @@ pub enum Error {
     InvalidFrame,
     BufferLimit,
     Flood,
-    InvalidAcl,
     InvalidColor,
 }
 
@@ -28,7 +27,6 @@ impl std::fmt::Display for Error {
             Self::InvalidFrame => "invalid bridge frame",
             Self::BufferLimit => "bridge buffer limit exceeded",
             Self::Flood => "bridge rate limit exceeded",
-            Self::InvalidAcl => "invalid POSIX ACL",
             Self::InvalidColor => "invalid RGB color",
         })
     }
