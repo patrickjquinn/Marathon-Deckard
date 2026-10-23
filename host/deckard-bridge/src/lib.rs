@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod app_channel;
+pub mod audio;
 pub mod auth;
 pub mod contract;
 pub mod ime;

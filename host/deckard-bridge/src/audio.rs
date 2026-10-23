@@ -1,169 +1,172 @@
-//! Marathon Shell audio policy mirrored to the authenticated Android socket.
+//! Marathon's quiet profiles and alarm volume mirrored to Android.
 
 use std::collections::HashMap;
-use std::io;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::thread;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::zvariant::OwnedValue;
-use zbus::{MatchRule, message};
+use zbus::{MatchRule, Message, message};
 
 use crate::app_channel::ChannelHandle;
 
 const SHELL: &str = "org.marathonos.Shell";
 const SETTINGS_PATH: &str = "/org/marathonos/Shell/Settings";
 const SETTINGS_INTERFACE: &str = "org.marathonos.Shell.Settings1";
-const AUDIO_PATH: &str = "/org/marathonos/Shell/Audio";
-const AUDIO_INTERFACE: &str = "org.marathonos.Shell.Audio1";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AudioEvent {
-    StateChanged,
-    ShellAppeared,
-}
+type Relevant = fn(&Message) -> bool;
 
+/// The policy Android applies: alarms-only Do Not Disturb and alarm volume.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioState {
+    /// Android goes to alarms-only Do Not Disturb.
     pub quiet: bool,
+    /// Android's alarm stream volume, 0..=1.
     pub alarm: f64,
 }
 
 impl AudioState {
+    /// Silent, vibrate and Do Not Disturb are quiet; alarm volume is 0..=1.
+    #[must_use]
     pub fn from_shell(state: &HashMap<String, OwnedValue>) -> Self {
-        let profile = state
-            .get("audioProfile")
-            .and_then(|value| String::try_from(value.clone()).ok())
-            .unwrap_or_default();
-        let dnd = state
-            .get("dndEnabled")
-            .and_then(|value| bool::try_from(value.clone()).ok())
-            .unwrap_or(false);
-        let alarm = state
-            .get("alarmVolume")
-            .and_then(|value| f64::try_from(value.clone()).ok())
+        let get = |key: &str| state.get(key).cloned();
+        let profile = get("audioProfile").and_then(|value| String::try_from(value).ok());
+        let dnd = get("dndEnabled").and_then(|value| bool::try_from(value).ok());
+        let alarm = get("alarmVolume")
+            .and_then(|value| f64::try_from(value).ok())
             .filter(|value| value.is_finite())
-            .unwrap_or(0.9)
-            .clamp(0.0, 1.0);
+            .unwrap_or(0.9);
         Self {
-            quiet: dnd || matches!(profile.as_str(), "silent" | "vibrate"),
-            alarm,
+            quiet: dnd == Some(true) || matches!(profile.as_deref(), Some("silent" | "vibrate")),
+            alarm: alarm.clamp(0.0, 1.0),
         }
     }
 
+    /// The `audio` message for DeckardBridge.
+    #[must_use]
     pub fn message(&self) -> Map<String, Value> {
-        json!({"t":"audio", "quiet":self.quiet, "alarm":self.alarm})
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
+        Map::from_iter([
+            ("t".to_owned(), Value::from("audio")),
+            ("quiet".to_owned(), Value::from(self.quiet)),
+            ("alarm".to_owned(), Value::from(self.alarm)),
+        ])
     }
 }
 
-pub struct AudioSync {
-    bus: Connection,
-    last: Option<AudioState>,
-}
+/// Wakes the audio thread to re-read the Shell and resend if needed.
+#[derive(Clone)]
+pub struct AudioWake(SyncSender<()>);
 
-impl AudioSync {
-    pub fn new(bus: Connection) -> Self {
-        Self { bus, last: None }
-    }
-
-    /// Call after `StateChanged`, relevant `PropertyChanged`, or Shell restart.
-    /// Returns nothing if the policy is unchanged. A failed D-Bus read keeps
-    /// the last good policy and may be retried at the next signal.
-    pub fn refresh(&mut self) -> zbus::Result<Option<Map<String, Value>>> {
-        let proxy = Proxy::new(&self.bus, SHELL, SETTINGS_PATH, SETTINGS_INTERFACE)?;
-        let state: HashMap<String, OwnedValue> = proxy.call("GetState", &())?;
-        let state = AudioState::from_shell(&state);
-        if self.last.as_ref() == Some(&state) {
-            return Ok(None);
-        }
-        self.last = Some(state.clone());
-        Ok(Some(state.message()))
-    }
-
-    pub fn resend(&mut self) -> zbus::Result<Map<String, Value>> {
-        if let Some(last) = &self.last {
-            return Ok(last.message());
-        }
-        self.refresh()?
-            .ok_or_else(|| zbus::Error::Failure("missing audio state".into()))
-    }
-
-    /// Use the channel's current authenticated generation. The handle
-    /// rejects a send if Android disconnected during the Shell D-Bus call.
-    pub fn refresh_to(&mut self, channel: &ChannelHandle) -> io::Result<()> {
-        if let Some(message) = self.refresh().map_err(io::Error::other)? {
-            channel.send(message)?;
-        }
-        Ok(())
-    }
-
-    pub fn resend_to(&mut self, channel: &ChannelHandle) -> io::Result<()> {
-        let message = self.resend().map_err(io::Error::other)?;
-        channel.send(message)
+impl AudioWake {
+    /// Call when Android connects; a wake already pending covers this one.
+    /// False once the audio thread has stopped.
+    pub fn wake(&self) -> bool {
+        !matches!(self.0.try_send(()), Err(TrySendError::Disconnected(())))
     }
 }
 
-/// Run on a dedicated thread. Subscribe before the initial `refresh`, or a
-/// Shell signal between the first read and match registration could be lost.
-pub fn listen_audio_state(bus: Connection, sender: Sender<AudioEvent>) -> zbus::Result<()> {
-    let rule = MatchRule::builder()
+/// Follows the Shell's audio settings and sends the policy to Android when it
+/// changes or a new Android connection has not had it yet.
+///
+/// # Errors
+///
+/// A Shell signal subscription failed.
+pub fn spawn(bus: Connection, channel: ChannelHandle) -> zbus::Result<AudioWake> {
+    let (sender, wakes) = mpsc::sync_channel(1);
+    let wake = AudioWake(sender);
+    let rules: [(MatchRule<'static>, Relevant); 3] = [
+        (
+            signal(
+                "/org/marathonos/Shell/Audio",
+                "org.marathonos.Shell.Audio1",
+                "StateChanged",
+            )?,
+            |_| true,
+        ),
+        (
+            signal(SETTINGS_PATH, SETTINGS_INTERFACE, "PropertyChanged")?,
+            setting_changed,
+        ),
+        (
+            MatchRule::builder()
+                .msg_type(message::Type::Signal)
+                .sender("org.freedesktop.DBus")?
+                .member("NameOwnerChanged")?
+                .add_arg(SHELL)?
+                .build(),
+            shell_appeared,
+        ),
+    ];
+    for (rule, relevant) in rules {
+        let messages = MessageIterator::for_match_rule(rule, &bus, Some(16))?;
+        let wake = wake.clone();
+        thread::spawn(move || {
+            for message in messages {
+                let Ok(message) = message else { continue };
+                if relevant(&message) && !wake.wake() {
+                    break;
+                }
+            }
+        });
+    }
+    wake.wake();
+    thread::spawn(move || run(&bus, &channel, &wakes));
+    Ok(wake)
+}
+
+fn signal(
+    path: &'static str,
+    interface: &'static str,
+    member: &'static str,
+) -> zbus::Result<MatchRule<'static>> {
+    Ok(MatchRule::builder()
         .msg_type(message::Type::Signal)
         .sender(SHELL)?
-        .path(AUDIO_PATH)?
-        .interface(AUDIO_INTERFACE)?
-        .member("StateChanged")?
-        .build();
-    for event in MessageIterator::for_match_rule(rule, &bus, Some(16))? {
-        if event.is_ok() && sender.send(AudioEvent::StateChanged).is_err() {
-            break;
-        }
-    }
-    Ok(())
+        .path(path)?
+        .interface(interface)?
+        .member(member)?
+        .build())
 }
 
-/// Run on a dedicated thread beside `listen_audio_state`.
-pub fn listen_audio_settings(bus: Connection, sender: Sender<AudioEvent>) -> zbus::Result<()> {
-    let rule = MatchRule::builder()
-        .msg_type(message::Type::Signal)
-        .sender(SHELL)?
-        .path(SETTINGS_PATH)?
-        .interface(SETTINGS_INTERFACE)?
-        .member("PropertyChanged")?
-        .build();
-    for event in MessageIterator::for_match_rule(rule, &bus, Some(16))? {
-        let Ok(event) = event else { continue };
-        let Ok((name,)) = event.body().deserialize::<(String,)>() else {
-            continue;
-        };
-        if matches!(name.as_str(), "dndEnabled" | "audioProfile" | "alarmVolume")
-            && sender.send(AudioEvent::StateChanged).is_err()
-        {
-            break;
-        }
-    }
-    Ok(())
+fn setting_changed(message: &Message) -> bool {
+    message
+        .body()
+        .deserialize::<(String, OwnedValue)>()
+        .is_ok_and(|(name, _)| {
+            matches!(name.as_str(), "dndEnabled" | "audioProfile" | "alarmVolume")
+        })
 }
 
-/// Run on a dedicated thread so a restarted Shell replays its audio state.
-pub fn watch_shell_owner(bus: Connection, sender: Sender<AudioEvent>) -> zbus::Result<()> {
-    let rule = MatchRule::builder()
-        .msg_type(message::Type::Signal)
-        .sender("org.freedesktop.DBus")?
-        .interface("org.freedesktop.DBus")?
-        .member("NameOwnerChanged")?
-        .add_arg(SHELL)?
-        .build();
-    for event in MessageIterator::for_match_rule(rule, &bus, Some(8))? {
-        let Ok(event) = event else { continue };
-        let Ok((_, _, owner)) = event.body().deserialize::<(String, String, String)>() else {
+fn shell_appeared(message: &Message) -> bool {
+    message
+        .body()
+        .deserialize::<(String, String, String)>()
+        .is_ok_and(|(_, _, owner)| !owner.is_empty())
+}
+
+fn read_shell(bus: &Connection) -> zbus::Result<AudioState> {
+    let proxy = Proxy::new(bus, SHELL, SETTINGS_PATH, SETTINGS_INTERFACE)?;
+    let state: HashMap<String, OwnedValue> = proxy.call("GetState", &())?;
+    Ok(AudioState::from_shell(&state))
+}
+
+fn run(bus: &Connection, channel: &ChannelHandle, wakes: &Receiver<()>) {
+    let mut last = None;
+    let mut sent = None;
+    for () in wakes {
+        match read_shell(bus) {
+            Ok(state) => last = Some(state),
+            Err(error) => {
+                eprintln!("deckard-bridge: cannot read Marathon's audio settings: {error}")
+            }
+        }
+        let (Some(generation), Some(state)) = (channel.generation(), &last) else {
             continue;
         };
-        if !owner.is_empty() && sender.send(AudioEvent::ShellAppeared).is_err() {
-            break;
+        let current = Some((generation, state.clone()));
+        if sent != current && channel.send_to(generation, state.message()).is_ok() {
+            sent = current;
         }
     }
-    Ok(())
 }

@@ -14,7 +14,7 @@ use deckard_core::transport::{BridgeListener, BridgeSession};
 use serde_json::{Map, Value};
 
 const READ_POLL: Duration = Duration::from_millis(100);
-const OUTBOUND_CAPACITY: usize = 4;
+const OUTBOUND_CAPACITY: usize = 64;
 /// One rate-limiter burst. While the consumer is behind, further messages
 /// are dropped as the limiter drops frames; past `framing::MAX_DROPPED` the
 /// peer is disconnected as a flood.
