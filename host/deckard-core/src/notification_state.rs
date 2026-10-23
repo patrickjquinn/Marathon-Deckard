@@ -284,7 +284,7 @@ impl NotificationState {
         key.map_or_else(Vec::new, |key| {
             vec![Command::Send(BridgeEvent::Invoke {
                 key,
-                action: left_utf16(action, 16),
+                action: crate::validate::truncate(action, 16),
             })]
         })
     }
@@ -303,7 +303,7 @@ impl NotificationState {
         vec![Command::Send(BridgeEvent::Reply {
             key: key.clone(),
             action: entry.reply_action.clone(),
-            text: left_utf16(text, 4096),
+            text: crate::validate::truncate(text, 4096),
         })]
     }
 
@@ -395,17 +395,6 @@ fn encode_hex(bytes: &[u8]) -> String {
         result.push(HEX[(byte & 0xf) as usize] as char);
     }
     result
-}
-
-fn left_utf16(value: &str, max_units: usize) -> String {
-    let mut units = 0;
-    value
-        .chars()
-        .take_while(|character| {
-            units += character.len_utf16();
-            units <= max_units
-        })
-        .collect()
 }
 
 #[cfg(test)]

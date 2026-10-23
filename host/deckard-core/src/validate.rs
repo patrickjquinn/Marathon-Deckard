@@ -1,27 +1,35 @@
+//! Bounds and cleaning for text and images from Android.
+
 use std::sync::LazyLock;
 
-use base64::{Engine, prelude::BASE64_STANDARD};
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use regex::Regex;
-use unicode_general_category::{GeneralCategory, get_general_category};
+use unicode_general_category::GeneralCategory;
 
-use crate::Error;
-
-pub fn clean_text(value: &str, max_units: usize) -> String {
+/// The longest prefix of `text` within `max_units` UTF-16 units.
+#[must_use]
+pub fn truncate(text: &str, max_units: usize) -> String {
     let mut units = 0;
-    value
-        .chars()
-        .filter(|character| {
-            matches!(character, '\n' | '\t')
-                || !matches!(
-                    get_general_category(*character),
-                    GeneralCategory::Control | GeneralCategory::Format
-                )
-        })
+    text.chars()
         .take_while(|character| {
             units += character.len_utf16();
             units <= max_units
         })
         .collect()
+}
+
+/// `value` without control and format characters other than newline and
+/// tab, truncated to `max_units` UTF-16 units.
+#[must_use]
+pub fn clean_text(value: &str, max_units: usize) -> String {
+    let printable = |character: &char| {
+        let category = unicode_general_category::get_general_category(*character);
+        matches!(character, '\n' | '\t')
+            || !matches!(category, GeneralCategory::Control | GeneralCategory::Format)
+    };
+    let kept: String = value.chars().filter(printable).collect();
+    truncate(&kept, max_units)
 }
 
 static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
@@ -30,6 +38,7 @@ static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Collapses every run of whitespace to one space and trims the ends.
+#[must_use]
 pub fn simplified(value: &str) -> String {
     let words: Vec<&str> = value.split_whitespace().collect();
     words.join(" ")
@@ -37,39 +46,29 @@ pub fn simplified(value: &str) -> String {
 
 /// An Android app label: clean, at most 128 UTF-16 units, the runtime named
 /// "Android", whitespace simplified. Empty when nothing usable is left.
+#[must_use]
 pub fn label(value: &str) -> String {
     simplified(&RUNTIME_NAME.replace_all(&clean_text(value, 128), "Android"))
 }
 
-pub fn notification_key(value: &str) -> Result<&str, Error> {
-    if value.is_empty() || value.encode_utf16().count() > 512 || clean_text(value, 512) != value {
-        Err(Error::InvalidIdentity)
-    } else {
-        Ok(value)
-    }
+/// Whether `value` is a usable Android notification key.
+#[must_use]
+pub fn is_notification_key(value: &str) -> bool {
+    !value.is_empty() && value.encode_utf16().count() <= 512 && clean_text(value, 512) == value
 }
 
-pub fn base64_png(value: &str, max_bytes: usize) -> Result<Vec<u8>, Error> {
-    let max_encoded = max_bytes
-        .saturating_add(2)
-        .saturating_div(3)
-        .saturating_mul(4);
+/// Decodes standard base64 of at most `max_bytes`; `None` when it is
+/// malformed or too large.
+#[must_use]
+pub fn base64_png(value: &str, max_bytes: usize) -> Option<Vec<u8>> {
+    let max_encoded = max_bytes.saturating_add(2) / 3 * 4;
     if value.len() > max_encoded {
-        return Err(Error::ImageLimit);
+        return None;
     }
-    let bytes = BASE64_STANDARD
+    BASE64_STANDARD
         .decode(value)
-        .map_err(|_| Error::InvalidImage)?;
-    if bytes.len() > max_bytes {
-        return Err(Error::ImageLimit);
-    }
-    Ok(bytes)
-}
-
-pub fn action_id(value: &str) -> bool {
-    value.strip_prefix('a').is_some_and(|suffix| {
-        (1..=2).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_digit())
-    })
+        .ok()
+        .filter(|bytes| bytes.len() <= max_bytes)
 }
 
 #[cfg(test)]
@@ -80,20 +79,17 @@ mod tests {
     fn strips_format_and_control_characters_without_splitting_emoji() {
         assert_eq!(clean_text("a\0\u{202e}😀\n\tend", 5), "a😀\n\t");
         assert_eq!(clean_text("😀", 1), "");
-        assert!(notification_key("key\0").is_err());
-        assert!(notification_key("").is_err());
-        assert!(notification_key("key").is_ok());
+        assert_eq!(truncate("a😀b", 3), "a😀");
+        assert!(!is_notification_key("key\0"));
+        assert!(!is_notification_key(""));
+        assert!(is_notification_key("key"));
     }
 
     #[test]
     fn base64_is_strict_and_decoded_size_is_bounded() {
-        assert_eq!(base64_png("YWJj", 3), Ok(b"abc".to_vec()));
-        assert_eq!(base64_png("YWJj", 2), Err(Error::ImageLimit));
-        assert!(base64_png("YW Jj", 8).is_err());
-        assert!(base64_png("!!!!", 8).is_err());
-        assert!(action_id("a0"));
-        assert!(action_id("a99"));
-        assert!(!action_id("a100"));
-        assert!(!action_id("default"));
+        assert_eq!(base64_png("YWJj", 3), Some(b"abc".to_vec()));
+        assert_eq!(base64_png("YWJj", 2), None);
+        assert!(base64_png("YW Jj", 8).is_none());
+        assert!(base64_png("!!!!", 8).is_none());
     }
 }

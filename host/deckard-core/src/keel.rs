@@ -487,7 +487,7 @@ pub fn invalid(schema: &Value, args: &Map<String, Value>) -> Option<String> {
         let Some(property) = schema["properties"].get(name) else {
             return Some(format!(
                 "unknown argument {}",
-                crate::text::truncate(name, 64)
+                crate::validate::truncate(name, 64)
             ));
         };
         let max = property["maxLength"].as_u64().unwrap_or(0);

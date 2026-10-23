@@ -3,7 +3,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::ids::PackageName;
-use crate::validate::{self, action_id, base64_png, clean_text, notification_key};
+use crate::validate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageError {
@@ -68,7 +68,7 @@ fn boolean(message: &Map<String, Value>, name: &str) -> bool {
 }
 
 fn text(message: &Map<String, Value>, name: &str, max_units: usize) -> String {
-    clean_text(string(message, name), max_units)
+    validate::clean_text(string(message, name), max_units)
 }
 
 fn integer(message: &Map<String, Value>, name: &str, min: i64, max: i64, fallback: i64) -> i64 {
@@ -118,7 +118,7 @@ fn package(message: &Map<String, Value>) -> Result<PackageName, MessageError> {
 }
 
 fn image(message: &Map<String, Value>, name: &str, max_bytes: usize) -> Vec<u8> {
-    base64_png(string(message, name), max_bytes).unwrap_or_default()
+    validate::base64_png(string(message, name), max_bytes).unwrap_or_default()
 }
 
 fn conversation(value: &Value) -> Option<Value> {
@@ -144,9 +144,17 @@ fn conversation(value: &Value) -> Option<Value> {
     }))
 }
 
+fn action_id(value: &str) -> bool {
+    value.strip_prefix('a').is_some_and(|suffix| {
+        (1..=2).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
 pub fn post(message: &Map<String, Value>) -> Result<Post, MessageError> {
     let key = string(message, "key");
-    notification_key(key).map_err(|_| MessageError::Key)?;
+    if !validate::is_notification_key(key) {
+        return Err(MessageError::Key);
+    }
     let package = package(message)?;
     let reply = field(message, "reply").as_object();
     let reply_action = reply

@@ -15,7 +15,7 @@ use async_channel::Sender;
 use async_io::Timer;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use deckard_core::{ids, png_guard, text, validate};
+use deckard_core::{ids, png_guard, validate};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::message::Header;
@@ -266,7 +266,7 @@ impl Sharing {
         self.shell(header).await?;
         let value = |key| configuration.get(key).and_then(|v| string(v));
         let value = |key| value(key).unwrap_or_default();
-        let (mut mime, title) = (value("mimeType"), text::truncate(&value("title"), 256));
+        let (mut mime, title) = (value("mimeType"), validate::truncate(&value("title"), 256));
         if !target_id(&id) || (!mime.is_empty() && !is_mime(&mime)) {
             return Err(invalid(BAD_REQUEST));
         }
@@ -408,8 +408,8 @@ fn targets(reply: &Map<String, Value>) -> Vec<VariantMap> {
         if !target_id(&id) || pkg.starts_with("org.marathonos.deckard.") {
             continue;
         }
-        let png = validate::base64_png(intents::field(target, "icon"), 256 * 1024).ok();
-        let png = png.and_then(|png| png_guard::sanitize(&png, 256 * 1024, 96).ok());
+        let png = validate::base64_png(intents::field(target, "icon"), 256 * 1024);
+        let png = png.and_then(|png| png_guard::sanitize(&png, 256 * 1024, 96));
         let icon = png.map(|png| format!("data:image/png;base64,{}", STANDARD.encode(png)));
         let multiple = target.get("multiple").and_then(Value::as_bool);
         let entries = [

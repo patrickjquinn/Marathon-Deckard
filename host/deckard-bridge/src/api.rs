@@ -201,7 +201,7 @@ impl SettingsApi {
                 continue;
             }
             let Ok(data) = fs::read(path) else { continue };
-            if let Ok(png) = deckard_core::png_guard::sanitize(&data, 512 * 1024, 192) {
+            if let Some(png) = deckard_core::png_guard::sanitize(&data, 512 * 1024, 192) {
                 return format!(
                     "data:image/png;base64,{}",
                     base64::engine::general_purpose::STANDARD.encode(png)

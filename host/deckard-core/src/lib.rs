@@ -9,7 +9,6 @@ pub mod png_guard;
 pub mod pressure;
 pub mod runtime_state;
 pub mod sync;
-pub mod text;
 pub mod transport;
 pub mod validate;
 
@@ -19,10 +18,7 @@ pub enum Error {
     InvalidFrame,
     BufferLimit,
     Flood,
-    InvalidOffset,
     InvalidAcl,
-    InvalidImage,
-    ImageLimit,
     InvalidColor,
 }
 
@@ -33,10 +29,7 @@ impl std::fmt::Display for Error {
             Self::InvalidFrame => "invalid bridge frame",
             Self::BufferLimit => "bridge buffer limit exceeded",
             Self::Flood => "bridge rate limit exceeded",
-            Self::InvalidOffset => "invalid UTF-16 offset",
             Self::InvalidAcl => "invalid POSIX ACL",
-            Self::InvalidImage => "invalid PNG image",
-            Self::ImageLimit => "PNG resource limit exceeded",
             Self::InvalidColor => "invalid RGB color",
         })
     }
