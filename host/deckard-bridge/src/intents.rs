@@ -447,7 +447,7 @@ fn copy_data(input: BorrowedFd<'_>, size: u64, output: OwnedFd) -> Result<u64, &
 }
 
 /// Copies `input` into `dir` as `base`, or `<n>-base` counting from
-/// `first`, taking its size from `budget`; the name and size.
+/// `first`, taking its size from `budget`; the name and bytes copied.
 ///
 /// # Errors
 ///
@@ -476,8 +476,9 @@ pub(crate) fn copy_into(
         if copied.is_err() {
             let _ = rustix::fs::unlinkat(dir, name.as_str(), AtFlags::empty());
         }
-        *budget -= copied?;
-        return Ok((name, size));
+        let copied = copied?;
+        *budget -= copied;
+        return Ok((name, copied));
     }
     Err(WRITE_FAILED)
 }
