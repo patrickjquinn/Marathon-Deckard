@@ -4,7 +4,8 @@
 
 use std::time::{Duration, Instant};
 
-use serde_json::{Map, Value};
+use serde::Serialize;
+use serde_json::{Map, Value, json};
 
 /// PSI trigger on the container's `memory.pressure`: 10 % of a 10 s window,
 /// the longest window unprivileged triggers allow.
@@ -19,7 +20,8 @@ const GAP: Duration = Duration::from_secs(2);
 const IDLE_GAP: Duration = Duration::from_secs(10);
 
 /// What ran short, sent as the request's `reason`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Reason {
     /// `memory.events` counted a trip over `memory.high` or `memory.max`.
     ContainerHigh,
@@ -27,17 +29,6 @@ pub enum Reason {
     ContainerStall,
     /// The phone-wide PSI trigger fired.
     PhoneStall,
-}
-
-impl Reason {
-    /// The wire name.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ContainerHigh => "container-high",
-            Self::ContainerStall => "container-stall",
-            Self::PhoneStall => "phone-stall",
-        }
-    }
 }
 
 /// `memory.events`' `high` and `max` counters: the container's trips over
@@ -83,12 +74,9 @@ impl ReclaimPolicy {
         }
         self.last = Some(now);
         self.serial = self.serial.wrapping_add(1);
-        let mut message = Map::new();
-        message.insert("t".into(), "reclaim".into());
-        message.insert("id".into(), self.serial.to_string().into());
-        message.insert("count".into(), COUNT.into());
-        message.insert("reason".into(), reason.as_str().into());
-        Some(message)
+        let id = self.serial.to_string();
+        let message = json!({"t": "reclaim", "id": id, "count": COUNT, "reason": reason});
+        message.as_object().cloned()
     }
 
     /// DeckardSystem's `reclaimed` answer: a reclaim that ended nothing backs
