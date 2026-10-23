@@ -4,16 +4,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use deckard_core::palette::{Color, Theme};
-use deckard_image_tools::{fonts, palette, permission_view};
+use deckard_image_tools::{fonts, hwcomposer, palette, permission_view};
 
-fn write_output(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn write_output(path: &Path, content: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(content.as_bytes())?;
+    temporary.write_all(content)?;
     temporary.as_file().sync_all()?;
     #[cfg(unix)]
     {
@@ -28,9 +28,9 @@ fn write_output(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Er
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args_os().skip(1);
-    let command = arguments
-        .next()
-        .ok_or("usage: deckard-image-tools palette|fonts|permission-view [--option value]")?;
+    let command = arguments.next().ok_or(
+        "usage: deckard-image-tools palette|fonts|permission-view|hwcomposer [--option value]",
+    )?;
     let mut options = BTreeMap::new();
     while let Some(key) = arguments.next() {
         let key = key.into_string().map_err(|_| "invalid option encoding")?;
@@ -67,7 +67,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !options.is_empty() {
                 return Err("unknown palette option".into());
             }
-            write_output(&output, &palette::render(Color::parse(&highlight)?, theme))?;
+            write_output(
+                &output,
+                palette::render(Color::parse(&highlight)?, theme).as_bytes(),
+            )?;
         }
         Some("fonts") => {
             let input = options.remove("--input").ok_or("missing --input")?;
@@ -86,7 +89,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ("android-fonts.txt", generated.android),
                 ("hidden-fonts.txt", generated.hidden),
             ] {
-                write_output(&output.join(name), &content)?;
+                write_output(&output.join(name), content.as_bytes())?;
             }
         }
         Some("permission-view") => {
@@ -95,9 +98,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("unknown permission-view option".into());
             }
             let patched = permission_view::patch(&std::fs::read_to_string(input)?)?;
+            write_output(&output, patched.as_bytes())?;
+        }
+        Some("hwcomposer") => {
+            let input = options.remove("--input").ok_or("missing --input")?;
+            if !options.is_empty() {
+                return Err("unknown hwcomposer option".into());
+            }
+            let patched = hwcomposer::patch(&std::fs::read(input)?)?;
             write_output(&output, &patched)?;
         }
-        _ => return Err("unknown command; expected palette, fonts or permission-view".into()),
+        _ => {
+            return Err(
+                "unknown command; expected palette, fonts, permission-view or hwcomposer".into(),
+            );
+        }
     }
     Ok(())
 }
