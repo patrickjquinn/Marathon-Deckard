@@ -641,16 +641,16 @@ impl Shared {
     }
 
     async fn wait_for_window(&self, id: &str) -> Result<(), Error> {
-        for left in (0..=WINDOW_POLLS).rev() {
+        for poll in 0..=WINDOW_POLLS {
+            if poll > 0 {
+                Timer::after(WINDOW_POLL).await;
+            }
             let running = self.shell("apps.running", json!({})).await?;
             if keel::array(&running, "result")
                 .iter()
                 .any(|app| app["id"] == id)
             {
                 return Ok(());
-            }
-            if left > 0 {
-                Timer::after(WINDOW_POLL).await;
             }
         }
         Err(Error::Failed("the app's window did not appear".into()))
