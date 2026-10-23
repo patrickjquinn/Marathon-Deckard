@@ -3,7 +3,7 @@
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -160,20 +160,21 @@ fn serve(
 ) {
     let generation = session.generation();
     let mut dropped = 0_u32;
-    if session.set_read_timeout(Some(READ_POLL)).is_ok() {
+    let started = session
+        .set_read_timeout(Some(READ_POLL))
+        .and_then(|()| session.writer());
+    if let Ok(mut writer) = started {
+        thread::spawn(move || {
+            while let Ok(message) = outbound.recv() {
+                if writer.send_message(&message).is_err() {
+                    break;
+                }
+            }
+            writer.close();
+        });
         loop {
             if stop.load(Ordering::Acquire) {
                 break;
-            }
-            match outbound.try_recv() {
-                Ok(message) => {
-                    if session.send_message(&message).is_err() {
-                        break;
-                    }
-                    continue;
-                }
-                Err(TryRecvError::Disconnected) => break,
-                Err(TryRecvError::Empty) => {}
             }
             match session.read_message() {
                 Ok(Some(message)) => {

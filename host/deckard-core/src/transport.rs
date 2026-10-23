@@ -198,44 +198,15 @@ impl BridgeSession {
         }
     }
 
-    /// One bounded frame per call. The deadline applies to the whole frame,
-    /// including peers that consume a few bytes at a time.
     pub fn send_message(&mut self, message: &Map<String, Value>) -> io::Result<()> {
-        let frame = framing::encode(message).map_err(protocol_error)?;
-        let deadline = Instant::now() + WRITE_TIMEOUT;
-        let mut written = 0;
-        while written < frame.len() {
-            let Some(remaining) = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|remaining| !remaining.is_zero())
-            else {
-                self.close();
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "bridge write timed out",
-                ));
-            };
-            if let Err(error) = self.stream.set_write_timeout(Some(remaining)) {
-                self.close();
-                return Err(error);
-            }
-            match self.stream.write(&frame[written..]) {
-                Ok(0) => {
-                    self.close();
-                    return Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "bridge peer closed",
-                    ));
-                }
-                Ok(count) => written += count,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => {
-                    self.close();
-                    return Err(error);
-                }
-            }
-        }
-        Ok(())
+        send(&mut self.stream, message)
+    }
+
+    /// A sender for another thread, so writes need not wait for a read.
+    pub fn writer(&self) -> io::Result<BridgeWriter> {
+        Ok(BridgeWriter {
+            stream: self.stream.try_clone()?,
+        })
     }
 
     pub fn close(&self) {
@@ -247,6 +218,58 @@ impl Drop for BridgeSession {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+/// The sending half of a [`BridgeSession`].
+pub struct BridgeWriter {
+    stream: UnixStream,
+}
+
+impl BridgeWriter {
+    pub fn send_message(&mut self, message: &Map<String, Value>) -> io::Result<()> {
+        send(&mut self.stream, message)
+    }
+
+    /// Also ends the session's reads.
+    pub fn close(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// One bounded frame per call. The deadline applies to the whole frame,
+/// including peers that consume a few bytes at a time. A failed write
+/// closes the connection.
+fn send(stream: &mut UnixStream, message: &Map<String, Value>) -> io::Result<()> {
+    let frame = framing::encode(message).map_err(protocol_error)?;
+    let result = write_frame(stream, &frame);
+    if result.is_err() {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+    result
+}
+
+fn write_frame(stream: &mut UnixStream, frame: &[u8]) -> io::Result<()> {
+    let deadline = Instant::now() + WRITE_TIMEOUT;
+    let mut written = 0;
+    while written < frame.len() {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "bridge write timed out"))?;
+        stream.set_write_timeout(Some(remaining))?;
+        match stream.write(&frame[written..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "bridge peer closed",
+                ));
+            }
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

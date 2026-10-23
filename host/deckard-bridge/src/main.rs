@@ -84,44 +84,43 @@ fn serve_session(
     outgoing: async_channel::Receiver<Map<String, Value>>,
     system: System,
 ) {
-    let polling = session.set_read_timeout(Some(Duration::from_millis(100)));
-    'session: while polling.is_ok() {
+    let writer = session
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .and_then(|()| session.writer());
+    if let Ok(mut writer) = writer {
+        // Manage closes the queue when a new DeckardSystem connects.
+        thread::spawn(move || {
+            while let Ok(message) = outgoing.recv_blocking() {
+                if let Err(error) = writer.send_message(&message) {
+                    eprintln!("deckard-bridge: system bridge write failed: {error}");
+                    break;
+                }
+            }
+            writer.close();
+        });
         loop {
-            match outgoing.try_recv() {
-                Ok(message) => {
-                    if let Err(error) = session.send_message(&message) {
-                        eprintln!("deckard-bridge: system bridge write failed: {error}");
-                        break 'session;
+            match session.read_message() {
+                Ok(Some(message)) => {
+                    system.manage.handle(generation, &message);
+                    system.reclaimer.handle(&message);
+                    system.keel.handle(BridgeRoute::System, &message);
+                    if let Err(error) = system.packages.handle(BridgeRoute::System, &message) {
+                        eprintln!("deckard-bridge: system package event failed: {error}");
                     }
+                    system.intents.handle(generation, &message);
+                    system.sharing.handle(generation, &message);
+                    system.prompts.handle(&message);
                 }
-                Err(async_channel::TryRecvError::Empty) => break,
-                Err(async_channel::TryRecvError::Closed) => {
-                    eprintln!("deckard-bridge: system bridge replaced by a new connection");
-                    break 'session;
+                Ok(None) => break,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(error) => {
+                    eprintln!("deckard-bridge: system bridge read failed: {error}");
+                    break;
                 }
-            }
-        }
-        match session.read_message() {
-            Ok(Some(message)) => {
-                system.manage.handle(generation, &message);
-                system.reclaimer.handle(&message);
-                system.keel.handle(BridgeRoute::System, &message);
-                if let Err(error) = system.packages.handle(BridgeRoute::System, &message) {
-                    eprintln!("deckard-bridge: system package event failed: {error}");
-                }
-                system.intents.handle(generation, &message);
-                system.sharing.handle(generation, &message);
-                system.prompts.handle(&message);
-            }
-            Ok(None) => break,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                ) => {}
-            Err(error) => {
-                eprintln!("deckard-bridge: system bridge read failed: {error}");
-                break;
             }
         }
     }
