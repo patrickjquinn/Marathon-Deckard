@@ -9,12 +9,12 @@ use std::io::{self, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
 use async_channel::Receiver;
 use async_io::Timer;
-use deckard_core::{ids, validate};
+use deckard_core::{ids, json, sync, validate};
 use futures_lite::{StreamExt, future};
 use percent_encoding::CONTROLS;
 use regex::Regex;
@@ -32,6 +32,7 @@ pub type SendSystem = dyn Fn(Map<String, Value>) -> bool + Send + Sync;
 /// A D-Bus service, object path and interface.
 pub(crate) type Endpoint<'a> = (&'a str, &'a str, &'a str);
 
+/// The Shell's Navigation1 interface.
 pub(crate) const NAVIGATION: Endpoint<'static> = (
     "org.marathonos.Shell",
     "/org/marathonos/Shell/Navigation",
@@ -44,6 +45,7 @@ const REQUEST: &str = "org.freedesktop.portal.Request";
 const MAX_PENDING: usize = 4;
 const MAX_SAVED: usize = 32;
 const MAX_FILES: usize = 32;
+const MAX_TASKS: usize = 8;
 const MAX_BYTES: u64 = 1 << 30;
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(630);
@@ -126,7 +128,7 @@ pub enum Target {
 ///
 /// Why the message names nothing Marathon opens.
 pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
-    let (kind, uri) = (field(m, "kind"), field(m, "uri"));
+    let (kind, uri) = (json::string(m, "kind"), json::string(m, "uri"));
     if uri.encode_utf16().count() > 4096 {
         return Err("uri too long");
     }
@@ -141,7 +143,7 @@ pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
         "mailto" => Ok(mail(m)),
         "geo" if scheme == "geo" => Ok(geo(uri)),
         "geo" => Err("not a geo: URI"),
-        "settings" => match settings_route(field(m, "action"), field(m, "pkg")) {
+        "settings" => match settings_route(json::string(m, "action"), json::string(m, "pkg")) {
             route if route.is_empty() => Ok(Target::Launch("settings")),
             route => Ok(Target::Route("settings", route, Map::new())),
         },
@@ -177,12 +179,12 @@ fn phone(tel: bool, scheme: &str, m: &Map<String, Value>) -> Result<Target, &'st
     if (tel && scheme != "tel") || (!tel && !sms) {
         return Err("wrong scheme");
     }
-    let uri = field(m, "uri");
+    let uri = json::string(m, "uri");
     let app = if tel { "phone" } else { "messages" };
     let number = number(uri);
     let mut body = String::new();
     if !tel {
-        body = validate::clean_text(field(m, "body"), 10_000);
+        body = json::text(m, "body", 10_000);
         if body.is_empty() {
             body = validate::clean_text(&query(uri, "body"), 10_000);
         }
@@ -242,15 +244,15 @@ fn mail(m: &Map<String, Value>) -> Target {
     let args = filled([
         ("to", addresses(m, "to")),
         ("cc", addresses(m, "cc")),
-        ("subject", validate::clean_text(field(m, "subject"), 1000)),
-        ("body", validate::clean_text(field(m, "body"), 100_000)),
+        ("subject", json::text(m, "subject", 1000)),
+        ("body", json::text(m, "body", 100_000)),
     ]);
     Target::Keel("email", "mail.compose", args)
 }
 
 fn addresses(m: &Map<String, Value>, key: &str) -> String {
     let mut out = Vec::new();
-    for value in list(m, key) {
+    for value in json::array(m, key) {
         let address = value.as_str().unwrap_or("").trim();
         let length = address.encode_utf16().count();
         let odd = |c: char| c.is_ascii_whitespace() || "\x0b,<>\"".contains(c);
@@ -293,6 +295,7 @@ fn point(text: &str) -> Option<Map<String, Value>> {
 
 /// Marathon Settings' page for an Android settings action, or "" for none;
 /// per app when it names one.
+#[must_use]
 pub fn settings_route(action: &str, pkg: &str) -> String {
     let find = |table: &[(&str, &'static str)]| {
         let found = table.iter().find(|(key, _)| *key == action);
@@ -310,11 +313,13 @@ pub fn settings_route(action: &str, pkg: &str) -> String {
 }
 
 /// A transfer ID: 16 lowercase hex digits.
+#[must_use]
 pub fn request_id(id: &str) -> bool {
     id.len() == 16 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// The last component of `path`, fit to be a file name in `xfer/<id>/`.
+#[must_use]
 pub fn safe_name(path: &str) -> String {
     let base = path.rsplit('/').next().unwrap_or("");
     let kept: String = base.chars().filter(|c| *c >= ' ' && *c != '\\').collect();
@@ -324,20 +329,21 @@ pub fn safe_name(path: &str) -> String {
     }
 }
 
-pub(crate) fn field<'a>(m: &'a Map<String, Value>, key: &str) -> &'a str {
-    m.get(key).and_then(Value::as_str).unwrap_or("")
-}
-
-pub(crate) fn list<'a>(m: &'a Map<String, Value>, key: &str) -> &'a [Value] {
-    let value = m.get(key).and_then(Value::as_array);
-    value.map_or(&[], Vec::as_slice)
-}
-
+/// `value` if it is an object, else an empty one.
 pub(crate) fn object(value: Value) -> Map<String, Value> {
     match value {
         Value::Object(map) => map,
         _ => Map::new(),
     }
+}
+
+/// `work`'s output, or None once `limit` has passed.
+pub(crate) async fn within<T>(limit: Duration, work: impl Future<Output = T>) -> Option<T> {
+    let timeout = async {
+        Timer::after(limit).await;
+        None
+    };
+    future::or(async { Some(work.await) }, timeout).await
 }
 
 /// Calls `method` of `to`, failing once `limit` has passed.
@@ -352,11 +358,8 @@ where
     B: Serialize + DynamicType,
 {
     let call = bus.call_method(Some(service), path, Some(interface), method, body);
-    let timeout = async {
-        Timer::after(limit).await;
-        Err(zbus::Error::Failure("timed out".into()))
-    };
-    future::or(call, timeout).await
+    let timed_out = || Err(zbus::Error::Failure("timed out".into()));
+    within(limit, call).await.unwrap_or_else(timed_out)
 }
 
 /// Runs `target` on the session bus.
@@ -364,7 +367,7 @@ where
 /// # Errors
 ///
 /// The bus error of the call, or a timeout after 30 seconds.
-pub async fn launch(bus: &zbus::Connection, target: &Target) -> zbus::Result<()> {
+async fn launch(bus: &zbus::Connection, target: &Target) -> zbus::Result<()> {
     let json = |args: &Map<String, Value>| Value::Object(args.clone()).to_string();
     let reply = match target {
         Target::Keel(app, action, args) => {
@@ -575,6 +578,29 @@ struct State {
     saved: VecDeque<(String, PathBuf)>,
 }
 
+/// A bound on the tasks Android's messages start; each running task holds
+/// a clone of the `Arc`.
+#[derive(Default)]
+pub(crate) struct Tasks(Arc<()>);
+
+impl Tasks {
+    /// Runs `task` on `bus`'s executor, or drops it while `MAX_TASKS` run.
+    pub(crate) fn spawn<F>(&self, bus: &zbus::Connection, name: &str, task: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        if Arc::strong_count(&self.0) > MAX_TASKS {
+            return eprintln!("deckard-bridge: too many {name} tasks; one dropped");
+        }
+        let running = Arc::clone(&self.0);
+        let task = async move {
+            task.await;
+            drop(running);
+        };
+        bus.executor().spawn(task, name).detach();
+    }
+}
+
 /// Opens, picks and captures for DeckardSystem.
 #[derive(Clone)]
 pub struct Intents {
@@ -583,14 +609,7 @@ pub struct Intents {
     xfer: PathBuf,
     camera: PathBuf,
     state: Arc<Mutex<State>>,
-}
-
-/// Locks `state`; a panic while it was held is fatal.
-pub(crate) fn lock<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
-    state.lock().unwrap_or_else(|_| {
-        eprintln!("deckard-bridge: state lock poisoned");
-        std::process::abort()
-    })
+    tasks: Arc<Tasks>,
 }
 
 impl Intents {
@@ -606,13 +625,14 @@ impl Intents {
             eprintln!("deckard-bridge: cannot make {}: {error}", xfer.display());
         }
         sweep(&xfer);
-        let state = Arc::default();
+        let (state, tasks) = (Arc::default(), Arc::default());
         let intents = Self {
             bus,
             send,
             xfer,
             camera,
             state,
+            tasks,
         };
         let follower = intents.clone();
         intents.spawn("deckard-foreground", async move {
@@ -633,7 +653,7 @@ impl Intents {
 
     /// DeckardSystem connected: it hears which Android app is in front.
     pub fn connected(&self, generation: u64) {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         state.generation = Some(generation);
         let focus = state.focus.clone();
         drop(state);
@@ -642,7 +662,7 @@ impl Intents {
 
     /// DeckardSystem left: its picks end and their choosers close.
     pub fn disconnected(&self, generation: u64) {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.generation == Some(generation) {
             state.generation = None;
             state.pending.clear();
@@ -654,7 +674,7 @@ impl Intents {
     pub fn foreground_changed(&self, app: &str) {
         let pkg = app.strip_prefix("waydroid.").unwrap_or("");
         let pkg = if ids::is_package_name(pkg) { pkg } else { "" };
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.focus != pkg {
             state.focus = pkg.into();
             drop(state);
@@ -676,14 +696,18 @@ impl Intents {
 
     /// A message from the authenticated system channel.
     pub fn handle(&self, generation: u64, m: &Map<String, Value>) {
-        if lock(&self.state).generation != Some(generation) {
+        if sync::lock(&self.state).generation != Some(generation) {
             return;
         }
-        match field(m, "t") {
+        match json::string(m, "t") {
             "open" => self.open(m),
             "pick" => self.pick(m),
-            "pick_done" => self.pick_done(field(m, "id")),
-            "pick_cancel" => drop(lock(&self.state).pending.remove(field(m, "id"))),
+            "pick_done" => self.pick_done(json::string(m, "id")),
+            "pick_cancel" => drop(
+                sync::lock(&self.state)
+                    .pending
+                    .remove(json::string(m, "id")),
+            ),
             _ => {}
         }
     }
@@ -694,7 +718,7 @@ impl Intents {
             Err(error) => return eprintln!("deckard-bridge: open refused: {error}"),
         };
         let bus = self.bus.clone();
-        self.spawn("deckard-open", async move {
+        self.tasks.spawn(&self.bus, "deckard-open", async move {
             if let Err(error) = launch(&bus, &target).await {
                 eprintln!("deckard-bridge: open failed: {error}");
             }
@@ -707,15 +731,15 @@ impl Intents {
     }
 
     fn pick(&self, m: &Map<String, Value>) {
-        let id = field(m, "id");
-        let ask = match (field(m, "mode"), field(m, "kind")) {
+        let id = json::string(m, "id");
+        let ask = match (json::string(m, "mode"), json::string(m, "kind")) {
             ("capture", "video") => Some(Ask::Video),
             ("capture", _) => Some(Ask::Photo),
             ("open", _) => Some(Ask::Open),
             ("save", _) => Some(Ask::Save),
             _ => None,
         };
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if !request_id(id) || state.pending.contains_key(id) {
             return;
         }
@@ -773,7 +797,7 @@ impl Intents {
 
     /// Ends the request: answers a save, or hands back the files to copy.
     fn conclude(&self, id: &str, ask: Ask, chosen: Vec<PathBuf>) -> Option<Vec<PathBuf>> {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.pending.remove(id).map(|(asked, _)| asked) != Some(ask) {
             return None;
         }
@@ -837,7 +861,7 @@ impl Intents {
         let camera = ("org.marathonos.camera", KEEL_PATH, KEEL);
         let reply = call(&self.bus, camera, "Invoke", &body, CAPTURE_TIMEOUT).await?;
         let reply = serde_json::from_str(&reply.body().deserialize::<String>()?);
-        let path = PathBuf::from(field(&reply.unwrap_or_default(), "path"));
+        let path = PathBuf::from(json::string(&reply.unwrap_or_default(), "path"));
         let kinds = match video {
             true => ["mp4", "mkv", "webm", "mov"].as_slice(),
             false => ["jpg", "jpeg", "png"].as_slice(),
@@ -857,14 +881,14 @@ impl Intents {
     /// A file saved through DeckardBridge's Handoff provider was closed: it
     /// goes to where the person chose.
     pub fn pick_done(&self, id: &str) {
-        let state = lock(&self.state);
+        let state = sync::lock(&self.state);
         let saved = state.saved.iter().find(|(saved, _)| saved == id).cloned();
         drop(state);
         let Some((id, target)) = saved else {
             return;
         };
         let xfer = self.xfer.clone();
-        self.spawn("deckard-save", async move {
+        self.tasks.spawn(&self.bus, "deckard-save", async move {
             let shown = target.display().to_string();
             match blocking::unblock(move || save(&xfer, &id, &target)).await {
                 Ok(()) => eprintln!("deckard-bridge: saved {shown}"),
@@ -883,7 +907,7 @@ fn portal_options(m: &Map<String, Value>, id: &str, ask: Ask) -> Options {
     };
     put("handle_token", format!("deckard_{id}").into());
     if ask == Ask::Save {
-        let name = safe_name(&validate::clean_text(field(m, "name"), 255));
+        let name = safe_name(&json::text(m, "name", 255));
         put("current_name", name.into());
     }
     if ask != Ask::Open {
@@ -891,7 +915,7 @@ fn portal_options(m: &Map<String, Value>, id: &str, ask: Ask) -> Options {
     }
     let multiple = m.get("multiple").and_then(Value::as_bool);
     put("multiple", multiple.unwrap_or(false).into());
-    let types = list(m, "mime");
+    let types = json::array(m, "mime");
     let mut any = types.is_empty();
     let mut rules = Vec::new();
     for value in types {

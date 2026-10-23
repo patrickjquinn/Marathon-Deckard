@@ -11,7 +11,7 @@ async-channel.workspace = true
 async-io.workspace = true
 deckard-core = { path = "../deckard-core" }
 futures-lite.workspace = true
-regex.workspace = true
+getrandom = "=0.4.3"
 serde_json.workspace = true
 zbus = { workspace = true, features = ["blocking-api"] }
 

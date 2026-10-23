@@ -12,18 +12,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_channel::Sender;
-use async_io::Timer;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use deckard_core::{ids, png_guard, validate};
-use futures_lite::future;
+use deckard_core::{ids, json, png_guard, sync, validate};
 use serde_json::{Map, Value, json};
+use zbus::interface;
 use zbus::message::Header;
-use zbus::zvariant::{Dict, Fd, OwnedValue, Value as Variant};
-use zbus::{fdo, interface};
+use zbus::zvariant::{Dict, Fd, Value as Variant};
 
-use crate::api::ApiError;
-use crate::contract;
+use crate::api::{self, ApiError};
+use crate::contract::VariantMap;
 use crate::intents::{self, NAVIGATION, SendSystem};
 
 const MAX_RESOURCES: usize = 32;
@@ -33,23 +29,16 @@ const MAX_BYTES: u64 = 1 << 30;
 const MAX_PENDING: usize = 16;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const BAD_REQUEST: &str = "a target and 1 to 32 resources";
+const DBUS: intents::Endpoint<'static> = (
+    "org.freedesktop.DBus",
+    "/org/freedesktop/DBus",
+    "org.freedesktop.DBus",
+);
 
-/// Why a request was refused.
-type Error = &'static str;
-
-pub type VariantMap = HashMap<String, OwnedValue>;
 type Answer = Result<Map<String, Value>, String>;
 
-fn denied() -> ApiError {
-    ApiError::Standard(fdo::Error::AccessDenied("only the shell shares".into()))
-}
-
-fn invalid(message: &str) -> ApiError {
-    ApiError::Standard(fdo::Error::InvalidArgs(message.into()))
-}
-
 /// The answer a pending request waits for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Targets,
     Share,
@@ -77,30 +66,32 @@ pub struct Sharing {
     send: Arc<SendSystem>,
     xfer: PathBuf,
     state: Arc<Mutex<State>>,
+    tasks: Arc<intents::Tasks>,
 }
 
 impl Sharing {
     /// Shares through `xfer/<id>/`.
     pub fn new(bus: zbus::Connection, send: Arc<SendSystem>, xfer: PathBuf) -> Self {
-        let state = Arc::default();
+        let (state, tasks) = (Arc::default(), Arc::default());
         Self {
             bus,
             send,
             xfer,
             state,
+            tasks,
         }
     }
 
     /// DeckardSystem (re)connected: older requests fail.
     pub fn connected(&self, generation: u64) {
-        let mut state = intents::lock(&self.state);
+        let mut state = sync::lock(&self.state);
         state.generation = Some(generation);
         state.fail_all();
     }
 
     /// DeckardSystem left: pending requests fail.
     pub fn disconnected(&self, generation: u64) {
-        let mut state = intents::lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.generation == Some(generation) {
             state.generation = None;
             state.fail_all();
@@ -109,8 +100,8 @@ impl Sharing {
 
     /// A message from the authenticated system channel.
     pub fn handle(&self, generation: u64, m: &Map<String, Value>) {
-        let mut state = intents::lock(&self.state);
-        let kind = match intents::field(m, "t") {
+        let mut state = sync::lock(&self.state);
+        let kind = match json::string(m, "t") {
             _ if state.generation != Some(generation) => return,
             "share_out" => {
                 drop(state);
@@ -120,7 +111,7 @@ impl Sharing {
             "shared" => Kind::Share,
             _ => return,
         };
-        let id = intents::field(m, "id");
+        let id = json::string(m, "id");
         if state
             .pending
             .get(id)
@@ -131,16 +122,13 @@ impl Sharing {
         }
     }
 
-    async fn shell(&self, header: Header<'_>) -> Result<(), ApiError> {
+    /// Only the Shell's process may use the interface.
+    async fn shell(&self, header: Header<'_>) -> api::Result<()> {
+        let denied = || ApiError::AccessDenied("only the shell shares".into());
         let sender = header.sender().ok_or_else(denied)?.to_string();
         let pid = |name: String| async move {
-            let dbus = (
-                "org.freedesktop.DBus",
-                "/org/freedesktop/DBus",
-                "org.freedesktop.DBus",
-            );
             let method = "GetConnectionUnixProcessID";
-            let reply = intents::call(&self.bus, dbus, method, &(name,), TIMEOUT).await?;
+            let reply = intents::call(&self.bus, DBUS, method, &(name,), TIMEOUT).await?;
             reply.body().deserialize::<u32>()
         };
         match (pid(sender).await, pid(NAVIGATION.0.into()).await) {
@@ -153,7 +141,7 @@ impl Sharing {
     async fn request(&self, kind: Kind, id: String, mut message: Map<String, Value>) -> Answer {
         let (answer, answered) = async_channel::bounded(1);
         {
-            let mut state = intents::lock(&self.state);
+            let mut state = sync::lock(&self.state);
             if state.generation.is_none() {
                 return Err("Android isn't running".into());
             }
@@ -164,57 +152,55 @@ impl Sharing {
         }
         message.insert("id".into(), id.clone().into());
         let reply = if (self.send)(message) {
-            let timeout = async {
-                Timer::after(TIMEOUT).await;
-                Err("Android didn't answer".into())
-            };
-            let stopped = || Err("Android stopped".into());
-            let answer = async { answered.recv().await.unwrap_or_else(|_| stopped()) };
-            future::or(answer, timeout).await
+            match intents::within(TIMEOUT, answered.recv()).await {
+                Some(Ok(answer)) => answer,
+                Some(Err(_)) => Err("Android stopped".into()),
+                None => Err("Android didn't answer".into()),
+            }
         } else {
             Err("Android isn't running".into())
         };
-        intents::lock(&self.state).pending.remove(&id);
+        sync::lock(&self.state).pending.remove(&id);
         reply
     }
 
     fn share_out(&self, m: &Map<String, Value>) {
-        let (id, pkg) = (intents::field(m, "id"), intents::field(m, "pkg"));
+        let (id, pkg) = (json::string(m, "id"), json::string(m, "pkg"));
         if !intents::request_id(id) || !ids::is_package_name(pkg) {
             return;
         }
         let dir = intents::transfer(&self.xfer, id).ok();
         let mut resources = Vec::<Variant<'static>>::new();
         let mut total = 0_u64;
-        for name in intents::list(m, "files") {
+        for name in json::array(m, "files") {
             let name = name.as_str().unwrap_or("");
             if name != intents::safe_name(name) || resources.len() >= MAX_RESOURCES {
                 continue;
             }
-            let Some(fd) = dir
-                .as_ref()
-                .and_then(|dir| intents::open_file(dir, name).ok())
-            else {
+            let file = dir.as_ref().map(|dir| intents::open_file(dir, name));
+            let Some(Ok(fd)) = file else {
                 continue;
             };
             total += intents::file_size(fd.as_fd()).unwrap_or(0);
             if total > MAX_BYTES {
                 break;
             }
-            let name = Variant::from(name.to_owned());
-            let item = [("name", name), ("fileDescriptor", Fd::from(fd).into())];
-            resources.push(HashMap::from(item).into());
+            let item = [
+                ("name", name.to_owned().into()),
+                ("fileDescriptor", Fd::from(fd).into()),
+            ];
+            resources.push(HashMap::<_, Variant<'_>>::from(item).into());
         }
-        let title = validate::clean_text(intents::field(m, "title"), 256);
-        let text = validate::clean_text(intents::field(m, "text"), MAX_TEXT);
+        let title = json::text(m, "title", 256);
+        let text = json::text(m, "text", MAX_TEXT);
         if !text.is_empty() && resources.len() < MAX_RESOURCES {
-            let name = Variant::from(title.clone());
-            resources.push(HashMap::from([("name", name), ("data", text.into())]).into());
+            let item = [("name", title.clone().into()), ("data", text.into())];
+            resources.push(HashMap::<_, Variant<'_>>::from(item).into());
         }
         if resources.is_empty() {
             return;
         }
-        let mime = Some(intents::field(m, "mime")).filter(|mime| is_mime(mime));
+        let mime = Some(json::string(m, "mime")).filter(|mime| is_mime(mime));
         let configuration = HashMap::from([
             ("resources", Variant::from(resources)),
             ("mimeType", mime.unwrap_or("").to_owned().into()),
@@ -225,14 +211,12 @@ impl Sharing {
         let task = async move {
             let sheet = ("org.sailfishos.share", "/", "org.sailfishos.share");
             let body = (configuration,);
-            if let Err(error) =
-                intents::call(&bus, sheet, "share", &body, Duration::from_secs(10)).await
-            {
+            let wait = Duration::from_secs(10);
+            if let Err(error) = intents::call(&bus, sheet, "share", &body, wait).await {
                 eprintln!("deckard-bridge: the share sheet refused {pkg}: {error}");
             }
         };
-        let executor = self.bus.executor();
-        executor.spawn(task, "deckard-share-out").detach();
+        self.tasks.spawn(&self.bus, "deckard-share-out", task);
     }
 }
 
@@ -240,15 +224,14 @@ impl Sharing {
 impl Sharing {
     /// `{id, pkg, label, icon, multiple}` for the activities taking
     /// ACTION_SEND of `mime_type`.
-    #[zbus(name = "ShareTargets")]
     async fn share_targets(
         &self,
         mime_type: String,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<Vec<VariantMap>, ApiError> {
+    ) -> api::Result<Vec<VariantMap>> {
         self.shell(header).await?;
         if !is_mime(&mime_type) {
-            return Err(invalid("not a MIME type"));
+            return Err(ApiError::InvalidArgs("not a MIME type".into()));
         }
         let message = intents::object(json!({"t": "share_targets", "mime": mime_type}));
         let reply = self.request(Kind::Targets, new_id()?, message).await;
@@ -256,26 +239,25 @@ impl Sharing {
     }
 
     /// The sheet's request (`mimeType`, `title`, `resources`) for target `id`.
-    #[zbus(name = "Share")]
     async fn share(
         &self,
         id: String,
         configuration: VariantMap,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
+    ) -> api::Result<()> {
         self.shell(header).await?;
-        let value = |key| configuration.get(key).and_then(|v| string(v));
+        let value = |key| configuration.get(key).and_then(|v| text_of(v));
         let value = |key| value(key).unwrap_or_default();
         let (mut mime, title) = (value("mimeType"), validate::truncate(&value("title"), 256));
         if !target_id(&id) || (!mime.is_empty() && !is_mime(&mime)) {
-            return Err(invalid(BAD_REQUEST));
+            return Err(ApiError::InvalidArgs(BAD_REQUEST.into()));
         }
         let (tid, xfer) = (new_id()?, self.xfer.clone());
         let copy_tid = tid.clone();
         let copied = blocking::unblock(move || copy_in(&xfer, &copy_tid, &configuration)).await;
         let (files, joined) = copied.map_err(|error| {
             remove(&self.xfer, &tid);
-            invalid(error)
+            ApiError::InvalidArgs(error.into())
         })?;
         if mime.is_empty() {
             let guess = files.first().map(mime_guess::from_path);
@@ -289,12 +271,10 @@ impl Sharing {
         let message = json!({
             "t": "share", "target": id, "mime": mime, "title": title, "text": joined, "files": files,
         });
-        let reply = self
-            .request(Kind::Share, tid.clone(), intents::object(message))
-            .await;
-        let failure = match reply {
+        let reply = self.request(Kind::Share, tid.clone(), intents::object(message));
+        let failure = match reply.await {
             Ok(reply) if reply.get("ok").and_then(Value::as_bool) == Some(true) => return Ok(()),
-            Ok(reply) => validate::clean_text(intents::field(&reply, "error"), 512),
+            Ok(reply) => json::text(&reply, "error", 512),
             Err(error) => error,
         };
         remove(&self.xfer, &tid);
@@ -310,7 +290,7 @@ fn remove(xfer: &Path, tid: &str) {
 }
 
 /// A random transfer ID.
-fn new_id() -> Result<String, ApiError> {
+fn new_id() -> api::Result<String> {
     let random = getrandom::u64().map_err(|error| ApiError::Failed(error.to_string()))?;
     Ok(format!("{random:016x}"))
 }
@@ -322,7 +302,7 @@ fn bare<'a, 'v>(value: &'a Variant<'v>) -> &'a Variant<'v> {
     }
 }
 
-fn string(value: &Variant<'_>) -> Option<String> {
+fn text_of(value: &Variant<'_>) -> Option<String> {
     match bare(value) {
         Variant::Str(text) => Some(text.as_str().to_owned()),
         _ => None,
@@ -331,13 +311,17 @@ fn string(value: &Variant<'_>) -> Option<String> {
 
 fn entry<'a, 'v>(dict: &'a Dict<'v, 'v>, key: &str) -> Option<&'a Variant<'v>> {
     let mut entries = dict.iter();
-    let found = entries.find(|(name, _)| string(name).is_some_and(|name| name == key));
+    let found = entries.find(|(name, _)| text_of(name).is_some_and(|name| name == key));
     found.map(|(_, value)| bare(value))
 }
 
 /// Copies the request's files (`resources`, as `av` or `aa{sv}`) into
 /// `xfer/<tid>/`; their names and the joined text.
-fn copy_in(xfer: &Path, tid: &str, request: &VariantMap) -> Result<(Vec<String>, String), Error> {
+fn copy_in(
+    xfer: &Path,
+    tid: &str,
+    request: &VariantMap,
+) -> Result<(Vec<String>, String), &'static str> {
     let items = match request.get("resources").map(|resources| bare(resources)) {
         Some(Variant::Array(items)) if (1..=MAX_RESOURCES).contains(&items.len()) => items,
         _ => return Err(BAD_REQUEST),
@@ -353,7 +337,7 @@ fn copy_in(xfer: &Path, tid: &str, request: &VariantMap) -> Result<(Vec<String>,
             Some(Variant::Fd(fd)) => fd,
             Some(_) => return Err("not a file"),
             None => {
-                let text = get("data").and_then(string).unwrap_or_default();
+                let text = get("data").and_then(text_of).unwrap_or_default();
                 if !(1..=MAX_TEXT).contains(&text.encode_utf16().count()) {
                     return Err("text of 1 to 65536 characters");
                 }
@@ -366,13 +350,14 @@ fn copy_in(xfer: &Path, tid: &str, request: &VariantMap) -> Result<(Vec<String>,
             dir = intents::new_transfer(xfer, tid).ok();
         }
         let dir = dir.as_ref().ok_or("cannot write the transfer")?;
-        let name = intents::safe_name(&get("name").and_then(string).unwrap_or_default());
+        let name = intents::safe_name(&get("name").and_then(text_of).unwrap_or_default());
         files.push(intents::copy_into(dir, &name, 2, fd.as_fd(), &mut budget)?.0);
     }
     Ok((files, texts.join("\n")))
 }
 
 /// `<pkg>/<activity class>`, at most 256 characters.
+#[must_use]
 pub fn target_id(id: &str) -> bool {
     let Some((pkg, class)) = id.split_once('/') else {
         return false;
@@ -399,36 +384,31 @@ fn is_mime(mime: &str) -> bool {
 /// DeckardSystem's activities as the Shell takes them.
 fn targets(reply: &Map<String, Value>) -> Vec<VariantMap> {
     let mut out = Vec::new();
-    for target in intents::list(reply, "targets") {
+    for target in json::array(reply, "targets") {
         let Some(target) = target.as_object() else {
             continue;
         };
-        let pkg = intents::field(target, "pkg");
-        let id = format!("{pkg}/{}", intents::field(target, "activity"));
+        let pkg = json::string(target, "pkg");
+        let id = format!("{pkg}/{}", json::string(target, "activity"));
         if !target_id(&id) || pkg.starts_with("org.marathonos.deckard.") {
             continue;
         }
-        let png = validate::base64_png(intents::field(target, "icon"), 256 * 1024);
+        let png = validate::base64_png(json::string(target, "icon"), 256 * 1024);
         let png = png.and_then(|png| png_guard::sanitize(&png, 256 * 1024, 96));
-        let icon = png.map(|png| format!("data:image/png;base64,{}", STANDARD.encode(png)));
         let multiple = target.get("multiple").and_then(Value::as_bool);
-        let entries = [
-            ("id", Variant::from(id)),
+        out.push(deckard_packages::dict([
+            ("id", id.into()),
             ("pkg", pkg.into()),
             (
                 "label",
-                contract::runtime_label(intents::field(target, "label")).into(),
+                validate::label(json::string(target, "label")).into(),
             ),
-            ("icon", icon.unwrap_or_default().into()),
+            (
+                "icon",
+                png.map(|png| api::png_uri(&png)).unwrap_or_default().into(),
+            ),
             ("multiple", multiple.unwrap_or(false).into()),
-        ];
-        let mut map = VariantMap::new();
-        for (key, value) in entries {
-            if let Ok(value) = OwnedValue::try_from(value) {
-                map.insert(key.into(), value);
-            }
-        }
-        out.push(map);
+        ]));
         if out.len() >= MAX_TARGETS {
             break;
         }

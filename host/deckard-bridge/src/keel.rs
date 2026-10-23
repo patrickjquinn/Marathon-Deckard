@@ -5,33 +5,30 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::future::Future;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Duration;
 
 use async_executor::{Executor, Task};
 use async_io::Timer;
-use deckard_core::json;
 use deckard_core::keel::{self, APP_ID_PREFIX, App, Manifest, Shortcut};
-use deckard_core::validate::truncate;
+use deckard_core::{json, sync, validate};
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::{StreamExt, future};
 use serde_json::{Map, Value, json};
 use zbus::fdo::{DBusProxy, RequestNameFlags, RequestNameReply};
 use zbus::message::Header;
-use zbus::zvariant::{DynamicType, OwnedValue};
-use zbus::{Connection, Message, connection};
+use zbus::zvariant::OwnedValue;
+use zbus::{Connection, connection};
+
+use crate::intents::{self, NAVIGATION};
 
 const PATH: &str = "/org/shipwright/Keel/Actions";
 const INTERFACE: &str = "org.shipwright.Keel.Actions";
 const ERRORS: &str = "org.shipwright.Keel.Actions.Error.";
-const SHELL: &str = "org.marathonos.Shell";
-const NAVIGATION_PATH: &str = "/org/marathonos/Shell/Navigation";
-const NAVIGATION: &str = "org.marathonos.Shell.Navigation1";
 
 const MAX_APPS: usize = 200;
 const MAX_PENDING: usize = 64;
@@ -104,6 +101,8 @@ enum Need {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Host {
     Local,
+    /// Local, for a request the person started: may act on the screen.
+    Person,
     /// A paired computer: no screen content.
     External,
 }
@@ -131,6 +130,8 @@ struct State {
     apps: HashMap<String, Entry>,
     /// What the shell was told, by package.
     secure: HashMap<String, bool>,
+    /// The packages whose secure check runs.
+    checking: HashSet<String>,
     user: bool,
     system: bool,
     next: i64,
@@ -166,37 +167,12 @@ struct Shared {
     _stop: async_channel::Sender<()>,
 }
 
-/// # Panics
-///
-/// On a poisoned lock: a thread died mid-update and the catalogue cannot be trusted.
-fn locked(state: &Mutex<State>) -> MutexGuard<'_, State> {
-    state
-        .lock()
-        .unwrap_or_else(|_| panic!("deckard-bridge: keel state poisoned"))
-}
-
 fn ok(reply: &Map<String, Value>) -> bool {
     reply.get("ok").and_then(Value::as_bool) == Some(true)
 }
 
-async fn within<T>(limit: Duration, work: impl Future<Output = T>) -> Option<T> {
-    future::or(async { Some(work.await) }, async {
-        Timer::after(limit).await;
-        None
-    })
-    .await
-}
-
 fn keel_op(op: &str, pkg: &str) -> Value {
     json!({"t": "keel", "op": op, "pkg": pkg})
-}
-
-async fn navigation<B>(bus: &Connection, method: &str, body: &B) -> zbus::Result<Message>
-where
-    B: serde::Serialize + DynamicType,
-{
-    bus.call_method(Some(SHELL), NAVIGATION_PATH, Some(NAVIGATION), method, body)
-        .await
 }
 
 fn runs_one_of(pid: u32, paths: &[PathBuf]) -> bool {
@@ -255,20 +231,19 @@ impl KeelApps {
             _stop: stop,
         });
         future::block_on(shared.load());
-        let weak = Arc::downgrade(&shared);
-        let catalogue = registry(weak.clone(), incoming);
-        shared.executor.spawn(catalogue).detach();
-        shared
-            .executor
-            .spawn(refresher(weak.clone(), refresh))
-            .detach();
-        let bus = shared.bus.clone();
+        let (weak, bus, executor) = (
+            Arc::downgrade(&shared),
+            shared.bus.clone(),
+            &shared.executor,
+        );
+        executor.spawn(registry(weak.clone(), incoming)).detach();
+        executor.spawn(refresher(weak.clone(), refresh)).detach();
         let foreground = async move {
             if let Err(error) = follow_foreground(weak, bus).await {
                 eprintln!("deckard-bridge: keel: no foreground changes: {error}");
             }
         };
-        shared.executor.spawn(foreground).detach();
+        executor.spawn(foreground).detach();
         Ok(Self(shared))
     }
 
@@ -314,7 +289,7 @@ impl KeelApps {
     pub fn set_connected(&self, route: BridgeRoute, connected: bool) {
         self.0.connected_changed(route, connected);
         if route == BridgeRoute::System && connected {
-            let known: Vec<String> = locked(&self.0.state).apps.keys().cloned().collect();
+            let known: Vec<String> = sync::lock(&self.0.state).apps.keys().cloned().collect();
             for pkg in known {
                 self.0.refresh_shortcuts(&pkg);
             }
@@ -350,19 +325,25 @@ async fn registry(shared: Weak<Shared>, changes: async_channel::Receiver<Change>
 /// The shell keeps a secure app's windows off its card and out of
 /// screenshots; it hears when an Android app comes to the front.
 async fn follow_foreground(shared: Weak<Shared>, bus: Connection) -> zbus::Result<()> {
-    let navigation = zbus::Proxy::new(&bus, SHELL, NAVIGATION_PATH, NAVIGATION).await?;
+    let (service, path, interface) = NAVIGATION;
+    let navigation = zbus::Proxy::new(&bus, service, path, interface).await?;
     let mut signals = navigation.receive_signal("ForegroundAppChanged").await?;
     while let Some(signal) = signals.next().await {
         let Some(shared) = shared.upgrade() else {
             break;
         };
         let id: String = signal.body().deserialize().unwrap_or_default();
-        if let Some(pkg) = id
+        let pkg = id
             .strip_prefix(APP_ID_PREFIX)
-            .filter(|pkg| shared.known(pkg))
+            .filter(|pkg| shared.known(pkg));
+        if let Some(pkg) = pkg
+            && sync::lock(&shared.state).checking.insert(pkg.to_owned())
         {
             let (pkg, task) = (pkg.to_owned(), Arc::clone(&shared));
-            let check = async move { task.check_secure(&pkg, 2).await };
+            let check = async move {
+                task.check_secure(&pkg, 2).await;
+                sync::lock(&task.state).checking.remove(&pkg);
+            };
             shared.executor.spawn(check).detach();
         }
     }
@@ -377,11 +358,11 @@ impl Shared {
     }
 
     fn known(&self, pkg: &str) -> bool {
-        locked(&self.state).apps.contains_key(pkg)
+        sync::lock(&self.state).apps.contains_key(pkg)
     }
 
     fn app(&self, pkg: &str) -> Option<App> {
-        let state = locked(&self.state);
+        let state = sync::lock(&self.state);
         state.apps.get(pkg).map(|entry| entry.app.clone())
     }
 
@@ -408,7 +389,7 @@ impl Shared {
 
     fn save(&self) {
         let apps: Vec<App> = {
-            let state = locked(&self.state);
+            let state = sync::lock(&self.state);
             state.apps.values().map(|entry| entry.app.clone()).collect()
         };
         let write = || -> io::Result<()> {
@@ -449,7 +430,7 @@ impl Shared {
             }
             Change::Gone(_) => {}
             Change::List(listed) => {
-                let known: Vec<String> = locked(&self.state).apps.keys().cloned().collect();
+                let known: Vec<String> = sync::lock(&self.state).apps.keys().cloned().collect();
                 let gone: Vec<&String> =
                     known.iter().filter(|pkg| !listed.contains(*pkg)).collect();
                 for pkg in &gone {
@@ -465,7 +446,7 @@ impl Shared {
     /// Serves `app`; a changed manifest moves to a new connection.
     async fn publish(self: &Arc<Self>, app: App) {
         let manifest = keel::manifest(&app);
-        if let Some(entry) = locked(&self.state).apps.get_mut(&app.pkg)
+        if let Some(entry) = sync::lock(&self.state).apps.get_mut(&app.pkg)
             && entry.manifest.json == manifest.json
         {
             entry.app = app;
@@ -473,7 +454,7 @@ impl Shared {
         }
         self.unpublish(&app.pkg).await;
         let id = keel::app_id(&app.pkg);
-        if locked(&self.state).apps.len() >= MAX_APPS {
+        if sync::lock(&self.state).apps.len() >= MAX_APPS {
             return eprintln!("deckard-bridge: keel: too many apps; not publishing {id}");
         }
         let (connection, tick, calls) = match self.serve(&app.pkg).await {
@@ -491,14 +472,14 @@ impl Shared {
             snapshot: 0,
         };
         // In the catalogue before the name is owned: Describe never answers {}.
-        locked(&self.state).apps.insert(pkg.clone(), entry);
+        sync::lock(&self.state).apps.insert(pkg.clone(), entry);
         let flags = RequestNameFlags::DoNotQueue.into();
         match connection.request_name_with_flags(id.as_str(), flags).await {
             Ok(RequestNameReply::PrimaryOwner) => {
                 eprintln!("deckard-bridge: keel: published {id} with {tools} actions");
             }
             owned => {
-                locked(&self.state).apps.remove(&pkg);
+                sync::lock(&self.state).apps.remove(&pkg);
                 eprintln!("deckard-bridge: keel: cannot publish {id}: {owned:?}");
             }
         }
@@ -528,7 +509,7 @@ impl Shared {
 
     /// Releases the name before the next owner asks for it.
     async fn unpublish(&self, pkg: &str) {
-        let Some(entry) = locked(&self.state).apps.remove(pkg) else {
+        let Some(entry) = sync::lock(&self.state).apps.remove(pkg) else {
             return;
         };
         let id = keel::app_id(pkg);
@@ -548,7 +529,7 @@ impl Shared {
     }
 
     fn connected_changed(&self, route: BridgeRoute, connected: bool) {
-        let mut state = locked(&self.state);
+        let mut state = sync::lock(&self.state);
         match route {
             BridgeRoute::User => state.user = connected,
             BridgeRoute::System => state.system = connected,
@@ -570,7 +551,7 @@ impl Shared {
     ) -> Result<Map<String, Value>, String> {
         let (reply, answer) = async_channel::bounded(1);
         let id = {
-            let mut state = locked(&self.state);
+            let mut state = sync::lock(&self.state);
             if state.pending.len() >= MAX_PENDING {
                 return Err("Android is busy".into());
             }
@@ -587,8 +568,8 @@ impl Shared {
             state.pending.insert(id, pending);
             id
         };
-        let answered = within(BRIDGE_TIMEOUT, answer.recv()).await;
-        let mut state = locked(&self.state);
+        let answered = intents::within(BRIDGE_TIMEOUT, answer.recv()).await;
+        let mut state = sync::lock(&self.state);
         state.pending.remove(&id);
         match answered {
             Some(Ok(reply)) => Ok(reply),
@@ -602,7 +583,7 @@ impl Shared {
         let Some(id) = message.get("req").and_then(Value::as_i64) else {
             return;
         };
-        let mut state = locked(&self.state);
+        let mut state = sync::lock(&self.state);
         let waiting = |pending: &Pending| pending.sent && pending.route == route;
         if state.pending.get(&id).is_some_and(waiting)
             && let Some(pending) = state.pending.remove(&id)
@@ -616,7 +597,7 @@ impl Shared {
     /// Asked one app at a time, so a burst of apps stays within the
     /// request and channel bounds.
     fn refresh_shortcuts(&self, pkg: &str) {
-        if locked(&self.state).system && self.refreshes.try_send(pkg.to_owned()).is_err() {
+        if sync::lock(&self.state).system && self.refreshes.try_send(pkg.to_owned()).is_err() {
             eprintln!("deckard-bridge: keel: too many shortcut refreshes; one dropped");
         }
     }
@@ -624,16 +605,13 @@ impl Shared {
     async fn shell(&self, action: &str, args: Value) -> Result<Map<String, Value>, Error> {
         let options: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
         let body = (action, args.to_string(), options);
-        let destination = Some("org.marathonos.shell");
-        let call = self
-            .bus
-            .call_method(destination, PATH, Some(INTERFACE), "Invoke", &body);
-        match within(SHELL_TIMEOUT, call).await {
-            Some(Ok(reply)) => {
+        let shell = ("org.marathonos.shell", PATH, INTERFACE);
+        match intents::call(&self.bus, shell, "Invoke", &body, SHELL_TIMEOUT).await {
+            Ok(reply) => {
                 let body: String = reply.body().deserialize().unwrap_or_default();
                 Ok(serde_json::from_str(&body).unwrap_or_default())
             }
-            Some(Err(zbus::Error::MethodError(name, message, _))) => {
+            Err(zbus::Error::MethodError(name, message, _)) => {
                 let message = message.filter(|message| !message.is_empty());
                 let message = message.unwrap_or_else(|| NO_SHELL.into());
                 Err(Error::from_shell(name.as_str(), message))
@@ -691,15 +669,21 @@ impl Shared {
         route: BridgeRoute,
     ) -> Result<(), Error> {
         let id = keel::app_id(pkg);
-        if !locked(&self.state).connected(route) {
+        if !sync::lock(&self.state).connected(route) {
             self.shell("app.launch", json!({"id": id})).await?;
             return self.launched(route, launch).await;
         }
         // The shell's ExpectAppWindow shows the app's window, and lets a new
         // one take the front for a while, as for a launch.
         let body = (id.as_str(),);
-        let expect = navigation(&self.bus, "ExpectAppWindow", &body);
-        let reply = within(EXPECT_TIMEOUT, expect).await.and_then(Result::ok);
+        let expect = intents::call(
+            &self.bus,
+            NAVIGATION,
+            "ExpectAppWindow",
+            &body,
+            EXPECT_TIMEOUT,
+        );
+        let reply = expect.await.ok();
         let expected = reply.is_some_and(|reply| reply.body().deserialize() == Ok(true));
         self.launched(route, launch).await?;
         if !expected {
@@ -721,7 +705,7 @@ impl Shared {
             ));
         }
         let screen = keel::screen(&reply).filter(|screen| screen.pkg == pkg);
-        let mut state = locked(&self.state);
+        let mut state = sync::lock(&self.state);
         let (Some(screen), Some(entry)) = (screen, state.apps.get_mut(pkg)) else {
             return Err(Error::Failed("Android sent an unusable screen".into()));
         };
@@ -733,18 +717,25 @@ impl Shared {
         }))
     }
 
+    /// DeckardSystem's `secure` for the app, which it may leave out; None
+    /// when it does not answer.
+    async fn secure(&self, pkg: &str) -> Option<Option<bool>> {
+        if !sync::lock(&self.state).system {
+            return None;
+        }
+        let reply = self.request(BridgeRoute::System, keel_op("secure", pkg));
+        let reply = reply.await.ok().filter(ok)?;
+        Some(reply.get("secure").and_then(Value::as_bool))
+    }
+
     /// DeckardSystem vouches that no window of the app is secure.
     async fn not_secure(&self, pkg: &str) -> Result<(), Error> {
-        if !locked(&self.state).system {
-            return Err(unavailable(UNKNOWN_SECURE));
-        }
         let label = self.label(pkg);
-        let reply = self
-            .request(BridgeRoute::System, keel_op("secure", pkg))
-            .await;
-        let reply = reply.ok().filter(ok);
-        let reply = reply.ok_or_else(|| unavailable(UNKNOWN_SECURE))?;
-        let secure = reply.get("secure").and_then(Value::as_bool).unwrap_or(true);
+        let secure = self
+            .secure(pkg)
+            .await
+            .ok_or_else(|| unavailable(UNKNOWN_SECURE))?;
+        let secure = secure.unwrap_or(true);
         self.report_secure(pkg, secure);
         if secure {
             return Err(unavailable(format!(
@@ -761,22 +752,18 @@ impl Shared {
             if attempt > 0 {
                 Timer::after(SECURE_RETRY).await;
             }
-            if !locked(&self.state).system {
+            if !sync::lock(&self.state).system {
                 return;
             }
-            let reply = self
-                .request(BridgeRoute::System, keel_op("secure", pkg))
-                .await;
-            if let Some(reply) = reply.ok().filter(ok) {
-                let secure = reply.get("secure").and_then(Value::as_bool) == Some(true);
-                return self.report_secure(pkg, secure);
+            if let Some(secure) = self.secure(pkg).await {
+                return self.report_secure(pkg, secure == Some(true));
             }
         }
     }
 
     fn report_secure(&self, pkg: &str, secure: bool) {
         {
-            let mut state = locked(&self.state);
+            let mut state = sync::lock(&self.state);
             if state.secure.get(pkg).copied().unwrap_or(false) == secure {
                 return;
             }
@@ -787,7 +774,8 @@ impl Shared {
         eprintln!("deckard-bridge: keel: {id} {what}");
         let tell = async move {
             let body = (id.as_str(), secure);
-            if let Err(error) = navigation(&bus, "SetAppWindowSecure", &body).await {
+            let tell = intents::call(&bus, NAVIGATION, "SetAppWindowSecure", &body, SHELL_TIMEOUT);
+            if let Err(error) = tell.await {
                 eprintln!("deckard-bridge: keel: SetAppWindowSecure({id}) failed: {error}");
             }
         };
@@ -799,12 +787,16 @@ impl Shared {
         pkg: &str,
         action: &str,
         args: &Map<String, Value>,
-        user_initiated: bool,
         host: Host,
     ) -> Result<Value, Error> {
-        let unknown = || Error::UnknownAction(format!("no action named {}", truncate(action, 64)));
+        let unknown = || {
+            Error::UnknownAction(format!(
+                "no action named {}",
+                validate::truncate(action, 64)
+            ))
+        };
         let (tool, search, shortcut, snapshot) = {
-            let state = locked(&self.state);
+            let state = sync::lock(&self.state);
             let entry = state
                 .apps
                 .get(pkg)
@@ -855,7 +847,7 @@ impl Shared {
                 return self.read_screen(pkg, SCREEN_UNITS).await;
             }
             "ui.tap" | "ui.type" => {
-                if !user_initiated || host == Host::External {
+                if host != Host::Person {
                     let why =
                         "only Pilot acts on an app's screen, for a request the person started";
                     return Err(unavailable(why));
@@ -937,20 +929,19 @@ impl Provider {
         let pid = pid.get_connection_unix_process_id(sender.into()).await;
         let pid = pid.ok().filter(|pid| runs_one_of(*pid, &shared.trusted));
         let pid = pid.ok_or_else(denied)?;
-        let external = cmdline(pid).is_ok_and(|line| keel::is_external_host(&line));
-        Ok((
-            shared,
-            if external {
-                Host::External
-            } else {
-                Host::Local
-            },
-        ))
+        let host = match cmdline(pid).is_ok_and(|line| keel::is_external_host(&line)) {
+            true => Host::External,
+            false => Host::Local,
+        };
+        Ok((shared, host))
     }
 }
 
 fn no_entity(entity_type: &str) -> Error {
-    Error::UnknownAction(format!("no entity type {}", truncate(entity_type, 64)))
+    Error::UnknownAction(format!(
+        "no entity type {}",
+        validate::truncate(entity_type, 64)
+    ))
 }
 
 #[zbus::interface(name = "org.shipwright.Keel.Actions")]
@@ -959,7 +950,7 @@ impl Provider {
         let Ok(shared) = self.shared() else {
             return "{}".into();
         };
-        let state = locked(&shared.state);
+        let state = sync::lock(&shared.state);
         let manifest = state.apps.get(&self.pkg).map(|entry| &entry.manifest.json);
         manifest.map_or_else(|| "{}".into(), Value::to_string)
     }
@@ -981,8 +972,11 @@ impl Provider {
         let user_initiated = options
             .get("userInitiated")
             .map(|value| bool::try_from(&**value));
-        let user_initiated = matches!(user_initiated, Some(Ok(true)));
-        let result = shared.invoke(&self.pkg, &action, &args, user_initiated, host);
+        let host = match host {
+            Host::Local if matches!(user_initiated, Some(Ok(true))) => Host::Person,
+            host => host,
+        };
+        let result = shared.invoke(&self.pkg, &action, &args, host);
         Ok(result.await?.to_string())
     }
 

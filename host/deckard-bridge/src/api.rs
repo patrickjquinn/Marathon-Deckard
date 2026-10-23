@@ -1,90 +1,91 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
+//! `org.marathonos.Deckard1`: the Android runtime and its apps, for Marathon
+//! Settings.
+
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use std::{env, fs, thread};
 
+use async_io::Timer;
 use base64::Engine;
-use deckard_core::ids::PackageName;
+use base64::engine::general_purpose::STANDARD;
 use deckard_core::runtime_state::{ResetError, State, UnitCall};
+use deckard_core::{ids, png_guard};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
+use zbus::interface;
 use zbus::message::{Flags, Header, Message};
-use zbus::names::ErrorName;
-use zbus::zvariant::OwnedValue;
-use zbus::{DBusError, fdo, interface};
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::DynamicType;
 
 use crate::auth;
-use crate::contract::{self, VariantMap};
+use crate::contract::{self, Fixed, VariantMap};
+use crate::intents::{self, Endpoint, NAVIGATION};
 use crate::manage::Manage;
 use crate::runtime::{self, Runtime};
 
-pub const BUS_NAME: &str = "org.marathonos.Deckard";
-pub const OBJECT_PATH: &str = "/org/marathonos/Deckard";
+pub use deckard_packages::{BUS_NAME, OBJECT_PATH};
 pub const INTERFACE: &str = "org.marathonos.Deckard1";
-const FAILED: &str = "org.marathonos.Deckard1.Error.Failed";
+const SYSTEMD: Endpoint<'static> = (
+    "org.freedesktop.systemd1",
+    runtime::MANAGER_PATH,
+    runtime::MANAGER,
+);
+const RESET_HELPER: &str = "/usr/libexec/deckard-reset";
+const MAX_ICON_BYTES: usize = 512 * 1024;
 
-#[derive(Debug)]
+/// The errors of Deckard's Settings and Share interfaces.
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org")]
 pub enum ApiError {
-    Standard(fdo::Error),
+    #[zbus(name = "freedesktop.DBus.Error.InvalidArgs")]
+    InvalidArgs(String),
+    #[zbus(name = "freedesktop.DBus.Error.AccessDenied")]
+    AccessDenied(String),
+    #[zbus(name = "marathonos.Deckard1.Error.Failed")]
     Failed(String),
 }
 
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Standard(e) => e.fmt(f),
-            Self::Failed(e) => f.write_str(e),
-        }
-    }
-}
-impl std::error::Error for ApiError {}
-impl DBusError for ApiError {
-    fn name(&self) -> ErrorName<'_> {
-        match self {
-            Self::Standard(e) => e.name(),
-            Self::Failed(_) => ErrorName::try_from(FAILED).unwrap_or_else(|_| unreachable!()),
-        }
-    }
-    fn description(&self) -> Option<&str> {
-        match self {
-            Self::Standard(e) => e.description(),
-            Self::Failed(e) => Some(e),
-        }
-    }
-    fn create_reply(&self, call: &Header<'_>) -> zbus::Result<Message> {
-        match self {
-            Self::Standard(e) => e.create_reply(call),
-            Self::Failed(message) => Message::error(call, self.name())?.build(&(message,)),
-        }
-    }
-}
+/// A Settings or Share method's result.
+pub type Result<T> = std::result::Result<T, ApiError>;
 
 fn invalid() -> ApiError {
-    ApiError::Standard(fdo::Error::InvalidArgs("Invalid arguments".into()))
-}
-fn denied() -> ApiError {
-    ApiError::Standard(fdo::Error::AccessDenied(
-        "Not allowed for this caller".into(),
-    ))
-}
-fn failed(message: impl Into<String>) -> ApiError {
-    ApiError::Failed(message.into())
-}
-fn package(value: &str) -> Result<&str, ApiError> {
-    PackageName::try_from(value).map_err(|_| invalid())?;
-    Ok(value)
-}
-fn choice<'a>(value: &'a str, choices: &[&str]) -> Result<&'a str, ApiError> {
-    if choices.contains(&value) {
-        Ok(value)
-    } else {
-        Err(invalid())
-    }
-}
-fn object(value: Value) -> Map<String, Value> {
-    value.as_object().cloned().unwrap_or_default()
+    ApiError::InvalidArgs("Invalid arguments".into())
 }
 
+fn failed(why: impl ToString) -> ApiError {
+    ApiError::Failed(why.to_string())
+}
+
+/// Refuses the call unless its arguments are `valid`.
+fn valid(valid: bool) -> Result<()> {
+    if valid { Ok(()) } else { Err(invalid()) }
+}
+
+/// `png` as a `data:` URI.
+pub(crate) fn png_uri(png: &[u8]) -> String {
+    format!("data:image/png;base64,{}", STANDARD.encode(png))
+}
+
+/// Calls `method` without waiting for a reply.
+async fn notify<B>(
+    bus: &zbus::Connection,
+    to: Endpoint<'_>,
+    method: &str,
+    body: &B,
+) -> zbus::Result<()>
+where
+    B: Serialize + DynamicType,
+{
+    let (service, path, interface) = to;
+    let call = Message::method_call(path, method)?.destination(service)?;
+    let call = call
+        .interface(interface)?
+        .with_flags(Flags::NoReplyExpected)?;
+    bus.send(&call.build(body)?).await
+}
+
+/// `org.marathonos.Deckard1` at [`OBJECT_PATH`].
 #[derive(Clone)]
 pub struct SettingsApi {
     pub bus: zbus::Connection,
@@ -94,415 +95,314 @@ pub struct SettingsApi {
 }
 
 impl SettingsApi {
-    async fn allowed(&self, header: Header<'_>) -> Result<(), ApiError> {
+    async fn allowed(&self, header: Header<'_>) -> Result<()> {
         if auth::settings(&self.bus, header).await {
-            Ok(())
-        } else {
-            Err(denied())
+            return Ok(());
         }
+        Err(ApiError::AccessDenied("Not allowed for this caller".into()))
     }
 
+    /// DeckardSystem's answer to manage `op`; `changed` names the app it
+    /// changed.
     async fn request(
         &self,
         op: &str,
         args: Value,
         changed: Option<&str>,
         header: Header<'_>,
-    ) -> Result<Map<String, Value>, ApiError> {
+    ) -> Result<Map<String, Value>> {
         self.allowed(header).await?;
-        let reply = self
-            .manage
-            .request(op, object(args))
-            .await
-            .map_err(failed)?;
+        let reply = self.manage.request(op, intents::object(args)).await;
+        let reply = reply.map_err(ApiError::Failed)?;
         if let Some(pkg) = changed {
-            let _ = self
-                .bus
-                .emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, "AppChanged", &(pkg,))
-                .await;
+            self.emit("AppChanged", &(pkg,)).await;
         }
         Ok(reply)
     }
 
-    async fn unit(&self, call: UnitCall, header: Header<'_>) -> Result<(), ApiError> {
+    async fn emit<B: Serialize + DynamicType>(&self, member: &str, body: &B) {
+        let signal = self
+            .bus
+            .emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body);
+        let _ = signal.await;
+    }
+
+    /// Changes the app `pkg` through manage `op`.
+    async fn change(&self, op: &str, pkg: &str, mut args: Value, header: Header<'_>) -> Result<()> {
+        valid(ids::is_package_name(pkg))?;
+        args["pkg"] = json!(pkg);
+        self.request(op, args, Some(pkg), header).await.map(drop)
+    }
+
+    async fn unit(&self, call: UnitCall, header: Header<'_>) -> Result<()> {
         self.allowed(header).await?;
         let method = match call {
             UnitCall::Start => "StartUnit",
             UnitCall::Stop => "StopUnit",
             UnitCall::Restart => "RestartUnit",
         };
-        let message = Message::method_call(runtime::MANAGER_PATH, method)
-            .and_then(|builder| builder.destination("org.freedesktop.systemd1"))
-            .and_then(|builder| builder.interface(runtime::MANAGER))
-            .and_then(|builder| builder.with_flags(Flags::NoReplyExpected))
-            .and_then(|builder| builder.build(&(runtime::UNIT, "replace")))
-            .map_err(|e| failed(e.to_string()))?;
-        self.bus
-            .send(&message)
+        let body = (runtime::UNIT, "replace");
+        notify(&self.bus, SYSTEMD, method, &body)
             .await
-            .map_err(|e| failed(e.to_string()))?;
+            .map_err(failed)
+    }
+
+    /// Stops Android, waiting at most 90 seconds for it.
+    async fn stop_android(&self) -> Result<()> {
+        if self.runtime.state() == State::Stopped {
+            return Ok(());
+        }
+        let stop = runtime::call_unit(&self.bus, UnitCall::Stop).await;
+        stop.map_err(failed)?;
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while self.runtime.state() != State::Stopped {
+            if Instant::now() >= deadline {
+                return Err(failed("Android didn't stop"));
+            }
+            Timer::after(Duration::from_millis(100)).await;
+        }
         Ok(())
     }
 }
 
+/// The icon at `path`, sanitised.
+fn icon(path: &Path) -> Option<Vec<u8>> {
+    if fs::metadata(path).ok()?.len() > MAX_ICON_BYTES as u64 {
+        return None;
+    }
+    png_guard::sanitize(&fs::read(path).ok()?, MAX_ICON_BYTES, 192)
+}
+
+/// Runs the reset helper for at most five minutes; whether it succeeded.
+fn run_helper(helper: &[PathBuf]) -> bool {
+    let Some((program, args)) = helper.split_first() else {
+        return false;
+    };
+    let mut command = Command::new(program);
+    let Ok(mut child) = command.args(args).stdin(Stdio::null()).spawn() else {
+        return false;
+    };
+    let deadline = Instant::now() + Duration::from_secs(300);
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(_) => return false,
+        }
+    }
+    if child.kill().is_ok() {
+        let _ = child.wait();
+    }
+    false
+}
+
 #[interface(name = "org.marathonos.Deckard1")]
 impl SettingsApi {
-    #[zbus(name = "GetRuntime")]
-    fn get_runtime(&self) -> HashMap<String, OwnedValue> {
+    fn get_runtime(&self) -> VariantMap {
         self.runtime.snapshot()
     }
 
-    #[zbus(name = "Start")]
-    async fn start(&self, #[zbus(header)] header: Header<'_>) -> Result<(), ApiError> {
+    async fn start(&self, #[zbus(header)] header: Header<'_>) -> Result<()> {
         self.unit(UnitCall::Start, header).await
     }
-    #[zbus(name = "Stop")]
-    async fn stop(&self, #[zbus(header)] header: Header<'_>) -> Result<(), ApiError> {
+
+    async fn stop(&self, #[zbus(header)] header: Header<'_>) -> Result<()> {
         self.unit(UnitCall::Stop, header).await
     }
-    #[zbus(name = "Restart")]
-    async fn restart(&self, #[zbus(header)] header: Header<'_>) -> Result<(), ApiError> {
+
+    async fn restart(&self, #[zbus(header)] header: Header<'_>) -> Result<()> {
         self.unit(UnitCall::Restart, header).await
     }
-    #[zbus(name = "SetStartAtLogin")]
+
     async fn set_start_at_login(
         &self,
         enabled: bool,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
+    ) -> Result<()> {
         self.allowed(header).await?;
-        self.runtime
-            .set_start_at_login(enabled)
-            .map_err(|e| failed(e.to_string()))?;
-        let _ = self
-            .bus
-            .emit_signal(
-                None::<&str>,
-                OBJECT_PATH,
-                INTERFACE,
-                "RuntimeChanged",
-                &(self.runtime.snapshot(),),
-            )
+        self.runtime.set_start_at_login(enabled).map_err(failed)?;
+        self.emit("RuntimeChanged", &(self.runtime.snapshot(),))
             .await;
         Ok(())
     }
 
-    #[zbus(name = "AppIcon")]
     fn app_icon(&self, pkg: &str) -> String {
-        if package(pkg).is_err() {
+        if !ids::is_package_name(pkg) {
             return String::new();
         }
         for dir in &self.icon_dirs {
-            let path = dir.join(format!("{pkg}.png"));
-            let Ok(metadata) = fs::metadata(&path) else {
-                continue;
-            };
-            if metadata.len() > 512 * 1024 {
-                continue;
-            }
-            let Ok(data) = fs::read(path) else { continue };
-            if let Some(png) = deckard_core::png_guard::sanitize(&data, 512 * 1024, 192) {
-                return format!(
-                    "data:image/png;base64,{}",
-                    base64::engine::general_purpose::STANDARD.encode(png)
-                );
+            if let Some(png) = icon(&dir.join(format!("{pkg}.png"))) {
+                return png_uri(&png);
             }
         }
         String::new()
     }
 
-    #[zbus(name = "GetApp")]
-    async fn get_app(
-        &self,
-        pkg: &str,
-        #[zbus(header)] header: Header<'_>,
-    ) -> Result<VariantMap, ApiError> {
-        package(pkg)?;
-        Ok(contract::app(
-            &self
-                .request("app", json!({"pkg":pkg}), None, header)
-                .await?,
-        ))
+    async fn get_app(&self, pkg: &str, #[zbus(header)] header: Header<'_>) -> Result<VariantMap> {
+        valid(ids::is_package_name(pkg))?;
+        let reply = self
+            .request("app", json!({"pkg": pkg}), None, header)
+            .await?;
+        Ok(contract::app(&reply))
     }
-    #[zbus(name = "SetPermission")]
+
+    // `permission` is a Marathon permission; "notifications" is Android's
+    // per-app notification switch.
     async fn set_permission(
         &self,
         pkg: &str,
         permission: &str,
         granted: bool,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        package(pkg)?;
+    ) -> Result<()> {
+        valid(ids::is_package_name(pkg))?;
         let android = contract::permission(permission).ok_or_else(invalid)?;
-        if permission == "notifications" {
-            self.request(
-                "notifications",
-                json!({"pkg":pkg,"enabled":granted}),
-                Some(pkg),
-                header,
-            )
-            .await?;
-        } else {
-            self.request(
-                "perm",
-                json!({"pkg":pkg,"permissions":android,"granted":granted}),
-                Some(pkg),
-                header,
-            )
-            .await?;
-        }
-        Ok(())
+        let (op, args) = match permission {
+            "notifications" => ("notifications", json!({"enabled": granted})),
+            _ => ("perm", json!({"permissions": android, "granted": granted})),
+        };
+        self.change(op, pkg, args, header).await
     }
-    #[zbus(name = "GetPermissionApps")]
+
     async fn get_permission_apps(
         &self,
         permission: &str,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<Vec<VariantMap>, ApiError> {
+    ) -> Result<Vec<VariantMap>> {
         let android = contract::permission(permission).ok_or_else(invalid)?;
-        let (op, args) = if permission == "notifications" {
-            ("notif_apps", json!({}))
-        } else {
-            ("perm_apps", json!({"permissions":android}))
+        let (op, args) = match permission {
+            "notifications" => ("notif_apps", json!({})),
+            _ => ("perm_apps", json!({"permissions": android})),
         };
-        Ok(contract::apps(
-            &self.request(op, args, None, header).await?,
-            true,
-        ))
+        let reply = self.request(op, args, None, header).await?;
+        Ok(contract::apps(&reply, Fixed::Shown))
     }
-    #[zbus(name = "SetNotifications")]
+
     async fn set_notifications(
         &self,
         pkg: &str,
         enabled: bool,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        package(pkg)?;
-        self.request(
-            "notifications",
-            json!({"pkg":pkg,"enabled":enabled}),
-            Some(pkg),
-            header,
-        )
-        .await?;
-        Ok(())
+    ) -> Result<()> {
+        let args = json!({"enabled": enabled});
+        self.change("notifications", pkg, args, header).await
     }
-    #[zbus(name = "SetOpenLinks")]
+
     async fn set_open_links(
         &self,
         pkg: &str,
         enabled: bool,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        package(pkg)?;
-        self.request(
-            "links",
-            json!({"pkg":pkg,"enabled":enabled}),
-            Some(pkg),
-            header,
-        )
-        .await?;
-        Ok(())
+    ) -> Result<()> {
+        self.change("links", pkg, json!({"enabled": enabled}), header)
+            .await
     }
-    #[zbus(name = "SetBattery")]
+
     async fn set_battery(
         &self,
         pkg: &str,
         mode: &str,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        package(pkg)?;
-        choice(mode, &["unrestricted", "optimized"])?;
-        self.request("battery", json!({"pkg":pkg,"mode":mode}), Some(pkg), header)
-            .await?;
-        Ok(())
+    ) -> Result<()> {
+        valid(matches!(mode, "unrestricted" | "optimized"))?;
+        self.change("battery", pkg, json!({"mode": mode}), header)
+            .await
     }
-    #[zbus(name = "ForceStop")]
-    async fn force_stop(
-        &self,
-        pkg: &str,
-        #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        package(pkg)?;
-        self.request("stop", json!({"pkg":pkg}), Some(pkg), header)
-            .await?;
-        Ok(())
+
+    async fn force_stop(&self, pkg: &str, #[zbus(header)] header: Header<'_>) -> Result<()> {
+        self.change("stop", pkg, json!({}), header).await
     }
-    #[zbus(name = "ClearCache")]
-    async fn clear_cache(
-        &self,
-        pkg: &str,
-        #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        package(pkg)?;
-        self.request("cache", json!({"pkg":pkg}), Some(pkg), header)
-            .await?;
-        Ok(())
+
+    async fn clear_cache(&self, pkg: &str, #[zbus(header)] header: Header<'_>) -> Result<()> {
+        self.change("cache", pkg, json!({}), header).await
     }
-    #[zbus(name = "ClearData")]
-    async fn clear_data(
-        &self,
-        pkg: &str,
-        #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        package(pkg)?;
-        self.request("clear", json!({"pkg":pkg}), Some(pkg), header)
-            .await?;
-        Ok(())
+
+    async fn clear_data(&self, pkg: &str, #[zbus(header)] header: Header<'_>) -> Result<()> {
+        self.change("clear", pkg, json!({}), header).await
     }
-    #[zbus(name = "GetSpecialAccess")]
+
     async fn get_special_access(
         &self,
         kind: &str,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<Vec<VariantMap>, ApiError> {
-        choice(kind, contract::SPECIAL_KINDS)?;
-        Ok(contract::apps(
-            &self
-                .request("special", json!({"kind":kind}), None, header)
-                .await?,
-            false,
-        ))
+    ) -> Result<Vec<VariantMap>> {
+        valid(contract::SPECIAL_KINDS.contains(&kind))?;
+        let reply = self
+            .request("special", json!({"kind": kind}), None, header)
+            .await?;
+        Ok(contract::apps(&reply, Fixed::Hidden))
     }
-    #[zbus(name = "SetSpecialAccess")]
+
     async fn set_special_access(
         &self,
         kind: &str,
         pkg: &str,
         granted: bool,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        choice(kind, contract::SPECIAL_KINDS)?;
-        package(pkg)?;
-        self.request(
-            "special_set",
-            json!({"kind":kind,"pkg":pkg,"granted":granted}),
-            Some(pkg),
-            header,
-        )
-        .await?;
-        Ok(())
+    ) -> Result<()> {
+        valid(contract::SPECIAL_KINDS.contains(&kind))?;
+        let args = json!({"kind": kind, "granted": granted});
+        self.change("special_set", pkg, args, header).await
     }
-    #[zbus(name = "GetGoogleServices")]
-    async fn get_google_services(
-        &self,
-        #[zbus(header)] header: Header<'_>,
-    ) -> Result<VariantMap, ApiError> {
-        Ok(contract::google(
-            &self.request("gms", json!({}), None, header).await?,
-        ))
+
+    // microG (docs/microg.md).
+    async fn get_google_services(&self, #[zbus(header)] header: Header<'_>) -> Result<VariantMap> {
+        let reply = self.request("gms", json!({}), None, header).await?;
+        Ok(contract::google(&reply))
     }
-    #[zbus(name = "SetGoogleServices")]
+
     async fn set_google_services(
         &self,
         key: &str,
         enabled: bool,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        choice(key, &["enabled", "push"])?;
-        self.request(
-            "gms_set",
-            json!({"key":key,"enabled":enabled}),
-            None,
-            header,
-        )
-        .await?;
-        Ok(())
+    ) -> Result<()> {
+        valid(matches!(key, "enabled" | "push"))?;
+        let args = json!({"key": key, "enabled": enabled});
+        self.request("gms_set", args, None, header).await.map(drop)
     }
-    #[zbus(name = "OpenGoogleServices")]
+
+    // microG's window comes from Android, so the Shell is told to show it.
     async fn open_google_services(
         &self,
         page: &str,
         #[zbus(header)] header: Header<'_>,
-    ) -> Result<(), ApiError> {
-        choice(page, &["account", "selfcheck"])?;
-        self.request("gms_open", json!({"page":page}), None, header)
+    ) -> Result<()> {
+        valid(matches!(page, "account" | "selfcheck"))?;
+        self.request("gms_open", json!({"page": page}), None, header)
             .await?;
-        if let Ok(hint) =
-            Message::method_call("/org/marathonos/Shell/Navigation", "ExpectAppWindow")
-                .and_then(|builder| builder.destination("org.marathonos.Shell"))
-                .and_then(|builder| builder.interface("org.marathonos.Shell.Navigation1"))
-                .and_then(|builder| builder.with_flags(Flags::NoReplyExpected))
-                .and_then(|builder| builder.build(&("waydroid.com.google.android.gms",)))
-        {
-            let _ = self.bus.send(&hint).await;
-        }
+        let body = ("waydroid.com.google.android.gms",);
+        let _ = notify(&self.bus, NAVIGATION, "ExpectAppWindow", &body).await;
         Ok(())
     }
-    #[zbus(name = "ResetAndroid")]
-    async fn reset_android(&self, #[zbus(header)] header: Header<'_>) -> Result<(), ApiError> {
+
+    async fn reset_android(&self, #[zbus(header)] header: Header<'_>) -> Result<()> {
         self.allowed(header).await?;
-        let helper = if let Some(value) =
-            std::env::var_os("DECKARD_RESET_HELPER").filter(|value| !value.is_empty())
-        {
-            vec![PathBuf::from(value)]
-        } else if PathBuf::from("/usr/libexec/deckard-reset").exists() {
-            vec![
-                PathBuf::from("pkexec"),
-                PathBuf::from("/usr/libexec/deckard-reset"),
-            ]
-        } else {
-            Vec::new()
+        let helper = match env::var_os("DECKARD_RESET_HELPER").filter(|value| !value.is_empty()) {
+            Some(helper) => vec![PathBuf::from(helper)],
+            None if Path::new(RESET_HELPER).exists() => vec!["pkexec".into(), RESET_HELPER.into()],
+            None => Vec::new(),
         };
-        self.runtime
-            .request_reset(!helper.is_empty())
-            .map_err(|error| {
-                failed(match error {
-                    ResetError::AlreadyResetting => "Android is already being reset",
-                    _ => "Resetting Android isn't available",
-                })
-            })?;
-        if self.runtime.state() != State::Stopped {
-            if let Err(error) = runtime::call_unit(&self.bus, UnitCall::Stop).await {
-                self.runtime.finish_reset();
-                return Err(failed(error.to_string()));
-            }
-            let deadline = Instant::now() + Duration::from_secs(90);
-            while self.runtime.state() != State::Stopped {
-                if Instant::now() >= deadline {
-                    self.runtime.finish_reset();
-                    return Err(failed("Android didn't stop"));
-                }
-                async_io::Timer::after(Duration::from_millis(100)).await;
-            }
+        let request = self.runtime.request_reset(!helper.is_empty());
+        request.map_err(|error| match error {
+            ResetError::AlreadyResetting => failed("Android is already being reset"),
+            _ => failed("Resetting Android isn't available"),
+        })?;
+        if let Err(error) = self.stop_android().await {
+            self.runtime.finish_reset();
+            return Err(error);
         }
-        let (tx, rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let mut command = Command::new(&helper[0]);
-            command.args(&helper[1..]).stdin(Stdio::null());
-            let result = command.spawn().and_then(|mut child| {
-                let deadline = Instant::now() + Duration::from_secs(300);
-                loop {
-                    if let Some(status) = child.try_wait()? {
-                        break Ok(status.success());
-                    }
-                    if Instant::now() >= deadline {
-                        child.kill()?;
-                        let _ = child.wait();
-                        break Ok(false);
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            });
-            let _ = tx.send_blocking(result.unwrap_or(false));
-        });
-        let success = rx.recv().await.unwrap_or(false);
+        let success = blocking::unblock(move || run_helper(&helper)).await;
         self.runtime.finish_reset();
         if success {
-            Ok(())
-        } else {
-            Err(failed("Resetting Android failed"))
+            return Ok(());
         }
+        Err(failed("Resetting Android failed"))
     }
 
-    #[zbus(signal, name = "RuntimeChanged")]
-    async fn runtime_changed(
-        signal_context: &zbus::object_server::SignalEmitter<'_>,
-        runtime: VariantMap,
-    ) -> zbus::Result<()>;
-    #[zbus(signal, name = "AppChanged")]
-    async fn app_changed(
-        signal_context: &zbus::object_server::SignalEmitter<'_>,
-        pkg: &str,
-    ) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn runtime_changed(emitter: &SignalEmitter<'_>, runtime: VariantMap) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn app_changed(emitter: &SignalEmitter<'_>, pkg: &str) -> zbus::Result<()>;
 }

@@ -413,7 +413,7 @@ dependencies = [
  "async-io",
  "deckard-core",
  "futures-lite",
- "regex",
+ "getrandom",
  "serde_json",
  "tempfile",
  "zbus",
