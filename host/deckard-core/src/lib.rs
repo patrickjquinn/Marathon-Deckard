@@ -6,6 +6,7 @@ pub mod notification_state;
 pub mod palette;
 pub mod png_guard;
 pub mod runtime_state;
+pub mod sync;
 pub mod text;
 pub mod transport;
 pub mod validate;

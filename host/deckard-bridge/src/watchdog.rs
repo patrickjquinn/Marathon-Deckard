@@ -7,7 +7,7 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,6 +15,7 @@ use deckard_core::runtime_state::{
     BOOT_TIMEOUT_MS, BootCommand, EVIDENCE_TIMEOUT_MS, FollowCommand, SHELL_BUS_NAME,
     SessionFollower,
 };
+use deckard_core::sync;
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::{MatchRule, message};
 
@@ -171,15 +172,6 @@ fn log_evidence(output: impl Read) {
     let _ = io::copy(&mut output, &mut io::sink());
 }
 
-/// # Panics
-/// If a settle thread panicked while holding the follower.
-fn lock(follower: &Mutex<SessionFollower>) -> MutexGuard<'_, SessionFollower> {
-    match follower.lock() {
-        Ok(follower) => follower,
-        Err(_) => panic!("session follower lock poisoned"),
-    }
-}
-
 /// Calls `restart` once the Shell's bus name returns after it was lost,
 /// since the composer HAL aborts with its Wayland server. A Shell crash loop
 /// restarts Android at most once every 30 s.
@@ -207,7 +199,7 @@ pub fn follow_shell(
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let commands = lock(&follower).on_name_owner_changed(&name, !owner.is_empty(), now);
+        let commands = sync::lock(&follower).on_name_owner_changed(&name, !owner.is_empty(), now);
         for command in commands {
             let FollowCommand::ScheduleSettle { timer, after_ms } = command else {
                 continue;
@@ -216,7 +208,7 @@ pub fn follow_shell(
             let restart = Arc::clone(&restart);
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(after_ms));
-                let settled = lock(&follower).on_settle_timeout(timer);
+                let settled = sync::lock(&follower).on_settle_timeout(timer);
                 if settled.contains(&FollowCommand::RestartUnit) {
                     eprintln!(
                         "deckard-bridge: the Shell restarted; restarting the Android session"

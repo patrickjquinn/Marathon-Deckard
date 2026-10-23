@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use deckard_core::runtime_state::{ResetError, RuntimeState, State, UnitCall};
+use deckard_core::sync;
 use serde_json::Value;
 use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
@@ -28,13 +29,8 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// # Panics
-    /// If a thread panicked while holding the state, which leaves it unknown.
     fn lock(&self) -> MutexGuard<'_, RuntimeState> {
-        match self.state.lock() {
-            Ok(state) => state,
-            Err(_) => panic!("runtime state lock poisoned"),
-        }
+        sync::lock(&self.state)
     }
 
     pub fn new(policy: PathBuf, applications: PathBuf, memory: PathBuf) -> Self {
