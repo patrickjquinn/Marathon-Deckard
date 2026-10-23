@@ -61,6 +61,66 @@ impl Lxc {
         self.command("lxc-unfreeze", &[])
     }
 
+    pub fn get_property_command(&self, key: &str) -> Result<CommandSpec> {
+        validate_property_key(key)?;
+        Ok(self.property_command("/system/bin/getprop", &[key]))
+    }
+
+    pub fn set_property_command(&self, key: &str, value: &str) -> Result<CommandSpec> {
+        validate_property_key(key)?;
+        validate_property_value(value)?;
+        Ok(self.property_command("/system/bin/setprop", &[key, value]))
+    }
+
+    fn property_command(&self, program: &str, args: &[&str]) -> CommandSpec {
+        let mut command = self.command("lxc-attach", &["--clear-env", "--", program]);
+        command
+            .args
+            .extend(args.iter().map(|arg| (*arg).to_owned()));
+        command.with_timeout(Duration::from_secs(3))
+    }
+
+    pub fn get_property(&self, runner: &mut impl Runner, key: &str) -> Result<String> {
+        let command = self.get_property_command(key)?;
+        self.with_running(runner, |runner| {
+            runner
+                .run(command)
+                .map(|value| value.trim_end_matches(['\r', '\n']).to_owned())
+        })
+    }
+
+    pub fn set_property(&self, runner: &mut impl Runner, key: &str, value: &str) -> Result<()> {
+        let command = self.set_property_command(key, value)?;
+        self.with_running(runner, |runner| runner.run(command).map(|_| ()))
+    }
+
+    fn with_running<R: Runner, T>(
+        &self,
+        runner: &mut R,
+        action: impl FnOnce(&mut R) -> Result<T>,
+    ) -> Result<T> {
+        let state = self.status(runner)?;
+        if state == State::Stopped {
+            return Err(Error::Invalid("container is stopped".into()));
+        }
+        if state == State::Frozen {
+            self.unfreeze(runner)?;
+        }
+        let result = action(runner);
+        if state == State::Frozen {
+            let refreeze = self.freeze(runner);
+            return match (result, refreeze) {
+                (Ok(value), Ok(())) => Ok(value),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Err(operation), Err(refreeze)) => Err(Error::Command(format!(
+                    "property operation failed: {operation}; refreeze failed: {refreeze}"
+                ))),
+            };
+        }
+        result
+    }
+
     pub fn status(&self, runner: &mut impl Runner) -> Result<State> {
         match runner.run(self.status_command())?.trim() {
             "STOPPED" => Ok(State::Stopped),
@@ -120,6 +180,32 @@ impl Lxc {
         runner.run(self.unfreeze_command())?;
         self.wait_for(runner, State::Running, Duration::from_secs(10))
     }
+}
+
+pub fn validate_property_key(key: &str) -> Result<()> {
+    if key.is_empty()
+        || key.len() > 128
+        || key.starts_with(['.', '-'])
+        || key.ends_with('.')
+        || key.contains("..")
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(Error::Invalid("invalid Android property key".into()));
+    }
+    Ok(())
+}
+
+pub fn validate_property_value(value: &str) -> Result<()> {
+    if value.len() > 1024
+        || value
+            .bytes()
+            .any(|byte| byte == 0 || byte == b'\n' || byte == b'\r')
+    {
+        return Err(Error::Invalid("invalid property value".into()));
+    }
+    Ok(())
 }
 
 fn require_config(path: &Path) -> Result<()> {
@@ -213,6 +299,55 @@ mod tests {
         lxc.stop(&mut runner)?;
         assert!(runner.expected.is_empty());
         fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn property_commands_are_direct_bounded_lxc_attach() -> Result<()> {
+        let lxc = Lxc::new("/var/lib/deckard/lxc".into(), "deckard".into())?;
+        let get = lxc.get_property_command("sys.boot_completed")?;
+        assert_eq!(get.program, "lxc-attach");
+        assert_eq!(
+            get.args,
+            [
+                "-P",
+                "/var/lib/deckard/lxc",
+                "-n",
+                "deckard",
+                "--clear-env",
+                "--",
+                "/system/bin/getprop",
+                "sys.boot_completed"
+            ]
+        );
+        assert_eq!(get.timeout, Some(Duration::from_secs(3)));
+        let set = lxc.set_property_command("persist.deckard.test", "ready")?;
+        assert_eq!(set.args.last().map(String::as_str), Some("ready"));
+        assert!(lxc.get_property_command("bad;key").is_err());
+        assert!(
+            lxc.set_property_command("persist.deckard.test", "bad\nvalue")
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn property_read_restores_frozen_state() -> Result<()> {
+        let lxc = Lxc::new("/var/lib/deckard/lxc".into(), "deckard".into())?;
+        let mut runner = FakeRunner {
+            expected: VecDeque::from([
+                ("lxc-info", "FROZEN"),
+                ("lxc-info", "FROZEN"),
+                ("lxc-unfreeze", ""),
+                ("lxc-info", "RUNNING"),
+                ("lxc-attach", "1\n"),
+                ("lxc-info", "RUNNING"),
+                ("lxc-freeze", ""),
+                ("lxc-info", "FROZEN"),
+            ]),
+        };
+        assert_eq!(lxc.get_property(&mut runner, "sys.boot_completed")?, "1");
+        assert!(runner.expected.is_empty());
         Ok(())
     }
 }

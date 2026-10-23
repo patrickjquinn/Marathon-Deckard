@@ -1,7 +1,7 @@
 //! Uninstalled system-bus adapter for the installed ContainerManager contract.
 
 use crate::command::ProcessRunner;
-use crate::lxc::State;
+use crate::lxc::{State, validate_property_key, validate_property_value};
 use crate::manager::ContainerManager;
 use crate::{Error, Result};
 use rustix::fd::OwnedFd;
@@ -73,6 +73,8 @@ trait Backend: Send {
     fn freeze(&mut self) -> Result<()>;
     fn unfreeze(&mut self) -> Result<()>;
     fn status(&mut self) -> Result<State>;
+    fn get_property(&mut self, key: &str) -> Result<String>;
+    fn set_property(&mut self, key: &str, value: &str) -> Result<()>;
 }
 
 struct DirectBackend(ContainerManager);
@@ -96,6 +98,14 @@ impl Backend for DirectBackend {
 
     fn status(&mut self) -> Result<State> {
         self.0.lxc.status(&mut ProcessRunner)
+    }
+
+    fn get_property(&mut self, key: &str) -> Result<String> {
+        self.0.lxc.get_property(&mut ProcessRunner, key)
+    }
+
+    fn set_property(&mut self, key: &str, value: &str) -> Result<()> {
+        self.0.lxc.set_property(&mut ProcessRunner, key, value)
     }
 }
 
@@ -227,6 +237,55 @@ impl ContainerService {
         })
         .await
     }
+
+    async fn get_property_authorized(&self, key: String, caller: Caller) -> fdo::Result<String> {
+        authorize_root(caller)?;
+        validate_property_key(&key).map_err(invalid_argument)?;
+        let state = self.state.clone();
+        blocking::unblock(move || {
+            let mut state = state
+                .lock()
+                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
+            state.backend.get_property(&key).map_err(service_error)
+        })
+        .await
+    }
+
+    async fn set_property_authorized(
+        &self,
+        key: String,
+        value: String,
+        caller: Caller,
+    ) -> fdo::Result<()> {
+        authorize_root(caller)?;
+        validate_property_key(&key).map_err(invalid_argument)?;
+        validate_property_value(&value).map_err(invalid_argument)?;
+        let state = self.state.clone();
+        blocking::unblock(move || {
+            let mut state = state
+                .lock()
+                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
+            state
+                .backend
+                .set_property(&key, &value)
+                .map_err(service_error)
+        })
+        .await
+    }
+}
+
+fn authorize_root(caller: Caller) -> fdo::Result<()> {
+    if caller.uid == 0 {
+        Ok(())
+    } else {
+        Err(fdo::Error::AccessDenied(
+            "property access requires root".into(),
+        ))
+    }
+}
+
+fn invalid_argument(error: Error) -> fdo::Error {
+    fdo::Error::InvalidArgs(error.to_string())
 }
 
 fn authorize_control(session: Option<&Session>, caller: Caller) -> fdo::Result<()> {
@@ -291,6 +350,27 @@ impl ContainerService {
         let caller = Self::caller(conn, &header).await?;
         self.get_session_authorized(caller).await
     }
+
+    async fn get_property(
+        &self,
+        key: String,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] header: Header<'_>,
+    ) -> fdo::Result<String> {
+        let caller = Self::caller(conn, &header).await?;
+        self.get_property_authorized(key, caller).await
+    }
+
+    async fn set_property(
+        &self,
+        key: String,
+        value: String,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] header: Header<'_>,
+    ) -> fdo::Result<()> {
+        let caller = Self::caller(conn, &header).await?;
+        self.set_property_authorized(key, value, caller).await
+    }
 }
 
 pub async fn serve_system_bus(manager: ContainerManager) -> zbus::Result<Connection> {
@@ -353,6 +433,26 @@ mod tests {
         fn status(&mut self) -> Result<State> {
             Ok(State::Running)
         }
+        fn get_property(&mut self, key: &str) -> Result<String> {
+            if key != "sys.boot_completed" {
+                return Err(Error::Invalid("unexpected test property".into()));
+            }
+            self.0
+                .lock()
+                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .push("get_property");
+            Ok("1".into())
+        }
+        fn set_property(&mut self, key: &str, value: &str) -> Result<()> {
+            if key != "persist.deckard.test" || value != "ready" {
+                return Err(Error::Invalid("unexpected test property".into()));
+            }
+            self.0
+                .lock()
+                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .push("set_property");
+            Ok(())
+        }
     }
 
     #[test]
@@ -399,6 +499,19 @@ mod tests {
             bad.insert("pid".into(), (pid + 1).to_string());
             let rejected: zbus::Result<()> = proxy.call("Start", &(bad,)).await;
             assert!(rejected.is_err());
+            if uid != 0 {
+                let denied_get: zbus::Result<String> = proxy
+                    .call("GetProperty", &(String::from("sys.boot_completed"),))
+                    .await;
+                assert!(denied_get.is_err());
+                let denied_set: zbus::Result<()> = proxy
+                    .call(
+                        "SetProperty",
+                        &(String::from("persist.deckard.test"), String::from("ready")),
+                    )
+                    .await;
+                assert!(denied_set.is_err());
+            }
             let _: () = proxy.call("Start", &(fields.clone(),)).await?;
             let session: HashMap<String, String> = proxy.call("GetSession", &()).await?;
             assert_eq!(session.get("pid"), Some(&pid.to_string()));
@@ -460,6 +573,68 @@ mod tests {
     }
 
     #[test]
+    fn native_property_path_requires_root_and_validates_inputs() -> fdo::Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        let non_root = Caller {
+            uid: 1000,
+            pid: 123,
+        };
+        let root = Caller { uid: 0, pid: 1 };
+        async_io::block_on(async {
+            assert!(
+                service
+                    .get_property_authorized("sys.boot_completed".into(), non_root)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                service
+                    .set_property_authorized(
+                        "persist.deckard.test".into(),
+                        "ready".into(),
+                        non_root
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(
+                service
+                    .get_property_authorized("bad;key".into(), root)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                service
+                    .set_property_authorized(
+                        "persist.deckard.test".into(),
+                        "bad\nvalue".into(),
+                        root
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                service
+                    .get_property_authorized("sys.boot_completed".into(), root)
+                    .await?,
+                "1"
+            );
+            service
+                .set_property_authorized("persist.deckard.test".into(), "ready".into(), root)
+                .await?;
+            Ok::<(), fdo::Error>(())
+        })?;
+        assert_eq!(
+            *calls
+                .lock()
+                .map_err(|_| fdo::Error::Failed("record lock poisoned".into()))?,
+            ["get_property", "set_property"]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn invalid_session_identity_is_rejected() {
         for fields in [
             HashMap::new(),
@@ -492,11 +667,25 @@ mod tests {
             fn status(&mut self) -> Result<State> {
                 Ok(State::Stopped)
             }
+            fn get_property(&mut self, _key: &str) -> Result<String> {
+                Ok(String::new())
+            }
+            fn set_property(&mut self, _key: &str, _value: &str) -> Result<()> {
+                Ok(())
+            }
         }
         let service = ContainerService::with_backend(Box::new(InertBackend));
         let mut xml = String::new();
         service.introspect_to_writer(&mut xml, 0);
-        for method in ["Start", "Stop", "Freeze", "Unfreeze", "GetSession"] {
+        for method in [
+            "Start",
+            "Stop",
+            "Freeze",
+            "Unfreeze",
+            "GetSession",
+            "GetProperty",
+            "SetProperty",
+        ] {
             assert!(
                 xml.contains(&format!("name=\"{method}\"")),
                 "missing {method}: {xml}"
