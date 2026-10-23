@@ -1,0 +1,29 @@
+[package]
+name = "deckard-mpris"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+deckard-core = { path = "../deckard-core" }
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+serde_json = "=1.0.154"
+tempfile = "=3.27.0"
+zbus = { version = "=5.19.0", default-features = false, features = ["blocking-api", "async-io"] }
+
+[dev-dependencies]
+base64 = "=0.23.1"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+todo = "deny"
+unimplemented = "deny"
