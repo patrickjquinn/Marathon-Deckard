@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 
 use async_channel::Receiver;
 use async_io::Timer;
-use deckard_core::{ids, text, validate};
+use deckard_core::{ids, validate};
 use futures_lite::{StreamExt, future};
 use percent_encoding::CONTROLS;
 use regex::Regex;
@@ -284,7 +284,7 @@ fn point(text: &str) -> Option<Map<String, Value>> {
         return None;
     }
     let mut args = object(json!({"lat": lat, "lon": lon}));
-    let name = text::truncate(captures.get(3).map_or("", |name| name.as_str()), 256);
+    let name = validate::truncate(captures.get(3).map_or("", |name| name.as_str()), 256);
     if !name.is_empty() {
         args.insert("name".into(), name.into());
     }
@@ -318,7 +318,7 @@ pub fn request_id(id: &str) -> bool {
 pub fn safe_name(path: &str) -> String {
     let base = path.rsplit('/').next().unwrap_or("");
     let kept: String = base.chars().filter(|c| *c >= ' ' && *c != '\\').collect();
-    match text::truncate(&kept, 200).trim() {
+    match validate::truncate(&kept, 200).trim() {
         "" | "." | ".." => "file".into(),
         name => name.into(),
     }

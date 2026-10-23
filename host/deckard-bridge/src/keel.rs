@@ -15,9 +15,9 @@ use std::time::Duration;
 
 use async_executor::{Executor, Task};
 use async_io::Timer;
-use deckard_core::keel::{self, APP_ID_PREFIX, App, Manifest, Shortcut, string};
-use deckard_core::text::truncate;
-use deckard_core::validate::clean_text;
+use deckard_core::json;
+use deckard_core::keel::{self, APP_ID_PREFIX, App, Manifest, Shortcut};
+use deckard_core::validate::truncate;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::{StreamExt, future};
 use serde_json::{Map, Value, json};
@@ -283,21 +283,23 @@ impl KeelApps {
     /// A message from DeckardBridge (`User`) or DeckardSystem (`System`), in
     /// wire order; other types are ignored.
     pub fn handle(&self, route: BridgeRoute, message: &Map<String, Value>) {
-        let kind = string(message, "t");
+        let kind = json::string(message, "t");
         let change = match (route, kind) {
             (BridgeRoute::User, "app_info") => match keel::app(message) {
                 Some(app) => Change::App(app),
                 None => return eprintln!("deckard-bridge: keel: app_info refused: bad package"),
             },
-            (BridgeRoute::User, "app_gone") => Change::Gone(string(message, "pkg").to_owned()),
+            (BridgeRoute::User, "app_gone") => {
+                Change::Gone(json::string(message, "pkg").to_owned())
+            }
             (BridgeRoute::User, "app_list") => {
-                let listed = keel::array(message, "pkgs")
+                let listed = json::array(message, "pkgs")
                     .iter()
                     .filter_map(Value::as_str);
                 Change::List(listed.map(str::to_owned).collect())
             }
-            (BridgeRoute::System, "keel_changed") if self.0.known(string(message, "pkg")) => {
-                return self.0.refresh_shortcuts(string(message, "pkg"));
+            (BridgeRoute::System, "keel_changed") if self.0.known(json::string(message, "pkg")) => {
+                return self.0.refresh_shortcuts(json::string(message, "pkg"));
             }
             (BridgeRoute::User, _) | (BridgeRoute::System, "keel_done") => {
                 return self.0.complete(route, message);
@@ -329,7 +331,7 @@ async fn refresher(shared: Weak<Shared>, pkgs: async_channel::Receiver<String>) 
             .request(BridgeRoute::System, keel_op("shortcuts", &pkg))
             .await;
         if let Some(reply) = reply.ok().filter(ok) {
-            let shortcuts = keel::shortcuts(keel::array(&reply, "shortcuts"));
+            let shortcuts = keel::shortcuts(json::array(&reply, "shortcuts"));
             shared.change(Change::Shortcuts(pkg, shortcuts));
         }
     }
@@ -648,7 +650,7 @@ impl Shared {
             return Err(unavailable("the phone is locked"));
         }
         let lit = state.get("screenOn").and_then(Value::as_bool) == Some(true);
-        if need == Need::InFront && !(lit && string(&state, "foregroundApp") == id) {
+        if need == Need::InFront && !(lit && json::string(&state, "foregroundApp") == id) {
             let why = format!("{label} is not on screen: open it first with app.show");
             return Err(unavailable(why));
         }
@@ -661,7 +663,7 @@ impl Shared {
                 Timer::after(WINDOW_POLL).await;
             }
             let running = self.shell("apps.running", json!({})).await?;
-            if keel::array(&running, "result")
+            if json::array(&running, "result")
                 .iter()
                 .any(|app| app["id"] == id)
             {
@@ -675,7 +677,7 @@ impl Shared {
         let reply = self.request(route, launch).await.map_err(unavailable)?;
         match ok(&reply) {
             true => Ok(()),
-            false => Err(Error::Failed(clean_text(string(&reply, "error"), 256))),
+            false => Err(Error::Failed(json::text(&reply, "error", 256))),
         }
     }
 
@@ -712,7 +714,7 @@ impl Shared {
         let reply = self.request(BridgeRoute::User, ask).await;
         let reply = reply.map_err(unavailable)?;
         if !ok(&reply) {
-            let why = clean_text(string(&reply, "error"), 256);
+            let why = json::text(&reply, "error", 256);
             let why = Some(why).filter(|why| !why.is_empty());
             return Err(unavailable(
                 why.unwrap_or_else(|| "the screen cannot be read".into()),
@@ -819,7 +821,7 @@ impl Shared {
             return Err(invalid(why));
         }
         eprintln!("deckard-bridge: keel: {} {action}", keel::app_id(pkg));
-        let arg = |key: &str| string(args, key);
+        let arg = |key: &str| json::string(args, key);
         let launch = match action {
             "app.show" if arg("link").trim().is_empty() => {
                 self.shell("app.launch", json!({"id": keel::app_id(pkg)}))

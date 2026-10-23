@@ -2,7 +2,7 @@
 //! what DeckardBridge reports about an app, the Keel manifest it is served
 //! with, and the screen text Pilot reads.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::LazyLock;
 
@@ -10,11 +10,10 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::ids::is_package_name;
-use crate::validate::{clean_text, label, simplified};
+use crate::ids;
+use crate::json;
+use crate::validate;
 
-/// The `_meta` key prefix of a Keel tool.
-pub const META: &str = "org.shipwright.keel/";
 /// The prefix of an Android app's id in the shell and its Keel bus name.
 pub const APP_ID_PREFIX: &str = "waydroid.";
 
@@ -48,12 +47,13 @@ static SCHEME: LazyLock<Regex> = LazyLock::new(|| pattern(r"^[a-z][a-z0-9+.-]{0,
 static HOST: LazyLock<Regex> = LazyLock::new(|| pattern(r"^[a-z0-9*][a-z0-9.*-]{0,252}$"));
 static LINK: LazyLock<Regex> =
     LazyLock::new(|| pattern(r"^([A-Za-z][A-Za-z0-9+.-]{0,31}):[^ \t\n\x0B\x0C\r]+$"));
-/// Schemes that would reach files, other apps' data or code, not an app's links.
+/// Schemes that reach files, other apps' data or code, not an app's links.
 static BLOCKED: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
         r"^(?:file|content|javascript|data|intent|android-app|about|jar|blob|android\.resource)$",
     )
 });
+/// Shortcut labels that act at once or touch money, messages or data.
 static RISKY: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
         r"(?i)(?-u:\b)(delete|remove|erase|wipe|clear|reset|send|pay|payment|buy|order|purchase|transfer|call|dial|post|publish|record|uninstall|block|report|sign out|log out|logout)(?-u:\b)",
@@ -61,7 +61,7 @@ static RISKY: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Node flags as DeckardBridge's `ScreenReader` sends them.
-pub mod flags {
+mod flags {
     pub const CLICKABLE: i64 = 1;
     pub const LONG_CLICKABLE: i64 = 2;
     pub const EDITABLE: i64 = 4;
@@ -113,24 +113,13 @@ pub struct Manifest {
     pub shortcuts: HashMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Node {
-    pub index: i64,
-    pub depth: i64,
-    pub class: String,
-    pub text: String,
-    pub desc: String,
-    pub hint: String,
-    pub view_id: String,
-    pub flags: i64,
-}
-
+/// A validated `screen` reply, one rendered line per node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Screen {
     pub pkg: String,
     pub snapshot: i64,
     pub title: String,
-    pub nodes: Vec<Node>,
+    lines: Vec<String>,
 }
 
 /// A screen as text, at most the asked length.
@@ -151,23 +140,6 @@ fn units(value: &str) -> usize {
     value.encode_utf16().count()
 }
 
-/// The string at `key`, or empty.
-pub fn string<'a>(object: &'a Map<String, Value>, key: &str) -> &'a str {
-    object.get(key).and_then(Value::as_str).unwrap_or("")
-}
-
-fn text(object: &Map<String, Value>, key: &str, max_units: usize) -> String {
-    clean_text(string(object, key), max_units)
-}
-
-/// The array at `key`, or none.
-pub fn array<'a>(object: &'a Map<String, Value>, key: &str) -> &'a [Value] {
-    object
-        .get(key)
-        .and_then(Value::as_array)
-        .map_or(&[], Vec::as_slice)
-}
-
 /// A JSON number that is a whole `i32`, as Qt's `toInt` reads it.
 fn int(object: &Map<String, Value>, key: &str) -> Option<i64> {
     let value = object.get(key)?.as_f64()?;
@@ -176,79 +148,87 @@ fn int(object: &Map<String, Value>, key: &str) -> Option<i64> {
     whole.then_some(value as i64)
 }
 
-fn scheme_allowed(scheme: &str) -> bool {
-    !BLOCKED.is_match(scheme)
-}
-
 /// The shell's app id, and the Keel bus name, of `pkg`.
+#[must_use]
 pub fn app_id(pkg: &str) -> String {
     format!("{APP_ID_PREFIX}{pkg}")
 }
 
 /// Validates an `app_info` (or an `apps.json` entry). `None` for a bad
 /// package name or one of Deckard's own.
+#[must_use]
 pub fn app(message: &Map<String, Value>) -> Option<App> {
-    let pkg = string(message, "pkg");
-    if !is_package_name(pkg)
+    let pkg = json::string(message, "pkg");
+    if !ids::is_package_name(pkg)
         || units(&app_id(pkg)) > 255
         || pkg.starts_with("org.marathonos.deckard.")
     {
         return None;
     }
-    let mut seen = HashSet::new();
     let mut links = Vec::new();
-    let declared = array(message, "links").iter().filter_map(Value::as_object);
+    let declared = json::array(message, "links")
+        .iter()
+        .filter_map(Value::as_object);
     for link in declared {
         let link = Link {
-            scheme: string(link, "s").to_lowercase(),
-            host: string(link, "h").to_lowercase(),
+            scheme: json::string(link, "s").to_lowercase(),
+            host: json::string(link, "h").to_lowercase(),
         };
         let valid = SCHEME.is_match(&link.scheme)
-            && scheme_allowed(&link.scheme)
+            && !BLOCKED.is_match(&link.scheme)
             && (link.host.is_empty() || HOST.is_match(&link.host));
-        if valid && links.len() < MAX_LINKS && seen.insert(format!("{}:{}", link.scheme, link.host))
-        {
+        if valid && links.len() < MAX_LINKS && !links.contains(&link) {
             links.push(link);
         }
     }
-    let search = Some(string(message, "search")).filter(|mode| matches!(*mode, "gms" | "android"));
-    let label = Some(label(string(message, "label"))).filter(|label| !label.is_empty());
+    let search = json::string(message, "search");
+    let label = validate::label(json::string(message, "label"));
     Some(App {
         pkg: pkg.to_owned(),
-        label: label.unwrap_or_else(|| pkg.to_owned()),
+        label: if label.is_empty() {
+            pkg.to_owned()
+        } else {
+            label
+        },
         links,
-        share: message.get("share").and_then(Value::as_bool) == Some(true),
-        search: search.unwrap_or("").to_owned(),
-        shortcuts: shortcuts(array(message, "shortcuts")),
+        share: json::boolean(message, "share"),
+        search: if matches!(search, "gms" | "android") {
+            search.to_owned()
+        } else {
+            String::new()
+        },
+        shortcuts: shortcuts(json::array(message, "shortcuts")),
     })
 }
 
 /// Validates a shortcut list: ids go back to Android as they came, so an id
 /// that needs cleaning is dropped, not rewritten.
+#[must_use]
 pub fn shortcuts(list: &[Value]) -> Vec<Shortcut> {
-    let mut ids = HashSet::new();
     let mut out = Vec::new();
     let listed = list.iter().filter_map(Value::as_object);
     for shortcut in listed {
-        let id = string(shortcut, "id");
-        let label = simplified(&text(shortcut, "label", 64));
-        let clean = !id.is_empty() && units(id) <= 128 && clean_text(id, 128) == id;
-        if !clean || label.is_empty() || out.len() >= MAX_SHORTCUTS || !ids.insert(id) {
+        let id = json::string(shortcut, "id");
+        let label = validate::simplified(&json::text(shortcut, "label", 64));
+        let clean = !id.is_empty() && units(id) <= 128 && validate::clean_text(id, 128) == id;
+        let taken = out.iter().any(|known: &Shortcut| known.id == id);
+        if !clean || label.is_empty() || out.len() >= MAX_SHORTCUTS || taken {
             continue;
         }
         out.push(Shortcut {
             id: id.to_owned(),
             label,
-            long_label: simplified(&text(shortcut, "long", 256)),
+            long_label: validate::simplified(&json::text(shortcut, "long", 256)),
         });
     }
     out
 }
 
 /// The Keel action a shortcut becomes: `shortcut.<word>`, unique in `taken`.
-pub fn shortcut_action(id: &str, taken: &[String]) -> String {
+fn shortcut_action(id: &str, taken: &[String]) -> String {
     let mut word = String::new();
-    for character in id.to_lowercase().chars() {
+    let lower = id.to_lowercase();
+    for character in lower.chars() {
         if character.is_ascii_lowercase() || character.is_ascii_digit() {
             word.push(character);
         } else if !word.is_empty() && !word.ends_with('_') {
@@ -268,11 +248,6 @@ pub fn shortcut_action(id: &str, taken: &[String]) -> String {
         n += 1;
     }
     action
-}
-
-/// Whether a shortcut acts at once or touches money, messages or data.
-pub fn needs_confirmation(label: &str) -> bool {
-    RISKY.is_match(label)
 }
 
 /// The host of a `scheme://authority` URI, without user info or port.
@@ -301,11 +276,11 @@ pub fn link_allowed(uri: &str) -> Result<(), String> {
     };
     // The shape has no whitespace, so cleaning changes it only for a control
     // or format character.
-    if clean_text(uri, 2048) != uri {
+    if validate::clean_text(uri, 2048) != uri {
         return Err("link has control characters".into());
     }
     let scheme = scheme.to_lowercase();
-    if !scheme_allowed(&scheme) {
+    if BLOCKED.is_match(&scheme) {
         return Err(format!("{scheme}: links are not opened in apps"));
     }
     let rest = &uri[scheme.len() + 1..];
@@ -365,6 +340,7 @@ fn tool(app_id: &str, action: &str, hints: u8, mut spec: Value) -> Value {
 }
 
 /// The Keel manifest `Describe` answers for `app`.
+#[must_use]
 pub fn manifest(app: &App) -> Manifest {
     let id = app_id(&app.pkg);
     let label = &app.label;
@@ -419,7 +395,7 @@ pub fn manifest(app: &App) -> Manifest {
     let mut shortcuts = HashMap::new();
     for shortcut in &app.shortcuts {
         let action = shortcut_action(&shortcut.id, &actions);
-        let risky = needs_confirmation(&format!("{} {}", shortcut.label, shortcut.long_label));
+        let risky = RISKY.is_match(&format!("{} {}", shortcut.label, shortcut.long_label));
         let what = Some(&shortcut.long_label).filter(|long| !long.is_empty());
         let what = what.unwrap_or(&shortcut.label);
         let (hints, confirm) = match risky {
@@ -482,13 +458,11 @@ pub fn manifest(app: &App) -> Manifest {
 
 /// Checks Invoke's arguments against a tool's input schema, whose every
 /// parameter is a bounded string. `None` when they fit.
+#[must_use]
 pub fn invalid(schema: &Value, args: &Map<String, Value>) -> Option<String> {
     for (name, value) in args {
         let Some(property) = schema["properties"].get(name) else {
-            return Some(format!(
-                "unknown argument {}",
-                crate::text::truncate(name, 64)
-            ));
+            return Some(format!("unknown argument {}", validate::truncate(name, 64)));
         };
         let max = property["maxLength"].as_u64().unwrap_or(0);
         if value.as_str().is_none_or(|value| units(value) as u64 > max) {
@@ -498,65 +472,52 @@ pub fn invalid(schema: &Value, args: &Map<String, Value>) -> Option<String> {
         }
     }
     let required = schema["required"].as_array().map_or(&[][..], Vec::as_slice);
-    let missing = |name: &&str| string(args, name).trim().is_empty();
+    let missing = |name: &&str| json::string(args, name).trim().is_empty();
     let name = required.iter().filter_map(Value::as_str).find(missing)?;
     Some(format!("missing argument {name}"))
 }
 
 /// Validates a `screen` reply. `None` for a bad package or snapshot.
+#[must_use]
 pub fn screen(message: &Map<String, Value>) -> Option<Screen> {
-    let pkg = string(message, "pkg");
+    let pkg = json::string(message, "pkg");
     let snapshot = message.get("snap").and_then(Value::as_f64).unwrap_or(0.0);
-    if !is_package_name(pkg)
+    if !ids::is_package_name(pkg)
         || !(1.0..=2_147_483_647.0).contains(&snapshot)
         || snapshot.fract() != 0.0
     {
         return None;
     }
-    let mut nodes = Vec::new();
-    let sent = array(message, "nodes").iter().filter_map(Value::as_object);
+    let snapshot = snapshot as i64;
+    let mut lines = Vec::new();
+    let sent = json::array(message, "nodes")
+        .iter()
+        .filter_map(Value::as_object);
     for node in sent {
-        if nodes.len() >= MAX_NODES {
+        if lines.len() >= MAX_NODES {
             break;
         }
-        let Some(index) = int(node, "i").filter(|index| *index >= 0) else {
-            continue;
-        };
-        let flags = int(node, "f").unwrap_or(0) & flags::ALL;
-        nodes.push(Node {
-            index: index.min(9999),
-            depth: int(node, "d").unwrap_or(0).clamp(0, 63),
-            class: text(node, "c", 128),
-            text: if flags & flags::PASSWORD == 0 {
-                text(node, "t", 1000)
-            } else {
-                String::new()
-            },
-            desc: text(node, "cd", 500),
-            hint: text(node, "h", 200),
-            view_id: text(node, "v", 128),
-            flags,
-        });
+        lines.extend(line(snapshot, node));
     }
     Some(Screen {
         pkg: pkg.to_owned(),
-        snapshot: snapshot as i64,
-        title: simplified(&text(message, "title", 256)),
-        nodes,
+        snapshot,
+        title: validate::simplified(&json::text(message, "title", 256)),
+        lines,
     })
 }
 
 /// The role `screen.read` gives a node.
-pub fn role(node: &Node) -> &'static str {
-    let class = node.class.rsplit('.').next().unwrap_or("");
-    if node.flags & flags::EDITABLE != 0 || class.contains("EditText") {
+fn role(class: &str, flags: i64) -> &'static str {
+    let class = class.rsplit('.').next().unwrap_or("");
+    if flags & flags::EDITABLE != 0 || class.contains("EditText") {
         return "field";
     }
     let matches = |classes: &str| classes.split('|').any(|name| class.contains(name));
     let found = ROLES.iter().find(|(classes, _)| matches(classes));
     match found {
         Some((_, role)) => role,
-        None if node.flags & flags::CLICKABLE != 0 => "item",
+        None if flags & flags::CLICKABLE != 0 => "item",
         None => "group",
     }
 }
@@ -570,69 +531,76 @@ fn quoted(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-fn line(snapshot: i64, node: &Node) -> String {
-    let role = role(node);
-    let mut line = format!(
-        "{}[{snapshot}.{}] {role}",
-        " ".repeat(2 * node.depth.min(16) as usize),
-        node.index
-    );
-    if node.flags & flags::PASSWORD != 0 {
+const NAMED_FLAGS: [(i64, &str); 6] = [
+    (flags::LONG_CLICKABLE, "long-press"),
+    (flags::SELECTED, "selected"),
+    (flags::FOCUSED, "focused"),
+    (flags::SCROLLABLE, "scrolls"),
+    (flags::HEADING, "heading"),
+    (flags::DISABLED, "disabled"),
+];
+
+/// A node's line; `None` for a node without a valid index.
+fn line(snapshot: i64, node: &Map<String, Value>) -> Option<String> {
+    let index = int(node, "i").filter(|index| *index >= 0)?.min(9999);
+    let flags = int(node, "f").unwrap_or(0) & flags::ALL;
+    let has = |flag: i64| flags & flag != 0;
+    let depth = int(node, "d").unwrap_or(0).clamp(0, 16) as usize;
+    let text = match has(flags::PASSWORD) {
+        true => String::new(),
+        false => json::text(node, "t", 1000),
+    };
+    let (desc, hint) = (json::text(node, "cd", 500), json::text(node, "h", 200));
+    let role = role(&json::text(node, "c", 128), flags);
+    let mut line = format!("{}[{snapshot}.{index}] {role}", " ".repeat(2 * depth));
+    if has(flags::PASSWORD) {
         line.push_str(" password (hidden)");
-    } else if !node.text.is_empty() {
-        line.push(' ');
-        line.push_str(&quoted(&node.text));
+    } else if !text.is_empty() {
+        let _ = write!(line, " {}", quoted(&text));
     }
-    if !node.desc.is_empty() && node.desc != node.text {
-        let _ = write!(line, " ({})", simplified(&node.desc));
+    if !desc.is_empty() && desc != text {
+        let _ = write!(line, " ({})", validate::simplified(&desc));
     }
-    if !node.hint.is_empty() && node.hint != node.text {
-        let _ = write!(line, " hint {}", quoted(&node.hint));
+    if !hint.is_empty() && hint != text {
+        let _ = write!(line, " hint {}", quoted(&hint));
     }
-    let view = node.view_id.rsplit(":id/").next().unwrap_or("");
+    let view_id = json::text(node, "v", 128);
+    let view = view_id.rsplit(":id/").next().unwrap_or("");
     if !view.is_empty() {
         let _ = write!(line, " #{view}");
     }
     let mut state = Vec::new();
-    if node.flags & flags::CHECKABLE != 0 {
-        state.push(if node.flags & flags::CHECKED != 0 {
+    if has(flags::CHECKABLE) {
+        state.push(if has(flags::CHECKED) {
             "checked"
         } else {
             "unchecked"
         });
     }
-    if node.flags & flags::CLICKABLE != 0 && !TAPPABLE.contains(&role) {
+    if has(flags::CLICKABLE) && !TAPPABLE.contains(&role) {
         state.push("tappable");
     }
-    let named = [
-        (flags::LONG_CLICKABLE, "long-press"),
-        (flags::SELECTED, "selected"),
-        (flags::FOCUSED, "focused"),
-        (flags::SCROLLABLE, "scrolls"),
-        (flags::HEADING, "heading"),
-        (flags::DISABLED, "disabled"),
-    ];
-    for (flag, name) in named {
-        if node.flags & flag != 0 {
+    for (flag, name) in NAMED_FLAGS {
+        if has(flag) {
             state.push(name);
         }
     }
     if !state.is_empty() {
         let _ = write!(line, " {{{}}}", state.join(", "));
     }
-    line
+    Some(line)
 }
 
 /// One line per node, indented by depth, at most `max_units` UTF-16 units.
+#[must_use]
 pub fn render(screen: &Screen, max_units: usize) -> Rendered {
     let mut out = Rendered {
         text: String::new(),
         truncated: false,
     };
     let mut length = 0;
-    for node in &screen.nodes {
-        let line = line(screen.snapshot, node);
-        length += units(&line) + 1;
+    for line in &screen.lines {
+        length += units(line) + 1;
         if length > max_units {
             out.truncated = true;
             break;
@@ -643,6 +611,7 @@ pub fn render(screen: &Screen, max_units: usize) -> Rendered {
 }
 
 /// Parses an element id from `screen.read`.
+#[must_use]
 pub fn parse_node(id: &str) -> Option<NodeRef> {
     let (snapshot, index) = id.trim().split_once('.')?;
     let digits = |part: &str, max: usize| {
@@ -659,6 +628,7 @@ pub fn parse_node(id: &str) -> Option<NodeRef> {
 }
 
 /// A paired computer's keel-mcp (`--external`) gets no screen content.
+#[must_use]
 pub fn is_external_host(cmdline: &[u8]) -> bool {
     cmdline
         .split(|byte| *byte == 0)
@@ -807,10 +777,10 @@ mod tests {
         assert_eq!(shortcut_action("123", &[]), "shortcut.s123");
         assert_eq!(shortcut_action("!!!", &[]), "shortcut.s");
         assert_eq!(shortcut_action("a", &["shortcut.a".into()]), "shortcut.a_2");
-        assert!(needs_confirmation("Call Mum"));
-        assert!(!needs_confirmation("Start recording"));
-        assert!(needs_confirmation("Record"));
-        assert!(!needs_confirmation("Navigate home"));
+        assert!(RISKY.is_match("Call Mum"));
+        assert!(!RISKY.is_match("Start recording"));
+        assert!(RISKY.is_match("Record"));
+        assert!(!RISKY.is_match("Navigate home"));
     }
 
     #[test]
@@ -843,8 +813,7 @@ mod tests {
         }));
         let screen = screen(&message).unwrap();
         assert_eq!(screen.snapshot, 3);
-        assert_eq!(screen.nodes.len(), 7);
-        assert!(screen.nodes[4].text.is_empty());
+        assert_eq!(screen.lines.len(), 7);
 
         let rendered = render(&screen, 16000);
         assert!(!rendered.truncated);

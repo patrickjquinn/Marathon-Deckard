@@ -134,7 +134,11 @@ impl NotificationAdapter {
     pub fn post(&self, post: &Post) -> Result<()> {
         let _operation = self.operation()?;
         let digest = digest::display_digest(post);
-        let commands = self.state()?.prepare_post(post, &digest);
+        let Some(replaces_id) = self.state()?.replaces(post, &digest) else {
+            return Ok(());
+        };
+        let id = self.notify(post, replaces_id)?;
+        let commands = self.state()?.notified(post, &digest, id);
         self.execute(commands)
     }
 
@@ -178,20 +182,6 @@ impl NotificationAdapter {
         let mut close_error = None;
         for command in commands {
             match command {
-                Command::Notify {
-                    request,
-                    post,
-                    replaces_id,
-                } => match self.notify(&post, replaces_id) {
-                    Ok(id) => {
-                        let follow_up = self.state()?.notified(request, id);
-                        self.execute(follow_up)?;
-                    }
-                    Err(error) => {
-                        self.state()?.notify_failed(request);
-                        return Err(error);
-                    }
-                },
                 Command::Close(id) => {
                     if let Err(error) = self.close(id) {
                         close_error.get_or_insert(error);

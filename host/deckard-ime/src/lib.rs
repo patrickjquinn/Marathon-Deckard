@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use deckard_core::{ids::PackageName, text};
+use deckard_core::ids::PackageName;
+use deckard_core::validate;
 use serde_json::{Map, Value, json};
 use zbus::blocking::{Connection, Proxy};
 
@@ -36,7 +37,7 @@ fn qt_int(value: Option<&Value>) -> i32 {
 }
 
 fn bounded_text(value: &str) -> bool {
-    text::truncate(value, MAX_TEXT) == value
+    validate::truncate(value, MAX_TEXT) == value
 }
 
 impl ImeState {
@@ -214,7 +215,7 @@ impl ShellBus {
 )]
 mod tests {
     use super::*;
-    use deckard_core::{framing, text};
+    use deckard_core::transport;
     use std::sync::{Arc, Mutex};
     use zbus::interface;
 
@@ -303,10 +304,6 @@ mod tests {
                 0
             )]
         );
-        assert_eq!(
-            text::replace("a😀b", 3, 1, 0, 0, "x"),
-            Ok(("axb".into(), 2))
-        );
         assert!(
             ime.handle_android(&message(json!({"t":"state","text":"x".repeat(4097)})))
                 .is_empty()
@@ -362,7 +359,7 @@ mod tests {
     #[test]
     fn framed_fixture_round_trip() {
         let message = message(json!({"t":"commit","text":"😀","before":2,"after":0}));
-        let frame = framing::encode(&message).unwrap();
+        let frame = transport::encode(&message).unwrap();
         assert_eq!(
             u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize,
             frame.len() - 4

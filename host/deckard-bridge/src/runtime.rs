@@ -84,15 +84,15 @@ impl Runtime {
     }
 
     pub fn set_connected(&self, connected: bool) -> bool {
-        !self.lock().set_android_connected(connected).is_empty()
+        self.lock().set_android_connected(connected)
     }
 
     pub fn set_version(&self, version: &str) -> bool {
-        !self.lock().set_android_version(version).is_empty()
+        self.lock().set_android_version(version)
     }
 
     pub fn set_unit(&self, active: &str, entered_ms: i64) -> bool {
-        !self.lock().set_unit(active, entered_ms).is_empty()
+        self.lock().set_unit(active, entered_ms)
     }
 
     /// When the session unit became active, ms since the epoch; 0 while it isn't.
@@ -104,26 +104,18 @@ impl Runtime {
         self.lock().state()
     }
 
-    pub fn request_reset(&self, available: bool) -> Result<u64, ResetError> {
-        self.lock()
-            .request_reset(available)
-            .map(|(request, _)| request)
+    pub fn request_reset(&self, available: bool) -> Result<(), ResetError> {
+        self.lock().request_reset(available)
     }
 
-    pub fn reset_timeout(&self, request: u64) {
-        let mut state = self.lock();
-        state.on_stop_timeout(request);
-        state.on_reset_helper_failed_to_start(request);
-    }
-
-    pub fn reset_finished(&self, request: u64, success: bool) {
-        self.lock().on_reset_helper_finished(request, success);
+    pub fn finish_reset(&self) {
+        self.lock().finish_reset();
     }
 
     pub fn at_login(&self) -> bool {
         let mut state = self.lock();
         state.set_has_android_apps(has_apps(&self.applications));
-        !state.at_login().is_empty()
+        state.at_login()
     }
 
     pub fn set_start_at_login(&self, enabled: bool) -> std::io::Result<()> {
@@ -289,26 +281,5 @@ mod tests {
         let saved: Value =
             serde_json::from_slice(&fs::read(dir.path().join("settings.json")).unwrap()).unwrap();
         assert_eq!(saved["startAtLogin"], false);
-    }
-
-    #[test]
-    fn reset_timeout_releases_both_stop_phases() {
-        let dir = tempfile::tempdir().unwrap();
-        let runtime = Runtime::new(
-            dir.path().join("settings.json"),
-            dir.path().join("apps"),
-            dir.path().join("memory"),
-        );
-        runtime.set_unit("active", 1000);
-        let first = runtime.request_reset(true).unwrap();
-        assert_eq!(
-            runtime.request_reset(true),
-            Err(ResetError::AlreadyResetting)
-        );
-        runtime.reset_timeout(first);
-        let second = runtime.request_reset(true).unwrap();
-        runtime.set_unit("inactive", 0);
-        runtime.reset_timeout(second);
-        assert!(runtime.request_reset(true).is_ok());
     }
 }

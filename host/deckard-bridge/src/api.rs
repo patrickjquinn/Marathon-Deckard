@@ -201,7 +201,7 @@ impl SettingsApi {
                 continue;
             }
             let Ok(data) = fs::read(path) else { continue };
-            if let Ok(png) = deckard_core::png_guard::sanitize(&data, 512 * 1024, 192) {
+            if let Some(png) = deckard_core::png_guard::sanitize(&data, 512 * 1024, 192) {
                 return format!(
                     "data:image/png;base64,{}",
                     base64::engine::general_purpose::STANDARD.encode(png)
@@ -444,8 +444,7 @@ impl SettingsApi {
         } else {
             Vec::new()
         };
-        let request = self
-            .runtime
+        self.runtime
             .request_reset(!helper.is_empty())
             .map_err(|error| {
                 failed(match error {
@@ -455,13 +454,13 @@ impl SettingsApi {
             })?;
         if self.runtime.state() != State::Stopped {
             if let Err(error) = runtime::call_unit(&self.bus, UnitCall::Stop).await {
-                self.runtime.reset_timeout(request);
+                self.runtime.finish_reset();
                 return Err(failed(error.to_string()));
             }
             let deadline = Instant::now() + Duration::from_secs(90);
             while self.runtime.state() != State::Stopped {
                 if Instant::now() >= deadline {
-                    self.runtime.reset_timeout(request);
+                    self.runtime.finish_reset();
                     return Err(failed("Android didn't stop"));
                 }
                 async_io::Timer::after(Duration::from_millis(100)).await;
@@ -488,7 +487,7 @@ impl SettingsApi {
             let _ = tx.send_blocking(result.unwrap_or(false));
         });
         let success = rx.recv().await.unwrap_or(false);
-        self.runtime.reset_finished(request, success);
+        self.runtime.finish_reset();
         if success {
             Ok(())
         } else {

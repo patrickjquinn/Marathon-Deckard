@@ -14,7 +14,7 @@ use deckard_core::ids::PackageName;
 use deckard_core::messages;
 use deckard_core::notification_state::BridgeEvent;
 use deckard_core::png_guard;
-use deckard_core::validate::{base64_png, clean_text, notification_key};
+use deckard_core::validate::{base64_png, clean_text, is_notification_key};
 use deckard_notifications::{NotificationAdapter, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -78,7 +78,7 @@ impl NotificationBridge {
             }
             "remove" => {
                 let key = string(message, "key");
-                if notification_key(key).is_ok() {
+                if is_notification_key(key) {
                     self.adapter.remove(key)?;
                 }
             }
@@ -101,10 +101,10 @@ impl NotificationBridge {
         let Some(package) = package(message) else {
             return Ok(());
         };
-        let Ok(bytes) = base64_png(string(message, "png"), MAX_ICON_BYTES) else {
+        let Some(bytes) = base64_png(string(message, "png"), MAX_ICON_BYTES) else {
             return Ok(());
         };
-        let Ok(png) = png_guard::sanitize(&bytes, MAX_ICON_BYTES, 128) else {
+        let Some(png) = png_guard::sanitize(&bytes, MAX_ICON_BYTES, 128) else {
             return Ok(());
         };
         save_icon(&self.icon_dir, &package, &png)?;
@@ -184,7 +184,10 @@ impl NotificationBridge {
 }
 
 pub fn bridge_event(event: &BridgeEvent) -> Map<String, Value> {
-    event.to_json().as_object().cloned().unwrap_or_default()
+    match serde_json::to_value(event) {
+        Ok(Value::Object(object)) => object,
+        _ => Map::new(),
+    }
 }
 
 fn string<'a>(message: &'a Map<String, Value>, field: &str) -> &'a str {
@@ -214,7 +217,7 @@ fn live_keys(message: &Map<String, Value>) -> Vec<String> {
         .flatten()
         .take(MAX_SYNC_KEYS)
         .filter_map(Value::as_str)
-        .filter(|key| notification_key(key).is_ok())
+        .filter(|key| is_notification_key(key))
         .map(str::to_owned)
         .collect()
 }

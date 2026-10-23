@@ -8,11 +8,13 @@ license = "Apache-2.0"
 
 [dependencies]
 base64.workspace = true
+hex.workspace = true
 image.workspace = true
 regex.workspace = true
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 unicode-general-category.workspace = true
 
 [dev-dependencies]

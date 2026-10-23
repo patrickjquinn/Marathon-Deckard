@@ -8,17 +8,16 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use deckard_core::framing;
 use deckard_core::ids::PackageName;
-use deckard_core::transport::{BridgeListener, BridgeSession};
+use deckard_core::transport::{self, BridgeListener, BridgeSession};
 use serde_json::{Map, Value};
 
 const READ_POLL: Duration = Duration::from_millis(100);
 const OUTBOUND_CAPACITY: usize = 256;
 /// One rate-limiter burst. While the consumer is behind, further messages
-/// are dropped as the limiter drops frames; past `framing::MAX_DROPPED` the
+/// are dropped as the limiter drops frames; past `transport::MAX_DROPPED` the
 /// peer is disconnected as a flood.
-pub const INBOUND_CAPACITY: usize = framing::BURST as usize;
+pub const INBOUND_CAPACITY: usize = transport::BURST as usize;
 
 #[derive(Debug)]
 pub enum ChannelEvent {
@@ -185,7 +184,7 @@ fn serve(
                         Ok(()) => {}
                         Err(TrySendError::Full(_)) => {
                             dropped += 1;
-                            if dropped > framing::MAX_DROPPED {
+                            if dropped > transport::MAX_DROPPED {
                                 eprintln!("deckard-bridge: Android peer floods a stalled consumer");
                                 break;
                             }

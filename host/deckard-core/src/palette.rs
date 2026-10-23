@@ -1,29 +1,34 @@
+//! Android's 65 Material You system colours from the Shell's highlight.
+
 use std::f64::consts::PI;
+use std::fmt::Write;
 
 use crate::Error;
 
-pub const SHADES: [u16; 13] = [0, 10, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
+const SHADES: [u16; 13] = [0, 10, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color(pub [u8; 3]);
 
 impl Color {
+    /// Parses `#rrggbb` or `#aarrggbb`, dropping the alpha.
+    ///
+    /// # Errors
+    /// `value` is neither.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let hex = value.strip_prefix('#').ok_or(Error::InvalidColor)?;
-        if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(Error::InvalidColor);
+        let bytes = value
+            .strip_prefix('#')
+            .and_then(|hex| hex::decode(hex).ok());
+        match bytes.as_deref() {
+            Some(&[red, green, blue] | &[_, red, green, blue]) => Ok(Self([red, green, blue])),
+            _ => Err(Error::InvalidColor),
         }
-        let hex = &hex[hex.len() - 6..];
-        let mut channels = [0; 3];
-        for (channel, offset) in channels.iter_mut().zip([0, 2, 4]) {
-            *channel = u8::from_str_radix(&hex[offset..offset + 2], 16)
-                .map_err(|_| Error::InvalidColor)?;
-        }
-        Ok(Self(channels))
     }
 
+    /// `#rrggbb`.
+    #[must_use]
     pub fn hex(self) -> String {
-        format!("#{:02x}{:02x}{:02x}", self.0[0], self.0[1], self.0[2])
+        format!("#{}", hex::encode(self.0))
     }
 }
 
@@ -147,6 +152,8 @@ fn tone(lightness: f64, chroma: f64, hue: f64) -> Color {
     )
 }
 
+/// The `system_*` colours, named as Android's resources are.
+#[must_use]
 pub fn generate(highlight: Color, theme: Theme) -> Vec<(String, Color)> {
     let (chroma, hue) = to_lch(highlight);
     let (_, grey_hue) = to_lch(theme.elevation3);
@@ -174,18 +181,23 @@ pub fn generate(highlight: Color, theme: Theme) -> Vec<(String, Color)> {
         ("neutral1", neutral),
         ("neutral2", neutral_secondary),
     ] {
-        for (shade, color) in SHADES.into_iter().zip(ramp) {
+        let shades = SHADES.into_iter().zip(ramp);
+        for (shade, color) in shades {
             output.push((format!("system_{name}_{shade}"), color));
         }
     }
     output
 }
 
+/// The colours as DeckardSystem's runtime palette file: `name #ffrrggbb`
+/// per line.
+#[must_use]
 pub fn runtime_file(highlight: Color, theme: Theme) -> String {
-    generate(highlight, theme)
-        .into_iter()
-        .map(|(name, color)| format!("{name} #ff{}\n", &color.hex()[1..]))
-        .collect()
+    let mut file = String::new();
+    for (name, color) in generate(highlight, theme) {
+        let _ = writeln!(file, "{name} #ff{}", hex::encode(color.0));
+    }
+    file
 }
 
 #[cfg(test)]

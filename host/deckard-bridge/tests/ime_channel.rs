@@ -16,8 +16,8 @@ use std::thread;
 use std::time::Duration;
 
 use app_channel::{AppChannel, ChannelEvent};
-use deckard_core::framing;
 use deckard_core::ids::PackageName;
+use deckard_core::transport;
 use ime::{ImeController, ShellCall, ShellEvent, ShellSignal};
 use serde_json::{Map, Value, json};
 use zbus::blocking::Connection;
@@ -125,7 +125,7 @@ fn app_channel_frames_and_rejects_stale_replies() -> TestResult {
         ChannelEvent::Connected(generation) => generation,
         _ => return Err("expected first connection".into()),
     };
-    first.write_all(&framing::encode(&object(json!({"t":"hello","v":1})))?)?;
+    first.write_all(&transport::encode(&object(json!({"t":"hello","v":1})))?)?;
     match events.recv_timeout(Duration::from_secs(2))? {
         ChannelEvent::Message(received, message) => {
             assert_eq!(received, generation);

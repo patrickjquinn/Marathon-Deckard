@@ -1,6 +1,8 @@
+//! Protocol, validation and policy shared by Deckard's host services.
+
 pub mod acl;
-pub mod framing;
 pub mod ids;
+pub mod json;
 pub mod keel;
 pub mod messages;
 pub mod notification_state;
@@ -9,37 +11,20 @@ pub mod png_guard;
 pub mod pressure;
 pub mod runtime_state;
 pub mod sync;
-pub mod text;
 pub mod transport;
 pub mod validate;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why a value from Android was rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error("invalid identity")]
     InvalidIdentity,
+    #[error("invalid bridge frame")]
     InvalidFrame,
+    #[error("bridge buffer limit exceeded")]
     BufferLimit,
+    #[error("bridge rate limit exceeded")]
     Flood,
-    InvalidOffset,
-    InvalidAcl,
-    InvalidImage,
-    ImageLimit,
+    #[error("invalid RGB color")]
     InvalidColor,
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidIdentity => "invalid identity",
-            Self::InvalidFrame => "invalid bridge frame",
-            Self::BufferLimit => "bridge buffer limit exceeded",
-            Self::Flood => "bridge rate limit exceeded",
-            Self::InvalidOffset => "invalid UTF-16 offset",
-            Self::InvalidAcl => "invalid POSIX ACL",
-            Self::InvalidImage => "invalid PNG image",
-            Self::ImageLimit => "PNG resource limit exceeded",
-            Self::InvalidColor => "invalid RGB color",
-        })
-    }
-}
-
-impl std::error::Error for Error {}

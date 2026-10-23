@@ -505,7 +505,7 @@ impl MprisAdapter {
 
     /// Writes bounded, re-encoded art; `None` when the PNG is empty or unsafe.
     fn write_art(&mut self, sid: i32, png: &[u8]) -> io::Result<Option<PathBuf>> {
-        let Ok(png) = png_guard::sanitize(png, MAX_ART_BYTES, ART_SIDE) else {
+        let Some(png) = png_guard::sanitize(png, MAX_ART_BYTES, ART_SIDE) else {
             return Ok(None);
         };
         fs::create_dir_all(&self.art_dir)?;
