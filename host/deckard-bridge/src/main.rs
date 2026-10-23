@@ -12,6 +12,7 @@ use deckard_bridge::audio::{self, AudioWake};
 use deckard_bridge::ime::{
     ImeController, ShellBus, ShellEvent, listen_shell, send_shell_calls, watch_shell_owner,
 };
+use deckard_bridge::keel::KeelApps;
 use deckard_bridge::manage::Manage;
 use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
@@ -64,6 +65,7 @@ struct System {
     bus: Connection,
     packages: PackageBridge,
     reclaimer: Reclaimer,
+    keel: KeelApps,
 }
 
 fn serve_session(
@@ -84,6 +86,7 @@ fn serve_session(
             Ok(Some(message)) => {
                 system.manage.handle(generation, &message);
                 system.reclaimer.handle(&message);
+                system.keel.handle(BridgeRoute::System, &message);
                 if let Err(error) = system.packages.handle(BridgeRoute::System, &message) {
                     eprintln!("deckard-bridge: system package event failed: {error}");
                 }
@@ -102,6 +105,7 @@ fn serve_session(
     }
     system.manage.disconnect(generation);
     let _ = system.packages.disconnected(BridgeRoute::System);
+    system.keel.set_connected(BridgeRoute::System, false);
     if !system.manage.connected() {
         system.reclaimer.disconnected();
     }
@@ -124,6 +128,7 @@ fn listen_system(mut listener: BridgeListener, system: System) {
                 if let Some(worker) = info_worker.take() {
                     let _ = worker.join();
                 }
+                system.keel.set_connected(BridgeRoute::System, true);
                 if system.runtime.set_connected(true) {
                     emit_runtime(&system.bus, &system.runtime)
                 }
@@ -159,12 +164,16 @@ fn serve_app(
     actions: Receiver<deckard_core::notification_state::BridgeEvent>,
     mut media: MprisAdapter,
     audio: AudioWake,
+    keel: KeelApps,
 ) {
     let mut current = None;
     loop {
         match events.recv_timeout(Duration::from_millis(10)) {
             Ok(ChannelEvent::Connected(generation)) => {
-                current = Some(generation);
+                if current.replace(generation).is_some() {
+                    keel.set_connected(BridgeRoute::User, false);
+                }
+                keel.set_connected(BridgeRoute::User, true);
                 media.clear();
                 if let Some(hello) = json!({"t":"hello","v":1}).as_object().cloned() {
                     let _ = handle.send_to(generation, hello);
@@ -173,7 +182,10 @@ fn serve_app(
             }
             Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
                 let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
-                let result = if kind.starts_with("media") {
+                let result = if KeelApps::handles(kind) {
+                    keel.handle(BridgeRoute::User, &message);
+                    Ok(())
+                } else if kind.starts_with("media") {
                     media.handle(&message).map_err(|error| error.to_string())
                 } else if matches!(
                     kind,
@@ -198,6 +210,7 @@ fn serve_app(
             }
             Ok(ChannelEvent::Disconnected(generation)) if current == Some(generation) => {
                 current = None;
+                keel.set_connected(BridgeRoute::User, false);
                 media.clear();
                 let _ = packages.disconnected(BridgeRoute::User);
             }
@@ -349,6 +362,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             BridgeRoute::System => system_send.send(message),
         }
     });
+    let keel = KeelApps::start(
+        bus.inner().clone(),
+        Arc::clone(&package_send),
+        vec![
+            PathBuf::from("/usr/bin/keel-mcp"),
+            PathBuf::from("/usr/bin/pilotd"),
+        ],
+        state.join("apps.json"),
+    )?;
     let packages = PackageBridge::register(
         bus.clone(),
         data.join("deckard/install"),
@@ -361,6 +383,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _hub_listener = notifications.listen_hub()?;
     let audio = audio::spawn(bus.clone(), app_handle.clone())?;
     let app_packages = packages.clone();
+    let app_keel = keel.clone();
     thread::spawn(move || {
         serve_app(
             app_events,
@@ -370,6 +393,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             actions,
             media,
             audio,
+            app_keel,
         )
     });
     thread::spawn(move || {
@@ -389,6 +413,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         bus: bus.clone(),
         packages,
         reclaimer,
+        keel,
     };
     thread::spawn(move || listen_system(listener, system));
     let ime_bus = bus.clone();

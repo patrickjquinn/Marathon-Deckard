@@ -24,6 +24,10 @@ Wired into the daemon (`main.rs`):
 - Media sessions as MPRIS players (`deckard-mpris`), cleared whenever the app
   channel connects or drops, and Marathon's audio policy (`audio.rs`) sent on
   connect and on Shell changes.
+- Keel and Pilot app providers (`keel.rs`, model in `deckard-core::keel`):
+  `waydroid.<pkg>` serving `org.shipwright.Keel.Actions` per app on its own
+  connection, the `apps.json` catalogue, shortcuts and secure-window checks
+  over the system channel. Its private-bus test is `tests/keel_contract.rs`.
 
 Present as modules but **not wired** into the daemon: intents/file
 chooser/capture (`intents.rs`) and sharing (`sharing.rs`). Their tests include
@@ -33,6 +37,11 @@ Not ported yet from C++ `deckardd`: Keel and Pilot app providers, permission
 prompts, location and shared storage (ACLs, media indexing). Each app
 channel's incoming queue holds one rate-limiter burst; past that, messages are
 dropped, and a peer that keeps flooding is disconnected.
+Not ported yet from C++ `deckardd`: permission prompts, location, shared
+storage (ACLs, media indexing), Doze, PSI/cgroup reclamation, palette sync and
+the boot watchdog. Runtime unit state is polled once per second rather than
+subscribed to systemd property changes. The app channel's incoming event queue
+is unbounded.
 
 Run the private-bus tests with:
 

@@ -6,6 +6,7 @@ pub mod audio;
 pub mod auth;
 pub mod contract;
 pub mod ime;
+pub mod keel;
 pub mod manage;
 pub mod notifications;
 pub mod packages;
