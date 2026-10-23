@@ -290,18 +290,15 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
     let config = BinderConfig::from_file(Path::new(WAYDROID_CONFIG))?;
     let (sender, events) = mpsc::sync_channel(EVENT_QUEUE);
     let resync = Arc::new(AtomicBool::new(false));
-    let handler = monitor::handler(sender, Arc::clone(&resync));
+    let service = monitor::Monitor {
+        events: sender,
+        resync: Arc::clone(&resync),
+    };
     let service_config = config.clone();
     let service_stop = Arc::clone(stop);
     thread::spawn(move || {
-        if let Err(error) = binder::serve(
-            &service_config,
-            monitor::SERVICE,
-            monitor::INTERFACE,
-            handler,
-            service_stop,
-        ) {
-            eprintln!("deckard-runtime: {} unavailable: {error}", monitor::SERVICE);
+        if let Err(error) = binder::serve(&service_config, service, service_stop) {
+            eprintln!("deckard-runtime: waydroidusermonitor unavailable: {error}");
         }
     });
     // A later userUnlocked callback exports the catalog.

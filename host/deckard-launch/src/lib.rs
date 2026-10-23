@@ -1,26 +1,67 @@
-use std::error::Error;
-
-#[cfg(all(target_env = "musl", target_feature = "crt-static"))]
-compile_error!("deckard-launch needs dynamic musl for libgbinder dlopen; build with RUSTFLAGS='-C target-feature=-crt-static'");
+//! Starts Android apps and intents and reads or writes Android properties,
+//! through the Deckard session and Android's `IPlatform`.
 
 pub mod binder;
 pub mod session;
 
-pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+/// Whether [`Backend::ready`] may start a stopped session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Session {
+    /// Start it and wait for Android's user to unlock.
+    Start,
+    /// Fail when it is stopped.
+    Existing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Container {
+    Running,
+    Frozen,
+}
+
+/// What launching needs from the session, the container and Android.
 pub trait Backend {
-    fn ready(&mut self, start_session: bool) -> Result<bool>;
+    /// # Errors
+    /// The session is unavailable.
+    fn ready(&mut self, session: Session) -> Result<Container>;
+    /// # Errors
+    /// The container manager refuses.
     fn unfreeze(&mut self) -> Result<()>;
+    /// # Errors
+    /// The container manager refuses.
     fn freeze(&mut self) -> Result<()>;
+    /// # Errors
+    /// Android refuses.
     fn setprop(&mut self, key: &str, value: &str) -> Result<()>;
+    /// # Errors
+    /// Android refuses.
     fn getprop(&mut self, key: &str, fallback: &str) -> Result<String>;
+    /// # Errors
+    /// Android refuses.
     fn launch_app(&mut self, package: &str) -> Result<()>;
+    /// The package that handles the intent, or empty.
+    ///
+    /// # Errors
+    /// Android refuses.
     fn launch_intent(&mut self, action: &str, uri: &str) -> Result<String>;
+    /// # Errors
+    /// Android refuses.
     fn settings_put_string(&mut self, table: i32, key: &str, value: &str) -> Result<()>;
+    /// # Errors
+    /// The Shell refuses the window handoff.
     fn show_android_app(&mut self, package: &str) -> Result<()>;
 }
 
-fn immersive<B: Backend>(backend: &mut B) -> Result<()> {
+fn wake(backend: &mut impl Backend) -> Result<()> {
+    if backend.ready(Session::Start)? == Container::Frozen {
+        backend.unfreeze()?;
+    }
+    Ok(())
+}
+
+fn immersive(backend: &mut impl Backend) -> Result<()> {
     let value = if backend.getprop("persist.waydroid.multi_windows", "false")? == "false" {
         "immersive.status=*"
     } else {
@@ -29,26 +70,26 @@ fn immersive<B: Backend>(backend: &mut B) -> Result<()> {
     backend.settings_put_string(2, "policy_control", value)
 }
 
-pub fn launch_app<B: Backend>(backend: &mut B, package: &str) -> Result<()> {
+/// # Errors
+/// The package name is invalid or a step fails.
+pub fn launch_app(backend: &mut impl Backend, package: &str) -> Result<()> {
     if package.is_empty() || package.contains(char::is_whitespace) {
         return Err("invalid package name".into());
     }
-    if backend.ready(true)? {
-        backend.unfreeze()?;
-    }
+    wake(backend)?;
     backend.setprop("waydroid.active_apps", package)?;
     backend.show_android_app(package)?;
     backend.launch_app(package)?;
     immersive(backend)
 }
 
-pub fn launch_intent<B: Backend>(backend: &mut B, action: &str, uri: &str) -> Result<()> {
+/// # Errors
+/// The action or URI is empty or a step fails.
+pub fn launch_intent(backend: &mut impl Backend, action: &str, uri: &str) -> Result<()> {
     if action.is_empty() || uri.is_empty() {
         return Err("action and URI must not be empty".into());
     }
-    if backend.ready(true)? {
-        backend.unfreeze()?;
-    }
+    wake(backend)?;
     let package = backend.launch_intent(action, uri)?;
     if package.is_empty() {
         return Ok(());
@@ -66,15 +107,20 @@ pub fn launch_intent<B: Backend>(backend: &mut B, action: &str, uri: &str) -> Re
     immersive(backend)
 }
 
-pub fn get_property<B: Backend>(backend: &mut B, key: &str) -> Result<String> {
+/// Runs `action` on a running session, thawing a frozen container around it.
+fn thawed<B: Backend, T>(
+    backend: &mut B,
+    key: &str,
+    action: impl FnOnce(&mut B) -> Result<T>,
+) -> Result<T> {
     if key.is_empty() {
         return Err("property key must not be empty".into());
     }
-    let frozen = backend.ready(false)?;
+    let frozen = backend.ready(Session::Existing)? == Container::Frozen;
     if frozen {
         backend.unfreeze()?;
     }
-    let result = backend.getprop(key, "");
+    let result = action(backend);
     if frozen {
         let freeze = backend.freeze();
         if result.is_ok() {
@@ -84,22 +130,16 @@ pub fn get_property<B: Backend>(backend: &mut B, key: &str) -> Result<String> {
     result
 }
 
-pub fn set_property<B: Backend>(backend: &mut B, key: &str, value: &str) -> Result<()> {
-    if key.is_empty() {
-        return Err("property key must not be empty".into());
-    }
-    let frozen = backend.ready(false)?;
-    if frozen {
-        backend.unfreeze()?;
-    }
-    let result = backend.setprop(key, value);
-    if frozen {
-        let freeze = backend.freeze();
-        if result.is_ok() {
-            freeze?;
-        }
-    }
-    result
+/// # Errors
+/// The key is empty, the session is stopped or Android refuses.
+pub fn get_property(backend: &mut impl Backend, key: &str) -> Result<String> {
+    thawed(backend, key, |backend| backend.getprop(key, ""))
+}
+
+/// # Errors
+/// The key is empty, the session is stopped or Android refuses.
+pub fn set_property(backend: &mut impl Backend, key: &str, value: &str) -> Result<()> {
+    thawed(backend, key, |backend| backend.setprop(key, value))
 }
 
 #[cfg(test)]
@@ -116,9 +156,13 @@ mod tests {
     }
 
     impl Backend for Fake {
-        fn ready(&mut self, start_session: bool) -> Result<bool> {
-            self.calls.push(format!("ready:{start_session}"));
-            Ok(self.frozen)
+        fn ready(&mut self, session: Session) -> Result<Container> {
+            self.calls.push(format!("ready:{session:?}"));
+            Ok(if self.frozen {
+                Container::Frozen
+            } else {
+                Container::Running
+            })
         }
         fn unfreeze(&mut self) -> Result<()> {
             self.calls.push("unfreeze".into());
@@ -163,16 +207,16 @@ mod tests {
     }
 
     #[test]
-    fn app_preserves_active_app_and_immersive_order() {
+    fn app_preserves_active_app_and_immersive_order() -> Result<()> {
         let mut fake = Fake {
             multiwin: "false".into(),
             ..Fake::default()
         };
-        launch_app(&mut fake, "org.example.app").unwrap();
+        launch_app(&mut fake, "org.example.app")?;
         assert_eq!(
             fake.calls,
             [
-                "ready:true",
+                "ready:Start",
                 "set:waydroid.active_apps:org.example.app",
                 "show:org.example.app",
                 "app:org.example.app",
@@ -180,10 +224,11 @@ mod tests {
                 "settings:2:policy_control:immersive.status=*"
             ]
         );
+        Ok(())
     }
 
     #[test]
-    fn intent_updates_resolved_package_and_multiwindow_policy() {
+    fn intent_updates_resolved_package_and_multiwindow_policy() -> Result<()> {
         let mut fake = Fake {
             multiwin: "true".into(),
             intent_result: "org.example.app".into(),
@@ -193,96 +238,78 @@ mod tests {
             &mut fake,
             "android.intent.action.VIEW",
             "https://example.org",
-        )
-        .unwrap();
+        )?;
         assert_eq!(
-            fake.calls[1],
-            "intent:android.intent.action.VIEW:https://example.org"
+            fake.calls[1..],
+            [
+                "intent:android.intent.action.VIEW:https://example.org",
+                "set:waydroid.active_apps:org.example.app",
+                "show:org.example.app",
+                "get:persist.waydroid.multi_windows:false",
+                "settings:2:policy_control:immersive.full=*"
+            ]
         );
-        assert_eq!(fake.calls[2], "set:waydroid.active_apps:org.example.app");
-        assert_eq!(fake.calls[3], "show:org.example.app");
-        assert_eq!(fake.calls[5], "settings:2:policy_control:immersive.full=*");
+        Ok(())
     }
 
     #[test]
-    fn unresolved_intent_does_not_change_active_app() {
-        let mut fake = Fake::default();
-        launch_intent(&mut fake, "VIEW", "content://example").unwrap();
-        assert_eq!(fake.calls.len(), 2);
+    fn system_intents_map_or_skip_the_window() -> Result<()> {
+        let mut unresolved = Fake::default();
+        launch_intent(&mut unresolved, "VIEW", "content://example")?;
+        assert_eq!(unresolved.calls.len(), 2);
+        for (package, active) in [
+            ("android", "Waydroid"),
+            (
+                "org.marathonos.deckard.system",
+                "org.marathonos.deckard.system",
+            ),
+        ] {
+            let mut fake = Fake {
+                intent_result: package.into(),
+                ..Fake::default()
+            };
+            launch_intent(&mut fake, "VIEW", "package:org.example")?;
+            assert_eq!(fake.calls[2], format!("set:waydroid.active_apps:{active}"));
+            assert!(!fake.calls.iter().any(|call| call.starts_with("show:")));
+        }
+        Ok(())
     }
 
     #[test]
-    fn android_intent_maps_to_waydroid() {
-        let mut fake = Fake {
-            intent_result: "android".into(),
-            ..Fake::default()
-        };
-        launch_intent(&mut fake, "VIEW", "package:org.example").unwrap();
-        assert_eq!(fake.calls[2], "set:waydroid.active_apps:Waydroid");
-        assert!(!fake.calls.iter().any(|call| call.starts_with("show:")));
-    }
-
-    #[test]
-    fn bridge_intent_does_not_request_a_nonexistent_window() {
-        let mut fake = Fake {
-            intent_result: "org.marathonos.deckard.system".into(),
-            ..Fake::default()
-        };
-        launch_intent(
-            &mut fake,
-            "android.settings.APPLICATION_DETAILS_SETTINGS",
-            "package:org.example",
-        )
-        .unwrap();
-        assert!(fake
-            .calls
-            .iter()
-            .any(|call| { call == "set:waydroid.active_apps:org.marathonos.deckard.system" }));
-        assert!(!fake.calls.iter().any(|call| call.starts_with("show:")));
-    }
-
-    #[test]
-    fn property_restores_frozen_container() {
+    fn property_restores_frozen_container() -> Result<()> {
         let mut fake = Fake {
             frozen: true,
             ..Fake::default()
         };
-        assert_eq!(
-            get_property(&mut fake, "sys.boot_completed").unwrap(),
-            "value"
-        );
+        assert_eq!(get_property(&mut fake, "sys.boot_completed")?, "value");
         assert_eq!(
             fake.calls,
             [
-                "ready:false",
+                "ready:Existing",
                 "unfreeze",
                 "get:sys.boot_completed:",
                 "freeze"
             ]
         );
+        Ok(())
     }
 
     #[test]
-    fn launch_only_unfreezes_when_needed_and_stops_on_failure() {
+    fn stops_on_unfreeze_failure_and_rejects_bad_input_before_io() {
         let mut launch = Fake {
             frozen: true,
             fail_unfreeze: true,
             ..Fake::default()
         };
         assert!(launch_app(&mut launch, "org.example.app").is_err());
-        assert_eq!(launch.calls, ["ready:true", "unfreeze"]);
-
+        assert_eq!(launch.calls, ["ready:Start", "unfreeze"]);
         let mut property = Fake {
             frozen: true,
             fail_unfreeze: true,
             ..Fake::default()
         };
         assert!(get_property(&mut property, "sys.boot_completed").is_err());
-        assert_eq!(property.calls, ["ready:false", "unfreeze"]);
-    }
-
-    #[test]
-    fn invalid_package_is_rejected_before_io() {
+        assert_eq!(property.calls, ["ready:Existing", "unfreeze"]);
         let mut fake = Fake::default();
         assert!(launch_app(&mut fake, "app; bad").is_err());
         assert!(fake.calls.is_empty());
