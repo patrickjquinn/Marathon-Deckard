@@ -304,11 +304,11 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
             eprintln!("deckard-runtime: {} unavailable: {error}", monitor::SERVICE);
         }
     });
-    match export_installed_apps(data_home, stop) {
-        Ok(()) => timezone::propagate(&config, stop),
-        // A later userUnlocked callback exports the catalog.
-        Err(error) => eprintln!("deckard-runtime: Android desktop export failed: {error}"),
+    // A later userUnlocked callback exports the catalog.
+    if let Err(error) = export_installed_apps(data_home, stop) {
+        eprintln!("deckard-runtime: Android desktop export failed: {error}");
     }
+    timezone::propagate(&config, stop);
     while !stop.load(Ordering::Acquire) {
         let event = match events.recv_timeout(Duration::from_millis(500)) {
             Ok(event) => Some(event),
