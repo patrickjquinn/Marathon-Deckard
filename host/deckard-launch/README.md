@@ -41,9 +41,13 @@ Inspected on the Hackberry Pi from `/usr/lib/waydroid/tools/actions/app_manager.
   freeze it again. App launch leaves the container running.
 - The session startup checks the Wayland socket. This implementation checks
   that the socket accepts a connection before requesting `StartUnit` through
-  the user systemd D-Bus manager. For a newly started session it then waits
-  for `sys.boot_completed=1` and `sys.user.0.ce_available=true`, values
-  observed on the device after user unlock.
+  the user systemd D-Bus manager. Every app launch waits for
+  `sys.boot_completed=1` and `sys.user.0.ce_available=true`, including when
+  the session bus name was already acquired during Android boot.
+- App launch calls Shell `ShowAndroidApp` before and after the Binder request.
+  The pre-launch call registers a future window; the second can raise a window
+  that appeared while Binder was handling the request. Intent launch can only
+  request the handoff after Binder returns the resolved package.
 
 The Binder FFI uses libgbinder 1.1 APIs and loads the device's
 `libgbinder.so.1` and `libglib-2.0.so.0` at runtime. It does not invoke
@@ -86,6 +90,11 @@ and Wayland path validation. They do not prove device Binder round trips.
   Binder callback. Parent integration must confirm those properties are an
   equivalent readiness barrier for the target image or expose a native
   session-manager readiness signal before switching desktop files.
+- An immediate cold launch still has a Shell window-lifecycle regression on
+  the Pi: Binder returns success and Android resumes the app, but a transient
+  window can disappear and leave Shell on home. See
+  `docs/rust-cutover-baseline.md`. Warm foreground handoff passed, but the
+  candidate is not ready to replace desktop-file commands.
 - Desktop/icon export is owned by the session manager. It must emit `Exec=`
   lines for this binary and the app-settings intent action after both the
   launcher and native session service are packaged and device-tested.

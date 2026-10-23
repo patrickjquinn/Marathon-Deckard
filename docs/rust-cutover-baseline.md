@@ -58,6 +58,30 @@ activity success is therefore insufficient as a user-visible launch test; the
 Shell must raise the Android window before switching generated desktop entries
 to this binary. No live unit or desktop entry was changed for this test.
 
+## Candidate session and foreground cycle
+
+The Shell now exposes `ShowAndroidApp` for a Binder launcher to request an
+Android window handoff. A dynamic-musl `deckard-runtime` candidate was run as
+the graphical user under a transient user unit against the *existing Python
+container manager*. The correct display is `marathon-wayland-0`. After the
+legacy user session was stopped, the candidate acquired `id.waydro.Session`,
+started LXC, launched Feeder through `deckard-launch`, and Shell moved from
+Shortwave to `waydroid.com.nononsenseapps.feeder`; Android reported Feeder
+top-resumed. `deckard-runtime session stop` released the bus name and left LXC
+`STOPPED`. A second candidate session restarted LXC and repeated the visible
+launch. The legacy `marathon-waydroid.service` was then restored and confirmed
+active with LXC running.
+
+An *immediate cold launch* during a subsequent candidate session start is not
+yet reliable. The launcher returned success and Android reported Feeder
+top-resumed, but Shell briefly logged the Feeder window then returned to home
+(`GetForegroundApp` returned empty). This reproduced with one launcher and
+with two concurrent launchers. Asking the Shell to `LaunchApp` later restored
+Feeder, so the candidate still has a cold-window lifecycle/handoff gap. Merely
+calling `ShowAndroidApp` before as well as after the Binder launch did not
+resolve it. Do not select the candidate session or launcher for production
+until the immediate cold path stays visible under repeated device tests.
+
 Five sequential, read-only `sys.boot_completed` property requests within one
 SSH/user session took 43.9 ms through `deckard-launch` and 1,351.3 ms through
 the installed Python `waydroid prop get`. This is a small warm CLI-overhead

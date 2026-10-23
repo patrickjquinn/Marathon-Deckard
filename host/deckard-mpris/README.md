@@ -8,11 +8,11 @@ The legacy bus name, `waydroid.<package>` desktop entry, object path and
 `media_cmd` keys intentionally remain unchanged until the coordinated desktop
 identity migration. It accepts a private bus address for contract tests.
 
-Run from this directory:
+Run from the repository root:
 
 ```sh
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
+cargo test -p deckard-mpris --locked
+cargo clippy -p deckard-mpris --all-targets --locked -- -D warnings
 ```
 
 The private-bus fixtures require `dbus-daemon`. They cover simultaneous

@@ -6,9 +6,6 @@ rust-version = "1.88"
 license = "Apache-2.0"
 publish = false
 
-[workspace]
-resolver = "3"
-
 [dependencies]
 deckard-core = { path = "../deckard-core" }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
