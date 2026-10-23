@@ -11,11 +11,14 @@ use serde_json::{Map, Value};
 pub const CONTAINER_TRIGGER: &str = "some 1000000 10000000";
 /// PSI trigger on `/proc/pressure/memory`, the Shell's avg10 High level.
 pub const SYSTEM_TRIGGER: &str = "some 2000000 10000000";
+/// Processes each request asks DeckardSystem to end.
 pub const COUNT: u64 = 2;
+/// The least time between two requests.
 pub const GAP: Duration = Duration::from_secs(2);
 /// The gap after a reclaim that found nothing to end.
 pub const IDLE_GAP: Duration = Duration::from_secs(10);
 
+/// What ran short, sent as the request's `reason`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
     ContainerHigh,
@@ -47,6 +50,7 @@ pub fn over_budget(events: &str) -> u64 {
     total
 }
 
+/// Rate limit and back-off for `reclaim` requests.
 #[derive(Debug, Default)]
 pub struct ReclaimPolicy {
     connected: bool,

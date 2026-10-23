@@ -37,6 +37,7 @@ struct Inner {
     watch: Mutex<Option<Watch>>,
 }
 
+/// Watches memory pressure while DeckardSystem is connected.
 #[derive(Clone)]
 pub struct Reclaimer(Arc<Inner>);
 
@@ -91,6 +92,7 @@ impl Reclaimer {
         *sync::lock(&self.0.watch) = Some((stop, thread));
     }
 
+    /// DeckardSystem went away: stops watching.
     pub fn disconnected(&self) {
         sync::lock(&self.0.policy).set_connected(false);
         self.disarm();
