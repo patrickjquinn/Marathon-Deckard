@@ -103,6 +103,7 @@ impl Runtime {
         self.lock().active_since_ms()
     }
 
+    /// The session's state as Settings shows it.
     #[must_use]
     pub fn state(&self) -> State {
         self.lock().state()

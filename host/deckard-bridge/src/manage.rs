@@ -60,6 +60,7 @@ impl Manage {
         }
     }
 
+    /// Whether a DeckardSystem is connected.
     #[must_use]
     pub fn connected(&self) -> bool {
         self.inner().outbound.is_some()
