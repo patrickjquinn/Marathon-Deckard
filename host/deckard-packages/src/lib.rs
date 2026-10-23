@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::future::Future;
 use std::io::{self, Read, Seek};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -104,6 +103,7 @@ struct Pending {
     staged: Option<Staged>,
     /// None for a job, which ends with `Finished`.
     reply: Option<Sender<Answer>>,
+    _timeout: zbus::Task<()>,
 }
 
 struct Inner {
@@ -246,7 +246,8 @@ impl Packages {
         Ok(())
     }
 
-    /// Sends `message` as a new request and fails it after its timeout.
+    /// Sends `message` as a new request and fails it after its timeout; the
+    /// timer ends with the request.
     fn start(
         &self,
         kind: Kind,
@@ -257,24 +258,6 @@ impl Packages {
     ) -> fdo::Result<String> {
         let id = random_id()?;
         message["id"] = json!(id);
-        {
-            let mut pending = sync::lock(&self.0.pending);
-            if pending.len() >= MAX_PENDING {
-                let why = "too many pending package requests";
-                return Err(fdo::Error::LimitsExceeded(why.to_owned()));
-            }
-            let item = Pending {
-                kind,
-                route,
-                staged,
-                reply,
-            };
-            pending.insert(id.clone(), item);
-        }
-        if !(self.0.bridge)(route, &message) {
-            sync::lock(&self.0.pending).remove(&id);
-            return Err(failed("Android isn't running"));
-        }
         let (inner, timed) = (Arc::downgrade(&self.0), id.clone());
         let limit = match kind {
             Kind::Install => INSTALL_TIMEOUT,
@@ -291,7 +274,25 @@ impl Packages {
             }
         };
         let executor = self.0.bus.inner().executor();
-        executor.spawn(timeout, "deckard-package-timeout").detach();
+        let item = Pending {
+            kind,
+            route,
+            staged,
+            reply,
+            _timeout: executor.spawn(timeout, "deckard-package-timeout"),
+        };
+        {
+            let mut pending = sync::lock(&self.0.pending);
+            if pending.len() >= MAX_PENDING {
+                let why = "too many pending package requests";
+                return Err(fdo::Error::LimitsExceeded(why.to_owned()));
+            }
+            pending.insert(id.clone(), item);
+        }
+        if !(self.0.bridge)(route, &message) {
+            sync::lock(&self.0.pending).remove(&id);
+            return Err(failed("Android isn't running"));
+        }
         Ok(id)
     }
 
