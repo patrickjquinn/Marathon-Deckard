@@ -23,35 +23,21 @@ pub enum Container {
 }
 
 /// What launching needs from the session, the container and Android.
+///
+/// # Errors
+/// Each method fails when the session, the container manager, Android or the
+/// Shell is unavailable or refuses.
 pub trait Backend {
-    /// # Errors
-    /// The session is unavailable.
+    /// Makes sure the session runs and reports whether the container is frozen.
     fn ready(&mut self, session: Session) -> Result<Container>;
-    /// # Errors
-    /// The container manager refuses.
     fn unfreeze(&mut self) -> Result<()>;
-    /// # Errors
-    /// The container manager refuses.
     fn freeze(&mut self) -> Result<()>;
-    /// # Errors
-    /// Android refuses.
     fn setprop(&mut self, key: &str, value: &str) -> Result<()>;
-    /// # Errors
-    /// Android refuses.
     fn getprop(&mut self, key: &str, fallback: &str) -> Result<String>;
-    /// # Errors
-    /// Android refuses.
     fn launch_app(&mut self, package: &str) -> Result<()>;
     /// The package that handles the intent, or empty.
-    ///
-    /// # Errors
-    /// Android refuses.
     fn launch_intent(&mut self, action: &str, uri: &str) -> Result<String>;
-    /// # Errors
-    /// Android refuses.
     fn settings_put_string(&mut self, table: i32, key: &str, value: &str) -> Result<()>;
-    /// # Errors
-    /// The Shell refuses the window handoff.
     fn show_android_app(&mut self, package: &str) -> Result<()>;
 }
 

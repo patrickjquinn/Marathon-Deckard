@@ -173,7 +173,8 @@ fn read_app(parcel: &mut Parcel) -> Result<Option<AppInfo>> {
     }))
 }
 
-/// Client of Android's `waydroidplatform` service.
+/// Client of Android's `waydroidplatform` service. Every call fails when
+/// Binder or Android refuses it or the reply is malformed.
 pub struct Platform(SIBinder);
 
 impl Platform {
@@ -207,8 +208,6 @@ impl Platform {
         call(&self.0, PLATFORM_INTERFACE, code, write)
     }
 
-    /// # Errors
-    /// The call fails or the reply is malformed.
     pub fn getprop(&self, key: &str, fallback: &str) -> Result<String> {
         string(&mut self.call(1, |data| {
             data.write(key)?;
@@ -216,8 +215,6 @@ impl Platform {
         })?)
     }
 
-    /// # Errors
-    /// The call fails.
     pub fn setprop(&self, key: &str, value: &str) -> Result<()> {
         self.call(2, |data| {
             data.write(key)?;
@@ -228,8 +225,6 @@ impl Platform {
 
     /// Every app Android lists; absent entries are skipped.
     ///
-    /// # Errors
-    /// The call fails or the reply is malformed.
     pub fn apps(&self) -> Result<Vec<AppInfo>> {
         let mut reply = self.call(3, |_| Ok(()))?;
         let length = count(&mut reply, MAX_APPS)?;
@@ -242,20 +237,14 @@ impl Platform {
 
     /// One package, or `None` when Android has no entry for it.
     ///
-    /// # Errors
-    /// The call fails or the reply is malformed.
     pub fn app(&self, package: &str) -> Result<Option<AppInfo>> {
         read_app(&mut self.call(4, |data| data.write(package))?)
     }
 
-    /// # Errors
-    /// The call fails.
     pub fn launch_app(&self, package: &str) -> Result<()> {
         self.call(7, |data| data.write(package)).map(drop)
     }
 
-    /// # Errors
-    /// The call fails.
     pub fn settings_put_string(&self, table: i32, key: &str, value: &str) -> Result<()> {
         self.call(9, |data| {
             data.write(&table)?;
@@ -267,8 +256,6 @@ impl Platform {
 
     /// The package that handles the intent, or empty.
     ///
-    /// # Errors
-    /// The call fails or the reply is malformed.
     pub fn launch_intent(&self, action: &str, uri: &str) -> Result<String> {
         string(&mut self.call(13, |data| {
             data.write(action)?;
