@@ -13,7 +13,7 @@ use deckard_core::transport::{BridgeListener, BridgeSession};
 use serde_json::{Map, Value};
 
 const READ_POLL: Duration = Duration::from_millis(100);
-const OUTBOUND_CAPACITY: usize = 4;
+const OUTBOUND_CAPACITY: usize = 64;
 
 #[derive(Debug)]
 pub enum ChannelEvent {
