@@ -25,7 +25,7 @@ pub fn clean_text(value: &str, max_units: usize) -> String {
 }
 
 static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:waydroid|lineageos|lineage os)\b")
+    Regex::new(r"(?i)(?-u:\b)(?:waydroid|lineageos|lineage os)(?-u:\b)")
         .unwrap_or_else(|error| panic!("invalid fixed runtime-name pattern: {error}"))
 });
 
