@@ -135,23 +135,25 @@ fn refuses_symlinked_mount_sources_and_targets() {
 }
 
 #[test]
-fn refuses_linked_data_and_data_outside_home() {
+fn refuses_linked_data_and_the_home_itself() {
     let (temporary, home, root, data) = fixture();
     let elsewhere = temporary.path().join("elsewhere");
     std::fs::rename(home.join(".local"), &elsewhere).unwrap();
     symlink(&elsewhere, home.join(".local")).unwrap();
     let mut recorded = Recorded::default();
     assert!(share(&root, &home, &data, &mut recorded).is_err());
-    assert!(
-        share(
-            &root,
-            &home,
-            Path::new("/var/lib/deckard/data"),
-            &mut recorded
-        )
-        .is_err()
-    );
+    assert!(share(&root, &home, &home, &mut recorded).is_err());
     assert!(recorded.mounts.is_empty());
+}
+
+#[test]
+fn shares_data_bound_outside_the_home() {
+    let (temporary, home, root, _data) = fixture();
+    let stage = temporary.path().join("stage");
+    std::fs::rename(&root, &stage).unwrap();
+    let mut recorded = Recorded::default();
+    let report = share(&stage, &home, &stage.join("data"), &mut recorded).unwrap();
+    assert!(report.shared.contains(&"Pictures".into()));
 }
 
 #[test]
