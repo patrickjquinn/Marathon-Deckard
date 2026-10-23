@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::ids;
-use crate::json::{self, text};
+use crate::json;
 use crate::validate;
 
 /// The prefix of an Android app's id in the shell and its Keel bus name.
@@ -217,7 +217,7 @@ pub fn shortcuts(list: &[Value]) -> Vec<Shortcut> {
     let listed = list.iter().filter_map(Value::as_object);
     for shortcut in listed {
         let id = json::string(shortcut, "id");
-        let label = validate::simplified(&text(shortcut, "label", 64));
+        let label = validate::simplified(&json::text(shortcut, "label", 64));
         let clean = !id.is_empty() && units(id) <= 128 && validate::clean_text(id, 128) == id;
         let taken = out.iter().any(|known: &Shortcut| known.id == id);
         if !clean || label.is_empty() || out.len() >= MAX_SHORTCUTS || taken {
@@ -226,7 +226,7 @@ pub fn shortcuts(list: &[Value]) -> Vec<Shortcut> {
         out.push(Shortcut {
             id: id.to_owned(),
             label,
-            long_label: validate::simplified(&text(shortcut, "long", 256)),
+            long_label: validate::simplified(&json::text(shortcut, "long", 256)),
         });
     }
     out
@@ -507,22 +507,22 @@ pub fn screen(message: &Map<String, Value>) -> Option<Screen> {
         nodes.push(Node {
             index: index.min(9999),
             depth: int(node, "d").unwrap_or(0).clamp(0, 63),
-            class: text(node, "c", 128),
+            class: json::text(node, "c", 128),
             text: if flags & flags::PASSWORD == 0 {
-                text(node, "t", 1000)
+                json::text(node, "t", 1000)
             } else {
                 String::new()
             },
-            desc: text(node, "cd", 500),
-            hint: text(node, "h", 200),
-            view_id: text(node, "v", 128),
+            desc: json::text(node, "cd", 500),
+            hint: json::text(node, "h", 200),
+            view_id: json::text(node, "v", 128),
             flags,
         });
     }
     Some(Screen {
         pkg: pkg.to_owned(),
         snapshot: snapshot as i64,
-        title: validate::simplified(&text(message, "title", 256)),
+        title: validate::simplified(&json::text(message, "title", 256)),
         nodes,
     })
 }

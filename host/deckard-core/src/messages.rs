@@ -3,7 +3,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::ids::PackageName;
-use crate::json::{self, text};
+use crate::json;
 use crate::validate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,14 +118,14 @@ fn conversation(object: &Map<String, Value>) -> Value {
     for entry in &messages[messages.len().saturating_sub(10)..] {
         let item = entry.as_object().unwrap_or(&empty);
         recent.push(json!({
-            "sender": text(item, "sender", 128),
-            "text": text(item, "text", 1024),
+            "sender": json::text(item, "sender", 128),
+            "text": json::text(item, "text", 1024),
             "time": integer(item, "time", 0, 1_i64 << 50, 0),
         }));
     }
     json!({
-        "title": text(object, "title", 256),
-        "self": text(object, "self", 128),
+        "title": json::text(object, "title", 256),
+        "self": json::text(object, "self", 128),
         "group": json::boolean(object, "group"),
         "messages": recent,
     })
@@ -163,8 +163,8 @@ pub fn post(message: &Map<String, Value>) -> Result<Post, MessageError> {
         actions.push(("default".to_owned(), "Open".to_owned()));
     }
     if !reply_action.is_empty() {
-        reply_placeholder = text(reply, "placeholder", 128);
-        let label = text(reply, "label", 64);
+        reply_placeholder = json::text(reply, "placeholder", 128);
+        let label = json::text(reply, "label", 64);
         let label = if label.trim().is_empty() {
             "Reply".to_owned()
         } else {
@@ -181,7 +181,7 @@ pub fn post(message: &Map<String, Value>) -> Result<Post, MessageError> {
             break;
         }
         let id = json::string(item, "id");
-        let name = text(item, "label", 64);
+        let name = json::text(item, "label", 64);
         let taken = id == reply_action || actions.iter().any(|(existing, _)| existing == id);
         if action_id(id) && !taken && !name.trim().is_empty() {
             actions.push((id.to_owned(), name));
@@ -191,9 +191,9 @@ pub fn post(message: &Map<String, Value>) -> Result<Post, MessageError> {
         key: key.to_owned(),
         label: label(message, &package),
         package,
-        title: text(message, "title", 256),
-        body: text(message, "text", 4096),
-        category: category(&text(message, "category", 64)),
+        title: json::text(message, "title", 256),
+        body: json::text(message, "text", 4096),
+        category: category(&json::text(message, "category", 64)),
         actions,
         reply_action,
         reply_placeholder,
@@ -233,9 +233,9 @@ pub fn media(message: &Map<String, Value>) -> Result<Media, MessageError> {
         position_ms: integer(message, "position", 0, 100_000_000_000, 0),
         duration_ms: integer(message, "duration", 0, 100_000_000_000, 0),
         speed: speed.clamp(-16.0, 16.0),
-        title: text(message, "title", 256),
-        artist: text(message, "artist", 256),
-        album: text(message, "album", 256),
+        title: json::text(message, "title", 256),
+        artist: json::text(message, "artist", 256),
+        album: json::text(message, "album", 256),
         art: message
             .contains_key("art")
             .then(|| image(message, "art", 768 * 1024)),
