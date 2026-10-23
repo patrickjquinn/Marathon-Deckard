@@ -54,7 +54,8 @@ fn main() -> Result<()> {
     if !rustix::process::geteuid().is_root() {
         return Err("deckard-containerd requires root".into());
     }
-    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args[..] {
         ["--audit-production"] => return audit_production(),
         ["--audit-hardware"] => return audit_hardware(),
         // waydroid.cfg is read at each Start, so an uninitialized instance
