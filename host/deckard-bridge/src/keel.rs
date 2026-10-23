@@ -147,6 +147,8 @@ impl State {
 enum Change {
     App(App),
     Gone(String),
+    /// Every app Android has; the others are withdrawn.
+    List(HashSet<String>),
     Shortcuts(String, Vec<Shortcut>),
 }
 
@@ -287,16 +289,10 @@ impl KeelApps {
             },
             (BridgeRoute::User, "app_gone") => Change::Gone(string(message, "pkg").to_owned()),
             (BridgeRoute::User, "app_list") => {
-                let listed = keel::array(message, "pkgs").iter();
-                let listed: HashSet<&str> = listed.filter_map(Value::as_str).collect();
-                let known: Vec<String> = locked(&self.0.state).apps.keys().cloned().collect();
-                let gone = known
-                    .into_iter()
-                    .filter(|pkg| !listed.contains(pkg.as_str()));
-                for pkg in gone {
-                    self.0.change(Change::Gone(pkg));
-                }
-                return;
+                let listed = keel::array(message, "pkgs")
+                    .iter()
+                    .filter_map(Value::as_str);
+                Change::List(listed.map(str::to_owned).collect())
             }
             (BridgeRoute::System, "keel_changed") if self.0.known(string(message, "pkg")) => {
                 return self.0.refresh_shortcuts(string(message, "pkg"));
@@ -448,6 +444,17 @@ impl Shared {
                 }
             }
             Change::Gone(_) => {}
+            Change::List(listed) => {
+                let known: Vec<String> = locked(&self.state).apps.keys().cloned().collect();
+                let gone: Vec<&String> =
+                    known.iter().filter(|pkg| !listed.contains(*pkg)).collect();
+                for pkg in &gone {
+                    self.unpublish(pkg).await;
+                }
+                if !gone.is_empty() {
+                    self.save();
+                }
+            }
         }
     }
 
