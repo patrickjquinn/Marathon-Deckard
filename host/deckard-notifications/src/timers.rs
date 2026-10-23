@@ -3,6 +3,8 @@ use std::io;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use deckard_core::sync;
+
 pub(crate) const MAX_PENDING_DISMISSALS: usize = 512;
 
 #[derive(Default)]
@@ -99,10 +101,7 @@ impl TimerQueue {
     }
 
     pub(crate) fn stop(&self) {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = sync::lock(&self.pending);
         pending.stopped = true;
         pending.deadlines.clear();
         pending.by_id.clear();
@@ -112,11 +111,7 @@ impl TimerQueue {
 
     #[cfg(test)]
     fn pending_count(&self) -> usize {
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .deadlines
-            .len()
+        sync::lock(&self.pending).deadlines.len()
     }
 }
 
