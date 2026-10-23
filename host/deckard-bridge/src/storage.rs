@@ -207,6 +207,7 @@ impl Worker {
     fn prepare(&mut self) {
         let first = !self.stamp.exists();
         let mut ok = true;
+        let mut granted = Vec::new();
         for (_, dir) in &self.folders {
             if !dir.is_dir() && fs::create_dir_all(dir).is_err() {
                 continue;
@@ -216,8 +217,11 @@ impl Worker {
                 eprintln!("deckard-bridge: no ACL on {dir} ({error}); Android may not write there");
                 ok = false;
             } else if first {
-                walk(dir);
+                granted.push(dir);
             }
+        }
+        for dir in granted {
+            walk(dir);
         }
         let parent = self.stamp.parent().unwrap_or(Path::new("/"));
         let write = || fs::create_dir_all(parent).and_then(|()| fs::write(&self.stamp, "1\n"));
