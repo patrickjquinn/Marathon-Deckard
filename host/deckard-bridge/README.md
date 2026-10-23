@@ -15,16 +15,20 @@ Wired into the daemon (`main.rs`):
 - IME focus and panel replay to the Shell, packages (app and system routing,
   mutation policy) and notifications (Hub listener, persisted state, actions,
   icons, toasts).
+- Keel and Pilot app providers (`keel.rs`, model in `deckard-core::keel`):
+  `waydroid.<pkg>` serving `org.shipwright.Keel.Actions` per app on its own
+  connection, the `apps.json` catalogue, shortcuts and secure-window checks
+  over the system channel. Its private-bus test is `tests/keel_contract.rs`.
 
 Present as modules but **not wired** into the daemon: media/MPRIS and audio
 (`mpris.rs`, `audio.rs`), intents/file chooser/capture (`intents.rs`) and
 sharing (`sharing.rs`). Their tests include the sources with `#[path]`.
 
-Not ported yet from C++ `deckardd`: Keel and Pilot app providers, permission
-prompts, location, shared storage (ACLs, media indexing), Doze, PSI/cgroup
-reclamation, palette sync and the boot watchdog. Runtime unit state is polled
-once per second rather than subscribed to systemd property changes. The app
-channel's incoming event queue is unbounded.
+Not ported yet from C++ `deckardd`: permission prompts, location, shared
+storage (ACLs, media indexing), Doze, PSI/cgroup reclamation, palette sync and
+the boot watchdog. Runtime unit state is polled once per second rather than
+subscribed to systemd property changes. The app channel's incoming event queue
+is unbounded.
 
 Run the private-bus tests with:
 

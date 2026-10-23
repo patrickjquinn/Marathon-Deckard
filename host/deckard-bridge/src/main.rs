@@ -11,6 +11,7 @@ use deckard_bridge::app_channel::{AppChannel, ChannelEvent, ChannelHandle};
 use deckard_bridge::ime::{
     ImeController, ShellBus, ShellEvent, listen_shell, send_shell_calls, watch_shell_owner,
 };
+use deckard_bridge::keel::KeelApps;
 use deckard_bridge::manage::Manage;
 use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
@@ -51,6 +52,13 @@ fn emit_runtime(bus: &Connection, runtime: &Runtime) {
     );
 }
 
+/// What the system channel's messages go to besides Manage.
+#[derive(Clone)]
+struct SystemPeers {
+    packages: PackageBridge,
+    keel: KeelApps,
+}
+
 fn serve_session(
     mut session: BridgeSession,
     generation: u64,
@@ -58,7 +66,7 @@ fn serve_session(
     manage: Manage,
     runtime: Runtime,
     bus: Connection,
-    packages: PackageBridge,
+    peers: SystemPeers,
 ) {
     if session
         .set_read_timeout(Some(Duration::from_millis(100)))
@@ -84,7 +92,8 @@ fn serve_session(
         match session.read_message() {
             Ok(Some(message)) => {
                 manage.handle(generation, &message);
-                if let Err(error) = packages.handle(BridgeRoute::System, &message) {
+                peers.keel.handle(BridgeRoute::System, &message);
+                if let Err(error) = peers.packages.handle(BridgeRoute::System, &message) {
                     eprintln!("deckard-bridge: system package event failed: {error}");
                 }
             }
@@ -101,7 +110,8 @@ fn serve_session(
         }
     }
     manage.disconnect(generation);
-    let _ = packages.disconnected(BridgeRoute::System);
+    let _ = peers.packages.disconnected(BridgeRoute::System);
+    peers.keel.set_connected(BridgeRoute::System, false);
     if runtime.set_connected(manage.connected()) {
         emit_runtime(&bus, &runtime)
     }
@@ -112,7 +122,7 @@ fn listen_system(
     manage: Manage,
     runtime: Runtime,
     bus: Connection,
-    packages: PackageBridge,
+    peers: SystemPeers,
 ) {
     let mut reader: Option<thread::JoinHandle<()>> = None;
     let mut info_worker: Option<thread::JoinHandle<()>> = None;
@@ -127,6 +137,7 @@ fn listen_system(
                 if let Some(worker) = info_worker.take() {
                     let _ = worker.join();
                 }
+                peers.keel.set_connected(BridgeRoute::System, true);
                 if runtime.set_connected(true) {
                     emit_runtime(&bus, &runtime)
                 }
@@ -148,7 +159,7 @@ fn listen_system(
                 let thread_manage = manage.clone();
                 let thread_runtime = runtime.clone();
                 let thread_bus = bus.clone();
-                let thread_packages = packages.clone();
+                let thread_peers = peers.clone();
                 reader = Some(thread::spawn(move || {
                     serve_session(
                         session,
@@ -157,7 +168,7 @@ fn listen_system(
                         thread_manage,
                         thread_runtime,
                         thread_bus,
-                        thread_packages,
+                        thread_peers,
                     )
                 }));
             }
@@ -172,19 +183,26 @@ fn serve_app(
     packages: PackageBridge,
     notifications: NotificationBridge,
     actions: Receiver<deckard_core::notification_state::BridgeEvent>,
+    keel: KeelApps,
 ) {
     let mut current = None;
     loop {
         match events.recv_timeout(Duration::from_millis(10)) {
             Ok(ChannelEvent::Connected(generation)) => {
-                current = Some(generation);
+                if current.replace(generation).is_some() {
+                    keel.set_connected(BridgeRoute::User, false);
+                }
+                keel.set_connected(BridgeRoute::User, true);
                 if let Some(hello) = json!({"t":"hello","v":1}).as_object().cloned() {
                     let _ = handle.send_to(generation, hello);
                 }
             }
             Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
                 let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
-                let result = if matches!(
+                let result = if KeelApps::handles(kind) {
+                    keel.handle(BridgeRoute::User, &message);
+                    Ok(())
+                } else if matches!(
                     kind,
                     "inspect_result"
                         | "device_result"
@@ -207,6 +225,7 @@ fn serve_app(
             }
             Ok(ChannelEvent::Disconnected(generation)) if current == Some(generation) => {
                 current = None;
+                keel.set_connected(BridgeRoute::User, false);
                 let _ = packages.disconnected(BridgeRoute::User);
             }
             Ok(_) => {}
@@ -352,6 +371,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             BridgeRoute::System => system_send.send(message),
         }
     });
+    let keel = KeelApps::start(
+        bus.inner().clone(),
+        Arc::clone(&package_send),
+        vec![
+            PathBuf::from("/usr/bin/keel-mcp"),
+            PathBuf::from("/usr/bin/pilotd"),
+        ],
+        state.join("apps.json"),
+    )?;
     let packages = PackageBridge::register(
         bus.clone(),
         data.join("deckard/install"),
@@ -362,7 +390,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         NotificationBridge::new(bus.clone(), state.join("notifications.json"), cache)?;
     let _hub_listener = notifications.listen_hub()?;
     let app_packages = packages.clone();
-    thread::spawn(move || serve_app(app_events, app_handle, app_packages, notifications, actions));
+    let app_keel = keel.clone();
+    thread::spawn(move || {
+        serve_app(
+            app_events,
+            app_handle,
+            app_packages,
+            notifications,
+            actions,
+            app_keel,
+        )
+    });
     thread::spawn(move || {
         if let Err(error) = app_channel.run() {
             eprintln!("deckard-bridge: app socket failed: {error}");
@@ -370,7 +408,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
     let bridge_bus = bus.clone();
     let bridge_runtime = runtime.clone();
-    thread::spawn(move || listen_system(listener, manage, bridge_runtime, bridge_bus, packages));
+    let peers = SystemPeers { packages, keel };
+    thread::spawn(move || listen_system(listener, manage, bridge_runtime, bridge_bus, peers));
     let ime_bus = bus.clone();
     thread::spawn(move || serve_ime(ime_events, ime_handle, ime_bus));
     thread::spawn(move || {
