@@ -149,12 +149,14 @@ fn int(object: &Map<String, Value>, key: &str) -> Option<i64> {
 }
 
 /// The shell's app id, and the Keel bus name, of `pkg`.
+#[must_use]
 pub fn app_id(pkg: &str) -> String {
     format!("{APP_ID_PREFIX}{pkg}")
 }
 
 /// Validates an `app_info` (or an `apps.json` entry). `None` for a bad
 /// package name or one of Deckard's own.
+#[must_use]
 pub fn app(message: &Map<String, Value>) -> Option<App> {
     let pkg = json::string(message, "pkg");
     if !ids::is_package_name(pkg)
@@ -201,6 +203,7 @@ pub fn app(message: &Map<String, Value>) -> Option<App> {
 
 /// Validates a shortcut list: ids go back to Android as they came, so an id
 /// that needs cleaning is dropped, not rewritten.
+#[must_use]
 pub fn shortcuts(list: &[Value]) -> Vec<Shortcut> {
     let mut out = Vec::new();
     let listed = list.iter().filter_map(Value::as_object);
@@ -337,6 +340,7 @@ fn tool(app_id: &str, action: &str, hints: u8, mut spec: Value) -> Value {
 }
 
 /// The Keel manifest `Describe` answers for `app`.
+#[must_use]
 pub fn manifest(app: &App) -> Manifest {
     let id = app_id(&app.pkg);
     let label = &app.label;
@@ -454,6 +458,7 @@ pub fn manifest(app: &App) -> Manifest {
 
 /// Checks Invoke's arguments against a tool's input schema, whose every
 /// parameter is a bounded string. `None` when they fit.
+#[must_use]
 pub fn invalid(schema: &Value, args: &Map<String, Value>) -> Option<String> {
     for (name, value) in args {
         let Some(property) = schema["properties"].get(name) else {
@@ -473,6 +478,7 @@ pub fn invalid(schema: &Value, args: &Map<String, Value>) -> Option<String> {
 }
 
 /// Validates a `screen` reply. `None` for a bad package or snapshot.
+#[must_use]
 pub fn screen(message: &Map<String, Value>) -> Option<Screen> {
     let pkg = json::string(message, "pkg");
     let snapshot = message.get("snap").and_then(Value::as_f64).unwrap_or(0.0);
@@ -586,6 +592,7 @@ fn line(snapshot: i64, node: &Map<String, Value>) -> Option<String> {
 }
 
 /// One line per node, indented by depth, at most `max_units` UTF-16 units.
+#[must_use]
 pub fn render(screen: &Screen, max_units: usize) -> Rendered {
     let mut out = Rendered {
         text: String::new(),
@@ -604,6 +611,7 @@ pub fn render(screen: &Screen, max_units: usize) -> Rendered {
 }
 
 /// Parses an element id from `screen.read`.
+#[must_use]
 pub fn parse_node(id: &str) -> Option<NodeRef> {
     let (snapshot, index) = id.trim().split_once('.')?;
     let digits = |part: &str, max: usize| {
@@ -620,6 +628,7 @@ pub fn parse_node(id: &str) -> Option<NodeRef> {
 }
 
 /// A paired computer's keel-mcp (`--external`) gets no screen content.
+#[must_use]
 pub fn is_external_host(cmdline: &[u8]) -> bool {
     cmdline
         .split(|byte| *byte == 0)

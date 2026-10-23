@@ -33,6 +33,7 @@ pub enum Reason {
 
 /// `memory.events`' `high` and `max` counters: the container's trips over
 /// its budget.
+#[must_use]
 pub fn over_budget(events: &str) -> u64 {
     let mut total = 0_u64;
     for line in events.lines() {
