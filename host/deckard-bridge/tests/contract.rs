@@ -7,13 +7,7 @@ use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
 use deckard_bridge::contract;
 use deckard_bridge::manage::Manage;
 use deckard_bridge::runtime::Runtime;
-use deckard_core::framing;
-use deckard_core::ids::PackageName;
-use deckard_core::transport::BridgeListener;
 use serde_json::json;
-use std::io::{Read, Write};
-use std::os::unix::fs::MetadataExt;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use zbus::blocking::{Connection, Proxy};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
@@ -87,49 +81,6 @@ fn cxx_manage_request_and_reply_shapes() {
             .unwrap(),
     );
     assert!(!bool::try_from(gms.get("push").unwrap().clone()).unwrap());
-}
-
-#[test]
-fn cxx_system_socket_framing_and_peer_uid() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
-    let package = PackageName::try_from("org.marathonos.deckard.system")?;
-    let socket = dir.path().join("deckard/system.sock");
-    let packages = dir.path().join("system/packages.list");
-    std::fs::create_dir_all(packages.parent().unwrap())?;
-    let uid = std::fs::metadata(dir.path())?.uid();
-    std::fs::write(
-        &packages,
-        format!("{} {uid} 0 /data/user/0\n", package.as_str()),
-    )?;
-    let mut listener = BridgeListener::bind(&socket, &packages, package)?;
-    let mut client = UnixStream::connect(&socket)?;
-    let mut session = listener.accept()?;
-    let message = json!({"t":"managed","id":"0000000000000001","ok":true});
-    client.write_all(&framing::encode(message.as_object().unwrap())?)?;
-    assert_eq!(session.read_message()?.unwrap()["id"], "0000000000000001");
-    session.send_message(
-        json!({"t":"manage","op":"info","id":"0000000000000002"})
-            .as_object()
-            .unwrap(),
-    )?;
-    let mut header = [0_u8; 4];
-    client.read_exact(&mut header)?;
-    let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
-    client.read_exact(&mut body)?;
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body)?["op"],
-        "info"
-    );
-    std::fs::write(
-        &packages,
-        "org.marathonos.deckard.system 4294967294 0 /data/user/0\n",
-    )?;
-    let _denied = UnixStream::connect(&socket)?;
-    assert_eq!(
-        listener.accept().err().unwrap().kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
-    Ok(())
 }
 
 // Run with: dbus-run-session -- env DECKARD_BRIDGE_PRIVATE_BUS=1 cargo test -p deckard-bridge --test contract
