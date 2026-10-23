@@ -13,6 +13,7 @@ async-io.workspace = true
 base64.workspace = true
 blocking = "=1.7.0"
 deckard-core = { path = "../deckard-core" }
+deckard-host-tools = { path = "../deckard-host-tools" }
 deckard-ime = { path = "../deckard-ime" }
 deckard-mpris = { path = "../deckard-mpris" }
 deckard-notifications = { path = "../deckard-notifications" }

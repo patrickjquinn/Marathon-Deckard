@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_channel::Sender;
@@ -27,8 +27,13 @@ struct Inner {
 pub struct Manage(Arc<Mutex<Inner>>);
 
 impl Manage {
+    fn inner(&self) -> MutexGuard<'_, Inner> {
+        // Nothing panics while holding it: poison is a broken invariant.
+        self.0.lock().unwrap_or_else(|_| std::process::abort())
+    }
+
     pub fn connect(&self, sender: Sender<Map<String, Value>>) -> u64 {
-        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner();
         inner.generation = inner.generation.wrapping_add(1);
         for (_, pending) in inner.pending.drain() {
             let _ = pending.sender.try_send(Err("Android stopped".into()));
@@ -38,7 +43,7 @@ impl Manage {
     }
 
     pub fn disconnect(&self, generation: u64) {
-        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner();
         if inner.generation != generation {
             return;
         }
@@ -49,22 +54,16 @@ impl Manage {
     }
 
     pub fn connected(&self) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .outbound
-            .is_some()
+        self.inner().outbound.is_some()
     }
 
     pub fn is_generation(&self, generation: u64) -> bool {
-        let inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = self.inner();
         inner.generation == generation && inner.outbound.is_some()
     }
 
     pub fn send(&self, message: Map<String, Value>) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+        self.inner()
             .outbound
             .as_ref()
             .is_some_and(|outbound| outbound.try_send(message).is_ok())
@@ -77,7 +76,7 @@ impl Manage {
     ) -> Result<Map<String, Value>, String> {
         let (tx, rx) = async_channel::bounded(1);
         let id = {
-            let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = self.inner();
             let outbound = inner.outbound.clone().ok_or("Android isn't running")?;
             if inner.pending.len() >= MAX_PENDING {
                 return Err("busy".into());
@@ -106,11 +105,7 @@ impl Manage {
             None
         })
         .await;
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pending
-            .remove(&id);
+        self.inner().pending.remove(&id);
         reply.unwrap_or_else(|| Err("Android didn't answer".into()))
     }
 
@@ -121,7 +116,7 @@ impl Manage {
         let Some(id) = message.get("id").and_then(Value::as_str) else {
             return;
         };
-        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner();
         if inner.generation != generation {
             return;
         }

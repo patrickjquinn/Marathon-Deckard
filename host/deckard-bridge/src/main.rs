@@ -6,6 +6,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
+use deckard_bridge::Outbound;
 use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
 use deckard_bridge::app_channel::{AppChannel, ChannelEvent, ChannelHandle};
 use deckard_bridge::audio::{self, AudioWake};
@@ -14,13 +15,16 @@ use deckard_bridge::ime::{
 };
 use deckard_bridge::intents::{Intents, SendSystem};
 use deckard_bridge::keel::KeelApps;
+use deckard_bridge::location::LocationSync;
 use deckard_bridge::manage::Manage;
 use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
+use deckard_bridge::prompts::PermissionPrompts;
 use deckard_bridge::reclaim::Reclaimer;
 use deckard_bridge::runtime::{Runtime, call_unit, try_restart_unit, watch_unit};
 use deckard_bridge::sharing::Sharing;
 use deckard_bridge::shell_sync;
+use deckard_bridge::storage::SharedStorage;
 use deckard_bridge::watchdog::{self, BootWatchdog};
 use deckard_core::ids::PackageName;
 use deckard_core::runtime_state::UnitCall;
@@ -70,6 +74,8 @@ struct System {
     keel: KeelApps,
     intents: Intents,
     sharing: Sharing,
+    prompts: PermissionPrompts,
+    storage: SharedStorage,
 }
 
 fn serve_session(
@@ -96,6 +102,7 @@ fn serve_session(
                 }
                 system.intents.handle(generation, &message);
                 system.sharing.handle(generation, &message);
+                system.prompts.handle(&message);
             }
             Ok(None) => break,
             Err(error)
@@ -114,6 +121,8 @@ fn serve_session(
     system.keel.set_connected(BridgeRoute::System, false);
     system.intents.disconnected(generation);
     system.sharing.disconnected(generation);
+    system.prompts.system_lost();
+    system.storage.set_connected(false);
     if !system.manage.connected() {
         system.reclaimer.disconnected();
     }
@@ -139,6 +148,7 @@ fn listen_system(mut listener: BridgeListener, system: System) {
                     let _ = worker.join();
                 }
                 system.keel.set_connected(BridgeRoute::System, true);
+                system.storage.set_connected(true);
                 if system.runtime.set_connected(true) {
                     emit_runtime(&system.bus, &system.runtime)
                 }
@@ -176,6 +186,7 @@ fn serve_app(
     audio: AudioWake,
     keel: KeelApps,
     intents: Intents,
+    location: Option<LocationSync>,
 ) {
     let mut current = None;
     loop {
@@ -193,7 +204,12 @@ fn serve_app(
             }
             Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
                 let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
-                let result = if kind == "pick_done" {
+                let result = if kind == "location_request" {
+                    if let Some(location) = &location {
+                        location.handle(&message);
+                    }
+                    Ok(())
+                } else if kind == "pick_done" {
                     intents.pick_done(message.get("id").and_then(Value::as_str).unwrap_or(""));
                     Ok(())
                 } else if KeelApps::handles(kind) {
@@ -227,6 +243,9 @@ fn serve_app(
                 keel.set_connected(BridgeRoute::User, false);
                 media.clear();
                 let _ = packages.disconnected(BridgeRoute::User);
+                if let Some(location) = &location {
+                    location.bridge_lost();
+                }
             }
             Ok(_) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -413,6 +432,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let sharing = Sharing::new(bus.inner().clone(), intents_send, xfer);
     bus.object_server().at(OBJECT_PATH, sharing.clone())?;
+    let location_send = app_handle.clone();
+    let location = match Connection::system() {
+        Ok(system) => Some(LocationSync::start(
+            system.inner().clone(),
+            Arc::new(move |message| location_send.send(message).is_ok()),
+        )),
+        Err(error) => {
+            eprintln!("deckard-bridge: no system bus, so no location for Android: {error}");
+            None
+        }
+    };
     let app_keel = keel.clone();
     let app_intents = intents.clone();
     thread::spawn(move || {
@@ -426,6 +456,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             audio,
             app_keel,
             app_intents,
+            location,
         )
     });
     thread::spawn(move || {
@@ -433,6 +464,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             eprintln!("deckard-bridge: app socket failed: {error}");
         }
     });
+    let prompt_send = manage.clone();
+    let system_out: Arc<Outbound> = Arc::new(move |message| prompt_send.send(message));
+    let prompts = PermissionPrompts::new(bus.inner().clone(), Arc::clone(&system_out));
+    let storage = SharedStorage::start(
+        deckard_host_tools::shared_folders::host_folders(&home),
+        state.join("shared-acl-v1"),
+        system_out,
+    );
     let reclaim_manage = manage.clone();
     let reclaimer = Reclaimer::new(
         cgroup,
@@ -448,6 +487,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         keel,
         intents,
         sharing,
+        prompts,
+        storage,
     };
     thread::spawn(move || listen_system(listener, system));
     let ime_bus = bus.clone();

@@ -3,7 +3,7 @@ use std::ffi::{CString, OsStr};
 use std::io::{self, Read};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{self, AtFlags, FileType, Mode, OFlags, RenameFlags};
 use rustix::process::{Gid, Uid};
@@ -178,6 +178,20 @@ fn directories_from_home(home: &OwnedFd) -> BTreeMap<String, String> {
         read_small(file, 16384)
     };
     read().map_or_else(|_| BTreeMap::new(), |text| user_directories(&text))
+}
+
+/// The home folder behind each shared Android folder, as the hook binds
+/// them: (Android name, host path).
+#[must_use]
+pub fn host_folders(home: &Path) -> Vec<(&'static str, PathBuf)> {
+    let names =
+        open_absolute(home).map_or_else(|_| BTreeMap::new(), |fd| directories_from_home(&fd));
+    let mut folders = Vec::with_capacity(FOLDERS.len());
+    for (android, key, default) in FOLDERS {
+        let name = names.get(key).map_or(default, String::as_str);
+        folders.push((android, home.join(name)));
+    }
+    folders
 }
 
 fn children(directory: &OwnedFd) -> io::Result<Vec<CString>> {
