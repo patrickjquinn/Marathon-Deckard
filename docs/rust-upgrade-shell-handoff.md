@@ -200,7 +200,7 @@ Update `Marathon-Shell/packaging/packages/deckard/APKBUILD` as a preservation-or
 
 - Supply `Cargo.lock`, vendored or formally cached sources, and Cargo source configuration in the build inputs. The local successful frozen build used this machine's cache; it does not establish a clean offline abuild.
 - Use locked/offline builds and tests. Install `deckard-shared-folders` and `deckard-open-apk` Rust binaries at the current `/usr/libexec/` paths when activating them.
-- Keep polkit paths, system/user units and `deckardd.service.json` synchronized. Its `text-input` and `android-permissions` declarations remain required.
+- Keep polkit paths, system/user units and `deckard-bridge.service.json` (the user bridge unit `deckard-bridge.service`, exec `/usr/libexec/deckard-bridge`) synchronized. Its `text-input` and `android-permissions` declarations remain required.
 - Preserve Android APKs, microG installation, fonts, whiteouts, property files, overlay sync, reset/evidence helpers and image-specific guards.
 - Keep current runtime dependencies until their actual last caller is replaced. Removing a Python generator does not remove upstream Waydroid's Python dependency.
 - Remove Qt host build/runtime dependencies after the Rust daemon is selected and package dependency inspection confirms they are unnecessary. Shell itself continues to use Qt.

@@ -7,6 +7,12 @@ daemon that owns `org.marathonos.Deckard` on the session bus and the
 with the same bus names, object paths, interfaces, socket messages and file
 paths. Only one owner of `org.marathonos.Deckard` can run.
 
+The user unit is `deckard-bridge.service` (`host/packaging`), running
+`/usr/libexec/deckard-bridge` for the graphical session. The Shell admits it
+for `text-input` and `android-permissions` through
+`/usr/share/marathon-shell/services/deckard-bridge.service.json`, whose `exec`
+must match the installed binary.
+
 ## Where each `deckardd` responsibility lives
 
 | C++ (`host/deckardd/src`) | Rust |

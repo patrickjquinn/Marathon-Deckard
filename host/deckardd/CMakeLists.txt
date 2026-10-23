@@ -41,8 +41,6 @@ target_compile_definitions(deckardcore PUBLIC QT_NO_CAST_FROM_ASCII QT_NO_KEYWOR
 add_executable(deckardd src/main.cpp)
 target_link_libraries(deckardd PRIVATE deckardcore)
 install(TARGETS deckardd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES deckardd.service DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user)
-install(FILES deckardd.service.json DESTINATION ${CMAKE_INSTALL_DATADIR}/marathon-shell/services)
 
 option(BUILD_TESTING "Build the tests" ON)
 if(BUILD_TESTING)

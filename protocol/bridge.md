@@ -357,7 +357,7 @@ offsets. It ignores everything but `start` until a valid `start`.
 
 | Method | From |
 |---|---|
-| `Register(s prefix)` | deckardd at start and whenever the shell reappears, with `waydroid.`. Needs the caller to be a declared session service (`/usr/share/marathon-shell/services/deckardd.service.json`, permission `text-input`); the last caller owns the channel. |
+| `Register(s prefix)` | deckard-bridge at start and whenever the shell reappears, with `waydroid.`. Needs the caller to be a declared session service (`/usr/share/marathon-shell/services/deckard-bridge.service.json`, permission `text-input`); the last caller owns the channel. |
 | `SetEditor(s appId, u purpose, u hints)` | `start` |
 | `SetSurroundingText(s appId, s text, i cursor, i anchor)` | `state` |
 | `ShowPanel(s appId)` / `HidePanel(s appId)` | `show` / `hide`; also `HidePanel` when the IME disconnects |
