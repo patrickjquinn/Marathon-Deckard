@@ -5,6 +5,7 @@ pub mod messages;
 pub mod notification_state;
 pub mod palette;
 pub mod png_guard;
+pub mod pressure;
 pub mod runtime_state;
 pub mod sync;
 pub mod text;

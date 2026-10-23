@@ -8,6 +8,7 @@ pub mod ime;
 pub mod manage;
 pub mod notifications;
 pub mod packages;
+pub mod reclaim;
 pub mod runtime;
 pub mod shell_sync;
 pub mod watchdog;
