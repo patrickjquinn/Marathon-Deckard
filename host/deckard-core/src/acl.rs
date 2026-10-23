@@ -1,3 +1,11 @@
+//! POSIX ACL xattrs (linux/posix_acl_xattr.h) for Android's shared storage.
+
+use std::io;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
+
+use rustix::fs::XattrFlags;
+
 use crate::Error;
 
 pub const VERSION: u32 = 2;
@@ -126,6 +134,53 @@ pub fn default_acl(mode: u32, owner_uid: u32, media_group: u32) -> Result<Vec<u8
     ])
 }
 
+const ACCESS: &str = "system.posix_acl_access";
+const DEFAULT: &str = "system.posix_acl_default";
+
+/// Whether an encoded ACL has a named-group entry for `gid`.
+#[must_use]
+pub fn names_group(acl: &[u8], gid: u32) -> bool {
+    let (entries, _) = acl.get(4..).unwrap_or_default().as_chunks::<8>();
+    entries.iter().any(|entry| {
+        entry[..2] == (Tag::Group as u16).to_le_bytes() && entry[4..] == gid.to_le_bytes()
+    })
+}
+
+/// Lets `media_group` read and write `path`, a file or directory the
+/// caller owns; a directory also passes that access, and the owner's, to
+/// what is created in it. An ACL that already names the group is left
+/// alone, so watchers of the folder are not woken.
+///
+/// # Errors
+///
+/// `path` is a symlink, belongs to someone else, or its filesystem has no
+/// POSIX ACLs.
+pub fn grant(path: &Path, media_group: u32) -> io::Result<()> {
+    let metadata = path.symlink_metadata()?;
+    let uid = rustix::process::getuid().as_raw();
+    if metadata.file_type().is_symlink() || metadata.uid() != uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "not the user's own file",
+        ));
+    }
+    let mut current = [0u8; 512];
+    if let Ok(length) = rustix::fs::lgetxattr(path, ACCESS, &mut current)
+        && names_group(&current[..length], media_group)
+    {
+        return Ok(());
+    }
+    let mode = metadata.mode();
+    let invalid = |_| io::Error::from(io::ErrorKind::InvalidInput);
+    let access = access(mode, metadata.is_dir(), media_group).map_err(invalid)?;
+    rustix::fs::lsetxattr(path, ACCESS, &access, XattrFlags::empty())?;
+    if metadata.is_dir() {
+        let default = default_acl(mode, uid, media_group).map_err(invalid)?;
+        rustix::fs::lsetxattr(path, DEFAULT, &default, XattrFlags::empty())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests inspect encoded ACL records")]
 mod tests {
@@ -159,5 +214,58 @@ mod tests {
             Err(Error::InvalidAcl)
         );
         assert!(access(0o755, true, NO_ID).is_err());
+    }
+
+    fn entries(path: &Path, name: &str) -> Vec<(u16, u16, u32)> {
+        let mut buffer = [0u8; 512];
+        let length = rustix::fs::lgetxattr(path, name, &mut buffer).unwrap_or(0);
+        let (records, _) = buffer[..length]
+            .get(4..)
+            .unwrap_or_default()
+            .as_chunks::<8>();
+        records
+            .iter()
+            .map(|r| {
+                let word = |at: usize| u16::from_le_bytes([r[at], r[at + 1]]);
+                (
+                    word(0),
+                    word(2),
+                    u32::from_le_bytes([r[4], r[5], r[6], r[7]]),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn grants_media_rw_and_passes_it_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("photo.jpg");
+        std::fs::write(&file, "x").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        match grant(&file, 1023) {
+            Err(error)
+                if error.raw_os_error() == Some(rustix::io::Errno::OPNOTSUPP.raw_os_error()) =>
+            {
+                return;
+            }
+            result => result.unwrap(),
+        }
+        let access = entries(&file, ACCESS);
+        assert!(access.contains(&(0x08, 6, 1023)));
+        assert!(access.contains(&(0x20, 4, NO_ID)));
+        assert_eq!(std::fs::metadata(&file).unwrap().mode() & 0o002, 0);
+
+        grant(dir.path(), 1023).unwrap();
+        let defaults = entries(dir.path(), DEFAULT);
+        assert!(defaults.contains(&(0x08, 7, 1023)));
+        assert!(defaults.contains(&(0x02, 7, rustix::process::getuid().as_raw())));
+        let child = dir.path().join("new.txt");
+        std::fs::write(&child, "x").unwrap();
+        assert!(entries(&child, ACCESS).contains(&(0x08, 7, 1023)));
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(grant(&link, 1023).is_err());
     }
 }
