@@ -8,4 +8,8 @@ pub mod ime;
 pub mod manage;
 pub mod notifications;
 pub mod packages;
+pub mod prompts;
 pub mod runtime;
+
+/// Sends one message to an Android peer; false when it could not.
+pub type Outbound = dyn Fn(serde_json::Map<String, serde_json::Value>) -> bool + Send + Sync;

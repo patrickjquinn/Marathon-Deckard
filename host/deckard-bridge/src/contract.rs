@@ -113,6 +113,16 @@ pub fn permission(name: &str) -> Option<Vec<String>> {
         })
 }
 
+/// The Marathon permission an Android permission belongs to.
+#[must_use]
+pub fn marathon_permission(android: &str) -> Option<&'static str> {
+    let short = android.strip_prefix("android.permission.")?;
+    PERMISSIONS
+        .iter()
+        .find(|(_, values)| values.contains(&short))
+        .map(|(name, _)| *name)
+}
+
 fn str_field<'a>(value: &'a Map<String, Value>, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
