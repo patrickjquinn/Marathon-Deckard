@@ -57,3 +57,9 @@ The Shell screenshot still showed Shortwave over Feeder after launch. Android
 activity success is therefore insufficient as a user-visible launch test; the
 Shell must raise the Android window before switching generated desktop entries
 to this binary. No live unit or desktop entry was changed for this test.
+
+Five sequential, read-only `sys.boot_completed` property requests within one
+SSH/user session took 43.9 ms through `deckard-launch` and 1,351.3 ms through
+the installed Python `waydroid prop get`. This is a small warm CLI-overhead
+sample (about 8.8 ms versus 270.3 ms per invocation), not a cold-start, app
+launch, or end-to-end UI benchmark.
