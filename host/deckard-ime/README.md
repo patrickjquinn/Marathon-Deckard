@@ -1,8 +1,9 @@
 # deckard-ime
 
 Native Rust IME adapter for the current DeckardIme Android app and Marathon
-Shell `org.marathonos.Shell.TextInput1` contract. It is part of the root Cargo
-workspace but does not change the production `deckardd` service.
+Shell `org.marathonos.Shell.TextInput1` contract. `deckard-bridge` embeds the
+library for its IME channel (`host/deckard-bridge/src/ime.rs`); the Shell
+admits the bridge for `text-input` through `deckard-bridge.service.json`.
 
 The binary listens on `~/.local/share/waydroid/data/deckard/ime.sock` (or the
 equivalent `XDG_DATA_HOME` path). It uses `deckard-core::transport` for framed
@@ -19,18 +20,13 @@ Run the D-Bus signature test with:
 dbus-run-session -- env DECKARD_IME_PRIVATE_BUS=1 cargo test -p deckard-ime --all-targets --locked
 ```
 
-## Cutover gaps
+## Notes
 
-- This binary has not been packaged, deployed, or tested with the real Android
-  DeckardIme and Marathon keyboard. Do not run it alongside `deckardd`: both
-  would contend for the same socket and Shell registration.
-- Shell's service permission manifest still names `deckardd`. A production
-  split-service cutover must grant this binary `text-input`, or embed this
-  adapter inside the future Rust daemon.
-- Existing Android windows and desktop entries still use `waydroid.*` app ids
-  and a Waydroid data path. Rename those atomically with the broader runtime;
+- The standalone `deckard-ime` binary is not packaged. Do not run it alongside
+  `deckard-bridge`: both would contend for `ime.sock` and the Shell
+  registration.
+- Android windows and desktop entries still use `waydroid.*` app ids and a
+  Waydroid data path. Rename those atomically with the broader runtime;
   changing only this adapter's prefix would break focus and keyboard routing.
-- A Shell restart re-registers the IME but, like the C++ adapter, does not
+- A Shell restart re-registers the IME but, like the C++ adapter did, does not
   reconstruct an editor until Android reports another `start` or `state`.
-- The rest of the C++ daemon's channels, lifecycle and Python runtime are not
-  replaced by this crate.

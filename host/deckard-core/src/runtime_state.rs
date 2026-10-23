@@ -1,4 +1,4 @@
-//! Pure state and timeout policy for deckardd's runtime, boot watchdog, and
+//! Pure state and timeout policy for deckard-bridge's runtime, boot watchdog, and
 //! shell session follower. The adapter owns clocks, timers, I/O, and commands.
 
 pub const STOP_TIMEOUT_MS: u64 = 90_000;

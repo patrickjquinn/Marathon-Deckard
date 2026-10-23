@@ -2,7 +2,7 @@
 
 The native Deckard user session, replacing `waydroid session`. The Deckard
 package installs `deckard-session.service`; `deckard-launch` starts it on
-demand and `deckardd` honors the start-at-login preference.
+demand and `deckard-bridge` honors the start-at-login preference.
 
 `deckard-runtime session start` validates the graphical user and Wayland
 socket, owns `id.waydro.Session` without queueing, exports `/SessionManager`
@@ -37,7 +37,7 @@ calls; the user-facing property commands are `deckard-launch prop`.
 Not implemented, because Marathon does not use them: the clipboard bridge
 (Shell keeps its own clipboard and the device has no wl-clipboard for
 upstream's pyclip), auto-ADB (`auto_adb = False`) and upstream's
-notification forwarder (`deckardd` handles notifications).
+notification forwarder (`deckard-bridge` handles notifications).
 
 ```
 dbus-run-session -- env DECKARD_RUNTIME_PRIVATE_BUS=1 cargo test -p deckard-runtime --frozen

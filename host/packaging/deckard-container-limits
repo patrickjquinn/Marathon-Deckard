@@ -1,7 +1,7 @@
 #!/bin/sh
 # LXC start-host hook for Waydroid's container: a memory budget sized for the
 # device. memory.high makes the kernel reclaim from Android first and raises
-# the memory pressure deckardd answers by ending cached Android apps;
+# the memory pressure deckard-bridge answers by ending cached Android apps;
 # memory.max keeps an Android out-of-memory inside the container, so it can
 # never take Marathon's shell or foreground app with it.
 set -eu

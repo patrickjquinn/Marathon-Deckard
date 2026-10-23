@@ -6,7 +6,7 @@
   <vendor>Marathon OS</vendor>
   <vendor_url>https://github.com/patrickjquinn/Marathon-Deckard</vendor_url>
 
-  <!-- Reset Android from Settings: deckardd runs deckard-reset after the
+  <!-- Reset Android from Settings: deckard-bridge runs deckard-reset after the
        person confirmed. Android's data has root-owned files, so only root
        can remove it. -->
   <action id="org.marathonos.deckard.reset">
@@ -20,7 +20,7 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/deckard-reset</annotate>
   </action>
 
-  <!-- Android's boot stalled: deckardd's boot watchdog collects the stacks
+  <!-- Android's boot stalled: deckard-bridge's boot watchdog collects the stacks
        and sockets of the processes it waits on before restarting it. Only
        root can attach to the container. -->
   <action id="org.marathonos.deckard.boot-evidence">

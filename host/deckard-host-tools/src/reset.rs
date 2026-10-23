@@ -1,8 +1,8 @@
 //! Resets Android for one user: removes their Android data so the next start
 //! sets Android up again. Images and Deckard's overlay stay.
 //!
-//! Runs as root through pkexec, by deckardd after Settings' confirmation. In
-//! the data directory, `deckard/` (deckardd's sockets and the files it writes
+//! Runs as root through pkexec, by deckard-bridge after Settings' confirmation. In
+//! the data directory, `deckard/` (the bridge's sockets and the files it writes
 //! for Android) is kept, minus the files that crossed (`xfer/`, `install/`).
 //!
 //! Every removal is relative to a directory descriptor opened without

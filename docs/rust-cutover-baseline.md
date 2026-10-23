@@ -3,9 +3,11 @@
 > **Superseded for the root and user session.** Since this baseline the Pi
 > runs the Rust root manager (`deckard-containerd`, `deckard-container.service`,
 > owning `id.waydro.Container`) and the Rust session (`deckard-runtime`,
-> `deckard-session.service`); desktop entries run `deckard-launch`. C++
-> `deckardd` is still the bridge. The sections below are the chronological
-> record, including the Python-era contract this started from.
+> `deckard-session.service`); desktop entries run `deckard-launch`. From
+> package r12 the user bridge is the Rust `deckard-bridge`
+> (`deckard-bridge.service`, `/usr/libexec/deckard-bridge`) and C++ `deckardd`
+> is removed; see "Bridge selection" at the end. The sections below are the
+> chronological record, including the Python-era contract this started from.
 
 This records the production contract before replacing either running service.
 Measurements are a single warm snapshot, not cold-boot or peak values.
@@ -180,3 +182,21 @@ of the root container manager or bridge daemon. Rollback is to stop
 `deckard-session.service`, run
 `systemctl --global unmask marathon-waydroid.service` as root, start that
 legacy user unit, and restore desktop `Exec=` lines to `waydroid`.
+
+## Bridge selection (package r12, not yet run on the device)
+
+The six bridge areas (media and audio, intents and sharing, Keel, permission
+prompts with location and shared storage, lifecycle with pressure, theme and
+watchdog, and the runtime/initializer half) were merged into
+`deckard-bridge`. `host/deckard-bridge/README.md` maps every `deckardd` class
+to its Rust owner. The package now installs `deckard-bridge.service`, wanted by
+`graphical-session.target`, and the Shell's service declaration
+`deckard-bridge.service.json` with `exec` `/usr/libexec/deckard-bridge` and the
+same `text-input` and `android-permissions` permissions. The bus name, object
+path, interfaces, socket names and state paths are unchanged.
+
+This is qualified by the workspace tests on private buses only. The device
+must still show that the Shell admits the new exec for `Register`,
+`ExpectAppWindow`, `SetAppWindowSecure` and `PromptAndroid`, and that each
+area's round trip works with Android's prebuilt APKs. Rollback is the r11
+package, which brings back `deckardd.service`.

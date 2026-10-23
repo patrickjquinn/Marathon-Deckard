@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prints what a stuck Android boot is waiting on, for deckardd's boot
+# Prints what a stuck Android boot is waiting on, for deckard-bridge's boot
 # watchdog to put in the journal: the container's freezer state, the boot
 # properties, the composer HAL's start-up log, and the composer HAL's and
 # SurfaceFlinger's stacks and Unix sockets (both ends of the composer's
