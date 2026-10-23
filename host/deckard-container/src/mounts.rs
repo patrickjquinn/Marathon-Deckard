@@ -22,6 +22,7 @@ impl MountLayout {
             let path = self.images.join(name);
             safe_regular_file(&path)?;
         }
+        safe_regular_file(&self.work.join("waydroid.prop"))?;
         if self.overlays {
             safe_dir(&self.work.join("overlay"))?;
             safe_dir(&self.work.join("overlay/vendor"))?;
@@ -67,6 +68,14 @@ impl MountLayout {
                 &vendor,
             )?);
         }
+        commands.push(CommandSpec::new(
+            "mount",
+            [
+                "--bind".into(),
+                self.work.join("waydroid.prop").display().to_string(),
+                vendor.join("waydroid.prop").display().to_string(),
+            ],
+        ));
         Ok(commands)
     }
 
@@ -297,13 +306,14 @@ mod tests {
         fs::create_dir(&images)?;
         fs::write(images.join("system.img"), b"system")?;
         fs::write(images.join("vendor.img"), b"vendor")?;
+        fs::write(work.join("waydroid.prop"), b"ro.adb.secure=1\n")?;
         let layout = MountLayout {
             work,
             images,
             overlays: true,
         };
         let commands = layout.commands()?;
-        assert_eq!(commands.len(), 4);
+        assert_eq!(commands.len(), 5);
         assert!(
             commands[0]
                 .args
@@ -328,6 +338,9 @@ mod tests {
                 .iter()
                 .any(|arg| arg.contains("overlay/vendor"))
         );
+        assert_eq!(commands[4].program, "mount");
+        assert_eq!(commands[4].args[0], "--bind");
+        assert!(commands[4].args[2].ends_with("rootfs/vendor/waydroid.prop"));
         fs::remove_dir_all(base)?;
         Ok(())
     }

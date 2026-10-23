@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "host/deckard-bridge",
     "host/deckard-core",
     "host/deckard-container",
     "host/deckard-fonts-sync",

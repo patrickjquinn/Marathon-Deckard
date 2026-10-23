@@ -4,6 +4,8 @@ use crate::command::ProcessRunner;
 use crate::initializer_dbus::{InitializerService, OBJECT_PATH as INITIALIZER_PATH};
 use crate::lxc::{State, validate_property_key, validate_property_value};
 use crate::manager::ContainerManager;
+use crate::properties;
+use crate::session_config;
 use crate::{Error, Result};
 use rustix::fd::OwnedFd;
 use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
@@ -44,7 +46,7 @@ impl LauncherPolicy {
     fn production() -> Self {
         Self {
             executable: PathBuf::from("/usr/libexec/deckard-launch"),
-            trust_root: PathBuf::from("/opt"),
+            trust_root: PathBuf::from("/usr"),
             proc_root: PathBuf::from("/proc"),
             executable_owner: 0,
         }
@@ -177,7 +179,7 @@ struct Session {
 }
 
 trait Backend: Send {
-    fn start(&mut self) -> Result<()>;
+    fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()>;
     fn stop(&mut self) -> Result<()>;
     fn freeze(&mut self) -> Result<()>;
     fn unfreeze(&mut self) -> Result<()>;
@@ -189,7 +191,19 @@ trait Backend: Send {
 struct DirectBackend(ContainerManager);
 
 impl Backend for DirectBackend {
-    fn start(&mut self) -> Result<()> {
+    fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
+        if self.0.lxc.status(&mut ProcessRunner)? != State::Stopped {
+            return Err(Error::Invalid(
+                "container must be stopped before updating session files".into(),
+            ));
+        }
+        session_config::write(
+            &self.0.lxc.root.join(&self.0.lxc.name),
+            fields,
+            uid,
+            std::path::Path::new("/run/user"),
+        )?;
+        properties::write(&self.0.mounts.work, fields, uid)?;
         self.0.start(&mut ProcessRunner)
     }
 
@@ -248,6 +262,24 @@ impl ContainerService {
         }
     }
 
+    pub async fn shutdown(&self) -> fdo::Result<()> {
+        let state = self.state.clone();
+        blocking::unblock(move || {
+            let mut state = state
+                .lock()
+                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
+            if state.session.is_none() {
+                return Ok(());
+            }
+            state.backend.stop().map_err(service_error)?;
+            if let Some(session) = state.session.take() {
+                let _ = pidfd_send_signal(&session.pidfd, Signal::USR1);
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn start_authorized(
         &self,
         fields: HashMap<String, String>,
@@ -268,7 +300,10 @@ impl ContainerService {
             if state.session.is_some() {
                 return Err(fdo::Error::Failed("already tracking a session".into()));
             }
-            state.backend.start().map_err(service_error)?;
+            state
+                .backend
+                .start(&fields, identity.uid)
+                .map_err(service_error)?;
             state.session = Some(Session {
                 fields,
                 identity,
@@ -494,13 +529,17 @@ impl ContainerService {
     }
 }
 
-pub async fn serve_system_bus(manager: ContainerManager) -> zbus::Result<Connection> {
-    Builder::system()?
+pub async fn serve_system_bus(
+    manager: ContainerManager,
+) -> zbus::Result<(Connection, ContainerService)> {
+    let service = ContainerService::new(manager);
+    let connection = Builder::system()?
         .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, ContainerService::new(manager))?
+        .serve_at(OBJECT_PATH, service.clone())?
         .serve_at(INITIALIZER_PATH, InitializerService::new())?
         .build()
-        .await
+        .await?;
+    Ok((connection, service))
 }
 
 pub(crate) async fn caller(conn: &Connection, header: &Header<'_>) -> fdo::Result<Caller> {
@@ -546,7 +585,7 @@ mod tests {
     struct RecordingBackend(Arc<Mutex<Vec<&'static str>>>);
 
     impl Backend for RecordingBackend {
-        fn start(&mut self) -> Result<()> {
+        fn start(&mut self, _fields: &HashMap<String, String>, _uid: u32) -> Result<()> {
             self.0
                 .lock()
                 .map_err(|_| Error::Invalid("record lock poisoned".into()))?
@@ -597,6 +636,20 @@ mod tests {
                 .push("set_property");
             Ok(())
         }
+    }
+
+    #[test]
+    fn shutdown_does_not_stop_an_unowned_container() -> fdo::Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        async_io::block_on(service.shutdown())?;
+        assert!(
+            calls
+                .lock()
+                .map_err(|_| fdo::Error::Failed("record lock poisoned".into()))?
+                .is_empty()
+        );
+        Ok(())
     }
 
     #[test]
@@ -942,7 +995,7 @@ mod tests {
     fn introspection_preserves_python_method_signatures() {
         struct InertBackend;
         impl Backend for InertBackend {
-            fn start(&mut self) -> Result<()> {
+            fn start(&mut self, _fields: &HashMap<String, String>, _uid: u32) -> Result<()> {
                 Ok(())
             }
             fn stop(&mut self) -> Result<()> {

@@ -2,12 +2,16 @@
 
 pub mod command;
 pub mod dbus;
+#[allow(unsafe_code)]
+pub mod hardware;
 pub mod initializer;
 pub mod initializer_dbus;
 pub mod lxc;
 pub mod manager;
 pub mod mounts;
 pub mod network;
+pub mod properties;
+pub mod session_config;
 
 use std::fmt;
 use std::io;

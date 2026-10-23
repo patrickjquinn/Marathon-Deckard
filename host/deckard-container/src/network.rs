@@ -111,6 +111,10 @@ impl Network {
     }
 
     pub fn dnsmasq_command(&self) -> CommandSpec {
+        let account = fs::read_to_string("/etc/passwd")
+            .ok()
+            .and_then(|passwd| dnsmasq_account(&passwd).map(str::to_owned))
+            .unwrap_or_else(|| "nobody".to_owned());
         CommandSpec::new(
             "dnsmasq",
             [
@@ -118,7 +122,7 @@ impl Network {
                 "--strict-order".into(),
                 "--bind-interfaces".into(),
                 format!("--pid-file={}", self.pidfile().display()),
-                "--user=nobody".into(),
+                format!("--user={account}"),
                 "--listen-address=192.168.240.1".into(),
                 "--dhcp-range=192.168.240.2,192.168.240.254".into(),
                 "--dhcp-lease-max=253".into(),
@@ -231,6 +235,16 @@ impl Network {
     }
 }
 
+fn dnsmasq_account(passwd: &str) -> Option<&'static str> {
+    ["lxc-dnsmasq", "dnsmasq", "nobody"]
+        .into_iter()
+        .find(|account| {
+            passwd
+                .lines()
+                .any(|line| line.starts_with(&format!("{account}:")))
+        })
+}
+
 fn ensure_runtime(path: &Path) -> Result<()> {
     if path
         .symlink_metadata()
@@ -327,6 +341,12 @@ mod tests {
         );
         assert!(Network::new("bad;name".into(), "/run/deckard".into()).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn dedicated_dnsmasq_account_takes_precedence() {
+        let passwd = "nobody:x:65534:65534::/:/sbin/nologin\ndnsmasq:x:107:110::/:/sbin/nologin\n";
+        assert_eq!(dnsmasq_account(passwd), Some("dnsmasq"));
     }
 
     #[test]

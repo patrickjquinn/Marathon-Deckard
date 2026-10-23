@@ -1,11 +1,15 @@
 # deckard-container prototype
 
 This is a root-side Rust **prototype** in the root Cargo workspace. No systemd
-unit is installed, and it must not be
-deployed until the parity gaps below are closed and tested on a non-production
-device. The experimental `deckard-containerd` binary requires root and an
-explicit `--experimental-run` argument; it is not selected by any service. It
-never executes the Waydroid Python CLI or network script.
+unit is installed, and it must not replace the Python manager until the parity
+gaps below are closed and tested on the device. `deckard-containerd` requires
+root and an explicit `--experimental-run` or `--production-run` argument; neither
+is selected by a service. `--production-run` targets the initialized
+`/var/lib/waydroid` instance and refuses missing configuration. The read-only
+`--audit-production` mode checks its generated session config and properties
+against the running manager. `--audit-hardware` probes the configured Binder
+service manager without registering a service. It never executes the Waydroid
+Python CLI or network script.
 
 ## Implemented
 
@@ -25,6 +29,12 @@ never executes the Waydroid Python CLI or network script.
 - Startup ordering is network, mounts, then LXC. Shutdown waits for LXC to stop
   before unmounting. It intentionally does not guess that an LXC launch failed
   harmlessly: if LXC remains running after an error, mounts stay in place.
+- `Start` now validates session-owned Wayland/Pulse/data paths, writes the
+  authenticated LXC session binds and Android properties atomically, and mounts
+  the resulting `waydroid.prop` after images and overlays. A zero requested
+  density retains the image default. The read-only audit matched both installed
+  files on the Hackberry Pi on 2026-10-23. `SIGTERM`/`SIGINT` stop a session
+  started by this daemon, but do not stop an unowned existing container.
 - An inactive zbus 5.19.0 system-bus adapter owns `id.waydro.Container` at
   `/ContainerManager` when explicitly run. It implements the installed
   `id.waydro.ContainerManager` `Start(a{ss})`, `Stop(b)`, `Freeze()`,
@@ -115,30 +125,31 @@ reference. Specifically unsupported:
   Binder transaction path, so behavioral parity beyond the observed read is
   not established.
 - **Android Binder HAL `lineageos.waydroid.IHardware` / `waydroidhardware`**:
-  transaction 1 `enableNFC`, 2 `enableBluetooth`, 3 `suspend`, 4 `reboot`,
-  5 `upgrade` (32-bit timestamps), 6 `upgrade2` (64-bit timestamps), and
-  7 `shutdownRequest` are all unimplemented. Binder presence/re-registration
-  and replies are also absent.
-- Binder/ashmem driver probing and permissions, session-owned LXC config
-  generation and Wayland/Pulse/data binds, host permissions,
-  `waydroid_base.prop` generation, `waydroid.prop` bind, AIDL selection,
+  the inactive `hardware` module decodes all seven transaction codes and
+  handles Binder registration and bounded request queueing, but it is not
+  integrated into the container lifecycle. Host action callbacks, including
+  safe image upgrade and shutdown handling, are missing; the live Binder
+  service-manager probe passed, but no transaction test has been run. It must
+  not be activated until these are complete.
+- Binder/ashmem driver probing and permissions, host permissions,
+  `waydroid_base.prop` generation, AIDL selection,
   optional host EGL/ODM binds, NFC and sensor process handling,
   init/OTA/image replacement, and image hash verification are not implemented.
   The static generator only covers the local-image MAINLINE branch, uses
   existing trusted LXC templates, and requires a pre-existing `WORK/lxc`
   directory. It does not create rootfs/overlay directories, select or verify
   downloaded OTA images, update `waydroid.cfg`, or coordinate a running
-  container. The generated `config_session` is intentionally empty until a
-  separate authenticated session builder exists; the output is not boot-ready.
+  container. The scratch initializer publishes an empty `config_session`;
+  authenticated `Start` builds it for production, but the scratch output is
+  not boot-ready on its own.
 - Network supports the installed IPv4 iptables path only, not nftables,
   iptables implementations without `-w`, optional IPv6, bridge interface
   attachment policy, SELinux `restorecon`, or network coexistence. It uses a
   configurable bridge name but fixed subnet and DHCP parameters.
 - Mount path validation is preflight rather than descriptor-pinned; a hostile
   concurrent root process could swap a path between validation and `mount`.
-  The D-Bus adapter validates caller identity but does not yet apply or verify
-  session paths. Descriptor-pinned mounts and ownership/permission checks are
-  required before deployment.
+  The D-Bus adapter validates caller identity and session path ownership, but
+  descriptor-pinned mounts are still required before deployment.
 
 Run `cargo test -p deckard-container --locked` and
 `cargo clippy -p deckard-container --all-targets --locked -- -D warnings`.
