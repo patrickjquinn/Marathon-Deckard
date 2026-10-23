@@ -275,6 +275,7 @@ dependencies = [
  "async-io",
  "base64",
  "deckard-core",
+ "deckard-host-tools",
  "deckard-ime",
  "deckard-mpris",
  "deckard-notifications",
