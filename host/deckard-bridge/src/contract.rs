@@ -4,10 +4,8 @@
 use std::collections::{HashMap, HashSet};
 
 use deckard_core::ids;
-use deckard_core::keel::{array, string};
-use deckard_core::validate::{self, clean_text};
+use deckard_core::{keel, validate};
 pub use deckard_packages::VariantMap;
-use deckard_packages::dict;
 use serde_json::{Map, Value};
 
 /// The most entries read from one Android list.
@@ -77,32 +75,32 @@ fn number(value: &Map<String, Value>, key: &str, max: i64) -> i64 {
 
 /// The app's label, or its package when it has none.
 fn label(value: &Map<String, Value>, pkg: &str) -> String {
-    let label = validate::label(string(value, "label"));
+    let label = validate::label(keel::string(value, "label"));
     if label.is_empty() { pkg.into() } else { label }
 }
 
 /// The objects of the list at `key`, at most `MAX_ENTRIES` read.
 fn objects<'a>(value: &'a Map<String, Value>, key: &str) -> Vec<&'a Map<String, Value>> {
-    let entries = array(value, key).iter().take(MAX_ENTRIES);
+    let entries = keel::array(value, key).iter().take(MAX_ENTRIES);
     entries.filter_map(Value::as_object).collect()
 }
 
 /// An app's settings page, or an empty map for a bad package.
 pub fn app(value: &Map<String, Value>) -> VariantMap {
-    let pkg = string(value, "pkg");
+    let pkg = keel::string(value, "pkg");
     if !ids::is_package_name(pkg) {
         return VariantMap::new();
     }
-    let battery = match string(value, "battery") {
+    let battery = match keel::string(value, "battery") {
         mode @ ("unrestricted" | "optimized") => mode,
         _ => "optimized",
     };
-    dict([
+    deckard_packages::dict([
         ("pkg", pkg.into()),
         ("label", label(value, pkg).into()),
         (
             "versionName",
-            clean_text(string(value, "versionName"), 64).into(),
+            validate::clean_text(keel::string(value, "versionName"), 64).into(),
         ),
         ("versionCode", number(value, "versionCode", 1 << 53).into()),
         ("system", flag(value, "system").into()),
@@ -120,7 +118,7 @@ pub fn app(value: &Map<String, Value>) -> VariantMap {
 /// At most 50 distinct link domains, each `host` or `*.host`.
 fn domains(value: &Map<String, Value>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let entries = array(value, "domains").iter().take(MAX_ENTRIES);
+    let entries = keel::array(value, "domains").iter().take(MAX_ENTRIES);
     for domain in entries {
         let domain = domain.as_str().unwrap_or("");
         let host = domain.strip_prefix("*.").unwrap_or(domain);
@@ -141,7 +139,7 @@ fn domains(value: &Map<String, Value>) -> Vec<String> {
 fn permissions(value: &Map<String, Value>) -> Vec<VariantMap> {
     let mut states: HashMap<&str, (bool, bool)> = HashMap::new();
     for entry in objects(value, "perms") {
-        let name = marathon_permission(string(entry, "name"));
+        let name = marathon_permission(keel::string(entry, "name"));
         if let Some(name) = name.filter(|name| *name != "notifications") {
             let state = states.entry(name).or_insert((false, true));
             state.0 |= flag(entry, "granted");
@@ -152,7 +150,7 @@ fn permissions(value: &Map<String, Value>) -> Vec<VariantMap> {
     for (name, _) in PERMISSIONS {
         if let Some(&(granted, fixed)) = states.get(name) {
             let (granted, fixed) = (granted.into(), fixed.into());
-            out.push(dict([
+            out.push(deckard_packages::dict([
                 ("name", (*name).into()),
                 ("granted", granted),
                 ("fixed", fixed),
@@ -167,17 +165,20 @@ pub fn apps(value: &Map<String, Value>, fixed: Fixed) -> Vec<VariantMap> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for item in objects(value, "apps") {
-        let pkg = string(item, "pkg");
+        let pkg = keel::string(item, "pkg");
         if !ids::is_package_name(pkg) || !seen.insert(pkg) {
             continue;
         }
-        let mut map = dict([
+        let mut map = deckard_packages::dict([
             ("pkg", pkg.into()),
             ("label", label(item, pkg).into()),
             ("granted", flag(item, "granted").into()),
         ]);
         if fixed == Fixed::Shown {
-            map.extend(dict([("fixed", flag(item, "fixed").into())]));
+            map.extend(deckard_packages::dict([(
+                "fixed",
+                flag(item, "fixed").into(),
+            )]));
         }
         out.push(map);
         if out.len() == 500 {
@@ -190,9 +191,9 @@ pub fn apps(value: &Map<String, Value>, fixed: Fixed) -> Vec<VariantMap> {
 /// microG's state; push only while it is enabled, at most 10 accounts.
 pub fn google(value: &Map<String, Value>) -> VariantMap {
     let mut accounts = Vec::new();
-    let entries = array(value, "accounts").iter().take(MAX_ENTRIES);
+    let entries = keel::array(value, "accounts").iter().take(MAX_ENTRIES);
     for account in entries {
-        let account = clean_text(account.as_str().unwrap_or(""), 254)
+        let account = validate::clean_text(account.as_str().unwrap_or(""), 254)
             .trim()
             .to_owned();
         if accounts.len() < 10 && !account.is_empty() && !account.contains('\n') {
@@ -200,7 +201,7 @@ pub fn google(value: &Map<String, Value>) -> VariantMap {
         }
     }
     let enabled = flag(value, "enabled");
-    dict([
+    deckard_packages::dict([
         ("installed", flag(value, "installed").into()),
         ("enabled", enabled.into()),
         ("push", (enabled && flag(value, "push")).into()),

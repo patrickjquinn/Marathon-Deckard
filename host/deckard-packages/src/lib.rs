@@ -14,10 +14,7 @@ use std::time::Duration;
 
 use async_channel::Sender;
 use async_io::Timer;
-use deckard_core::ids;
-use deckard_core::keel::{array, string};
-use deckard_core::sync::lock;
-use deckard_core::validate::{self, clean_text};
+use deckard_core::{ids, keel, sync, validate};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::blocking::Connection;
@@ -173,16 +170,19 @@ impl Packages {
         kind: &str,
         message: &Map<String, Value>,
     ) -> zbus::Result<()> {
-        let id = string(message, "id");
+        let id = keel::string(message, "id");
         if kind == "package_changed" {
-            let (pkg, change) = (string(message, "pkg"), string(message, "change"));
+            let (pkg, change) = (
+                keel::string(message, "pkg"),
+                keel::string(message, "change"),
+            );
             let known = matches!(change, "installed" | "updated" | "removed");
             if route == BridgeRoute::User && known && ids::is_package_name(pkg) {
                 return self.emit("PackageChanged", &(pkg, change));
             }
             return Ok(());
         }
-        let mut pending = lock(&self.0.pending);
+        let mut pending = sync::lock(&self.0.pending);
         if kind == "install_progress" {
             let installing = |item: &Pending| item.kind == Kind::Install && item.route == route;
             if pending.get(id).is_some_and(installing) {
@@ -204,7 +204,7 @@ impl Packages {
             let _ = reply.try_send(Ok(message.clone()));
             return Ok(());
         }
-        let pkg = Some(string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
+        let pkg = Some(keel::string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
         let why = text(message, "message", 512);
         self.emit(
             "Finished",
@@ -218,7 +218,7 @@ impl Packages {
     ///
     /// When a `Finished` signal cannot be sent.
     pub fn bridge_lost(&self, route: BridgeRoute) -> zbus::Result<()> {
-        let lost: Vec<_> = lock(&self.0.pending)
+        let lost: Vec<_> = sync::lock(&self.0.pending)
             .extract_if(|_, item| item.route == route)
             .collect();
         for (id, item) in lost {
@@ -228,7 +228,7 @@ impl Packages {
     }
 
     pub fn pending_count(&self) -> usize {
-        lock(&self.0.pending).len()
+        sync::lock(&self.0.pending).len()
     }
 
     fn fail(&self, id: &str, item: Pending, why: &str) -> zbus::Result<()> {
@@ -252,7 +252,7 @@ impl Packages {
         let id = random_id()?;
         message["id"] = json!(id);
         {
-            let mut pending = lock(&self.0.pending);
+            let mut pending = sync::lock(&self.0.pending);
             if pending.len() >= MAX_PENDING {
                 let why = "too many pending package requests";
                 return Err(fdo::Error::LimitsExceeded(why.to_owned()));
@@ -266,7 +266,7 @@ impl Packages {
             pending.insert(id.clone(), item);
         }
         if !(self.0.bridge)(route, &message) {
-            lock(&self.0.pending).remove(&id);
+            sync::lock(&self.0.pending).remove(&id);
             return Err(failed("Android isn't running"));
         }
         let (inner, timed) = (Arc::downgrade(&self.0), id.clone());
@@ -279,7 +279,7 @@ impl Packages {
             let Some(inner) = inner.upgrade() else {
                 return;
             };
-            let item = lock(&inner.pending).remove(&timed);
+            let item = sync::lock(&inner.pending).remove(&timed);
             if let Some(item) = item {
                 let _ = Packages(inner).fail(&timed, item, "Android didn't answer");
             }
@@ -480,7 +480,7 @@ fn number(message: &Map<String, Value>, key: &str) -> f64 {
 }
 
 fn text(message: &Map<String, Value>, key: &str, limit: usize) -> String {
-    clean_text(string(message, key), limit)
+    validate::clean_text(keel::string(message, key), limit)
 }
 
 /// The first `limit` strings at `key` that pass `valid`.
@@ -491,7 +491,7 @@ fn names(
     valid: fn(&str) -> bool,
 ) -> Variant<'static> {
     let mut out = Vec::new();
-    for name in array(message, key) {
+    for name in keel::array(message, key) {
         let name = name.as_str().unwrap_or("");
         if out.len() < limit && valid(name) {
             out.push(name.to_owned());
@@ -523,10 +523,13 @@ fn hardware(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 
 }
 
 fn identity(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 4] {
-    let pkg = Some(string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
+    let pkg = Some(keel::string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
     [
         ("pkg", pkg.unwrap_or("").to_owned().into()),
-        ("label", validate::label(string(message, "label")).into()),
+        (
+            "label",
+            validate::label(keel::string(message, "label")).into(),
+        ),
         ("versionName", text(message, "versionName", 64).into()),
         (
             "versionCode",
@@ -537,11 +540,11 @@ fn identity(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 
 
 fn packages(message: &Map<String, Value>) -> Vec<VariantMap> {
     let mut list = Vec::new();
-    for entry in array(message, "packages") {
+    for entry in keel::array(message, "packages") {
         let Some(entry) = entry.as_object() else {
             continue;
         };
-        if !ids::is_package_name(string(entry, "pkg")) {
+        if !ids::is_package_name(keel::string(entry, "pkg")) {
             continue;
         }
         let launchable = entry.get("launchable").and_then(Value::as_bool);
@@ -558,7 +561,7 @@ fn packages(message: &Map<String, Value>) -> Vec<VariantMap> {
 }
 
 fn inspect(message: &Map<String, Value>) -> VariantMap {
-    let icon = validate::base64_png(string(message, "icon"), 256 * 1024);
+    let icon = validate::base64_png(keel::string(message, "icon"), 256 * 1024);
     let mut map = dict(identity(message).into_iter().chain(hardware(message)));
     map.extend(dict([
         ("ok", true.into()),

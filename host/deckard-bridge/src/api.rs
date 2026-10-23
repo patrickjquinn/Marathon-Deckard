@@ -1,19 +1,16 @@
 //! `org.marathonos.Deckard1`: the Android runtime and its apps, for Marathon
 //! Settings.
 
-use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{env, fs, thread};
 
 use async_io::Timer;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use deckard_core::ids;
-use deckard_core::png_guard;
 use deckard_core::runtime_state::{ResetError, State, UnitCall};
+use deckard_core::{ids, png_guard};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use zbus::interface;

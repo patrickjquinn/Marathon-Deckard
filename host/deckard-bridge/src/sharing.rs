@@ -13,10 +13,7 @@ use std::time::Duration;
 
 use async_channel::Sender;
 use async_io::Timer;
-use deckard_core::keel::{array, string};
-use deckard_core::sync::lock;
-use deckard_core::{ids, png_guard, text, validate};
-use deckard_packages::dict;
+use deckard_core::{ids, keel, png_guard, sync, text, validate};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::interface;
@@ -87,14 +84,14 @@ impl Sharing {
 
     /// DeckardSystem (re)connected: older requests fail.
     pub fn connected(&self, generation: u64) {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         state.generation = Some(generation);
         state.fail_all();
     }
 
     /// DeckardSystem left: pending requests fail.
     pub fn disconnected(&self, generation: u64) {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.generation == Some(generation) {
             state.generation = None;
             state.fail_all();
@@ -103,8 +100,8 @@ impl Sharing {
 
     /// A message from the authenticated system channel.
     pub fn handle(&self, generation: u64, m: &Map<String, Value>) {
-        let mut state = lock(&self.state);
-        let kind = match string(m, "t") {
+        let mut state = sync::lock(&self.state);
+        let kind = match keel::string(m, "t") {
             _ if state.generation != Some(generation) => return,
             "share_out" => {
                 drop(state);
@@ -114,7 +111,7 @@ impl Sharing {
             "shared" => Kind::Share,
             _ => return,
         };
-        let id = string(m, "id");
+        let id = keel::string(m, "id");
         if state
             .pending
             .get(id)
@@ -144,7 +141,7 @@ impl Sharing {
     async fn request(&self, kind: Kind, id: String, mut message: Map<String, Value>) -> Answer {
         let (answer, answered) = async_channel::bounded(1);
         {
-            let mut state = lock(&self.state);
+            let mut state = sync::lock(&self.state);
             if state.generation.is_none() {
                 return Err("Android isn't running".into());
             }
@@ -167,19 +164,19 @@ impl Sharing {
         } else {
             Err("Android isn't running".into())
         };
-        lock(&self.state).pending.remove(&id);
+        sync::lock(&self.state).pending.remove(&id);
         reply
     }
 
     fn share_out(&self, m: &Map<String, Value>) {
-        let (id, pkg) = (string(m, "id"), string(m, "pkg"));
+        let (id, pkg) = (keel::string(m, "id"), keel::string(m, "pkg"));
         if !intents::request_id(id) || !ids::is_package_name(pkg) {
             return;
         }
         let dir = intents::transfer(&self.xfer, id).ok();
         let mut resources = Vec::<Variant<'static>>::new();
         let mut total = 0_u64;
-        for name in array(m, "files") {
+        for name in keel::array(m, "files") {
             let name = name.as_str().unwrap_or("");
             if name != intents::safe_name(name) || resources.len() >= MAX_RESOURCES {
                 continue;
@@ -198,8 +195,8 @@ impl Sharing {
             ];
             resources.push(HashMap::<_, Variant<'_>>::from(item).into());
         }
-        let title = validate::clean_text(string(m, "title"), 256);
-        let text = validate::clean_text(string(m, "text"), MAX_TEXT);
+        let title = validate::clean_text(keel::string(m, "title"), 256);
+        let text = validate::clean_text(keel::string(m, "text"), MAX_TEXT);
         if !text.is_empty() && resources.len() < MAX_RESOURCES {
             let item = [("name", title.clone().into()), ("data", text.into())];
             resources.push(HashMap::<_, Variant<'_>>::from(item).into());
@@ -207,7 +204,7 @@ impl Sharing {
         if resources.is_empty() {
             return;
         }
-        let mime = Some(string(m, "mime")).filter(|mime| is_mime(mime));
+        let mime = Some(keel::string(m, "mime")).filter(|mime| is_mime(mime));
         let configuration = HashMap::from([
             ("resources", Variant::from(resources)),
             ("mimeType", mime.unwrap_or("").to_owned().into()),
@@ -284,7 +281,7 @@ impl Sharing {
         let reply = self.request(Kind::Share, tid.clone(), intents::object(message));
         let failure = match reply.await {
             Ok(reply) if reply.get("ok").and_then(Value::as_bool) == Some(true) => return Ok(()),
-            Ok(reply) => validate::clean_text(string(&reply, "error"), 512),
+            Ok(reply) => validate::clean_text(keel::string(&reply, "error"), 512),
             Err(error) => error,
         };
         remove(&self.xfer, &tid);
@@ -393,22 +390,25 @@ fn is_mime(mime: &str) -> bool {
 /// DeckardSystem's activities as the Shell takes them.
 fn targets(reply: &Map<String, Value>) -> Vec<VariantMap> {
     let mut out = Vec::new();
-    for target in array(reply, "targets") {
+    for target in keel::array(reply, "targets") {
         let Some(target) = target.as_object() else {
             continue;
         };
-        let pkg = string(target, "pkg");
-        let id = format!("{pkg}/{}", string(target, "activity"));
+        let pkg = keel::string(target, "pkg");
+        let id = format!("{pkg}/{}", keel::string(target, "activity"));
         if !target_id(&id) || pkg.starts_with("org.marathonos.deckard.") {
             continue;
         }
-        let png = validate::base64_png(string(target, "icon"), 256 * 1024).ok();
+        let png = validate::base64_png(keel::string(target, "icon"), 256 * 1024).ok();
         let png = png.and_then(|png| png_guard::sanitize(&png, 256 * 1024, 96).ok());
         let multiple = target.get("multiple").and_then(Value::as_bool);
-        out.push(dict([
+        out.push(deckard_packages::dict([
             ("id", id.into()),
             ("pkg", pkg.into()),
-            ("label", validate::label(string(target, "label")).into()),
+            (
+                "label",
+                validate::label(keel::string(target, "label")).into(),
+            ),
             (
                 "icon",
                 png.map(|png| api::png_uri(&png)).unwrap_or_default().into(),

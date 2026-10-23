@@ -14,9 +14,7 @@ use std::time::{Duration, SystemTime};
 
 use async_channel::Receiver;
 use async_io::Timer;
-use deckard_core::keel::{array, string};
-use deckard_core::sync::lock;
-use deckard_core::{ids, text, validate};
+use deckard_core::{ids, keel, sync, text, validate};
 use futures_lite::{StreamExt, future};
 use percent_encoding::CONTROLS;
 use regex::Regex;
@@ -128,7 +126,7 @@ pub enum Target {
 ///
 /// Why the message names nothing Marathon opens.
 pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
-    let (kind, uri) = (string(m, "kind"), string(m, "uri"));
+    let (kind, uri) = (keel::string(m, "kind"), keel::string(m, "uri"));
     if uri.encode_utf16().count() > 4096 {
         return Err("uri too long");
     }
@@ -143,7 +141,7 @@ pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
         "mailto" => Ok(mail(m)),
         "geo" if scheme == "geo" => Ok(geo(uri)),
         "geo" => Err("not a geo: URI"),
-        "settings" => match settings_route(string(m, "action"), string(m, "pkg")) {
+        "settings" => match settings_route(keel::string(m, "action"), keel::string(m, "pkg")) {
             route if route.is_empty() => Ok(Target::Launch("settings")),
             route => Ok(Target::Route("settings", route, Map::new())),
         },
@@ -179,12 +177,12 @@ fn phone(tel: bool, scheme: &str, m: &Map<String, Value>) -> Result<Target, &'st
     if (tel && scheme != "tel") || (!tel && !sms) {
         return Err("wrong scheme");
     }
-    let uri = string(m, "uri");
+    let uri = keel::string(m, "uri");
     let app = if tel { "phone" } else { "messages" };
     let number = number(uri);
     let mut body = String::new();
     if !tel {
-        body = validate::clean_text(string(m, "body"), 10_000);
+        body = validate::clean_text(keel::string(m, "body"), 10_000);
         if body.is_empty() {
             body = validate::clean_text(&query(uri, "body"), 10_000);
         }
@@ -244,15 +242,21 @@ fn mail(m: &Map<String, Value>) -> Target {
     let args = filled([
         ("to", addresses(m, "to")),
         ("cc", addresses(m, "cc")),
-        ("subject", validate::clean_text(string(m, "subject"), 1000)),
-        ("body", validate::clean_text(string(m, "body"), 100_000)),
+        (
+            "subject",
+            validate::clean_text(keel::string(m, "subject"), 1000),
+        ),
+        (
+            "body",
+            validate::clean_text(keel::string(m, "body"), 100_000),
+        ),
     ]);
     Target::Keel("email", "mail.compose", args)
 }
 
 fn addresses(m: &Map<String, Value>, key: &str) -> String {
     let mut out = Vec::new();
-    for value in array(m, key) {
+    for value in keel::array(m, key) {
         let address = value.as_str().unwrap_or("").trim();
         let length = address.encode_utf16().count();
         let odd = |c: char| c.is_ascii_whitespace() || "\x0b,<>\"".contains(c);
@@ -618,7 +622,7 @@ impl Intents {
 
     /// DeckardSystem connected: it hears which Android app is in front.
     pub fn connected(&self, generation: u64) {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         state.generation = Some(generation);
         let focus = state.focus.clone();
         drop(state);
@@ -627,7 +631,7 @@ impl Intents {
 
     /// DeckardSystem left: its picks end and their choosers close.
     pub fn disconnected(&self, generation: u64) {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.generation == Some(generation) {
             state.generation = None;
             state.pending.clear();
@@ -639,7 +643,7 @@ impl Intents {
     pub fn foreground_changed(&self, app: &str) {
         let pkg = app.strip_prefix("waydroid.").unwrap_or("");
         let pkg = if ids::is_package_name(pkg) { pkg } else { "" };
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.focus != pkg {
             state.focus = pkg.into();
             drop(state);
@@ -661,14 +665,18 @@ impl Intents {
 
     /// A message from the authenticated system channel.
     pub fn handle(&self, generation: u64, m: &Map<String, Value>) {
-        if lock(&self.state).generation != Some(generation) {
+        if sync::lock(&self.state).generation != Some(generation) {
             return;
         }
-        match string(m, "t") {
+        match keel::string(m, "t") {
             "open" => self.open(m),
             "pick" => self.pick(m),
-            "pick_done" => self.pick_done(string(m, "id")),
-            "pick_cancel" => drop(lock(&self.state).pending.remove(string(m, "id"))),
+            "pick_done" => self.pick_done(keel::string(m, "id")),
+            "pick_cancel" => drop(
+                sync::lock(&self.state)
+                    .pending
+                    .remove(keel::string(m, "id")),
+            ),
             _ => {}
         }
     }
@@ -692,15 +700,15 @@ impl Intents {
     }
 
     fn pick(&self, m: &Map<String, Value>) {
-        let id = string(m, "id");
-        let ask = match (string(m, "mode"), string(m, "kind")) {
+        let id = keel::string(m, "id");
+        let ask = match (keel::string(m, "mode"), keel::string(m, "kind")) {
             ("capture", "video") => Some(Ask::Video),
             ("capture", _) => Some(Ask::Photo),
             ("open", _) => Some(Ask::Open),
             ("save", _) => Some(Ask::Save),
             _ => None,
         };
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if !request_id(id) || state.pending.contains_key(id) {
             return;
         }
@@ -758,7 +766,7 @@ impl Intents {
 
     /// Ends the request: answers a save, or hands back the files to copy.
     fn conclude(&self, id: &str, ask: Ask, chosen: Vec<PathBuf>) -> Option<Vec<PathBuf>> {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.pending.remove(id).map(|(asked, _)| asked) != Some(ask) {
             return None;
         }
@@ -822,7 +830,7 @@ impl Intents {
         let camera = ("org.marathonos.camera", KEEL_PATH, KEEL);
         let reply = call(&self.bus, camera, "Invoke", &body, CAPTURE_TIMEOUT).await?;
         let reply = serde_json::from_str(&reply.body().deserialize::<String>()?);
-        let path = PathBuf::from(string(&reply.unwrap_or_default(), "path"));
+        let path = PathBuf::from(keel::string(&reply.unwrap_or_default(), "path"));
         let kinds = match video {
             true => ["mp4", "mkv", "webm", "mov"].as_slice(),
             false => ["jpg", "jpeg", "png"].as_slice(),
@@ -842,7 +850,7 @@ impl Intents {
     /// A file saved through DeckardBridge's Handoff provider was closed: it
     /// goes to where the person chose.
     pub fn pick_done(&self, id: &str) {
-        let state = lock(&self.state);
+        let state = sync::lock(&self.state);
         let saved = state.saved.iter().find(|(saved, _)| saved == id).cloned();
         drop(state);
         let Some((id, target)) = saved else {
@@ -868,7 +876,7 @@ fn portal_options(m: &Map<String, Value>, id: &str, ask: Ask) -> Options {
     };
     put("handle_token", format!("deckard_{id}").into());
     if ask == Ask::Save {
-        let name = safe_name(&validate::clean_text(string(m, "name"), 255));
+        let name = safe_name(&validate::clean_text(keel::string(m, "name"), 255));
         put("current_name", name.into());
     }
     if ask != Ask::Open {
@@ -876,7 +884,7 @@ fn portal_options(m: &Map<String, Value>, id: &str, ask: Ask) -> Options {
     }
     let multiple = m.get("multiple").and_then(Value::as_bool);
     put("multiple", multiple.unwrap_or(false).into());
-    let types = array(m, "mime");
+    let types = keel::array(m, "mime");
     let mut any = types.is_empty();
     let mut rules = Vec::new();
     for value in types {
