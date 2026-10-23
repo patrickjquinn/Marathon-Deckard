@@ -2,6 +2,8 @@
 //! `NetworkLocation`): one GeoClue client while Android has a request, none
 //! otherwise. GeoClue asks the Shell's agent whether Android may locate.
 
+use std::ops::Bound::Excluded;
+use std::ops::RangeBounds;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -9,11 +11,10 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use async_io::Timer;
 use futures_lite::{StreamExt, future};
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use zbus::fdo::DBusProxy;
 use zbus::message::Message;
-use zbus::zvariant::{OwnedObjectPath, Type, Value as Variant, as_value};
+use zbus::zvariant::{DeserializeDict, OwnedObjectPath, Type, Value as Variant};
 use zbus::{MatchRule, MessageStream};
 
 use crate::Outbound;
@@ -21,50 +22,38 @@ use crate::Outbound;
 pub const DESKTOP_ID: &str = "org.marathonos.Deckard";
 pub const MAX_INTERVAL_MS: u64 = 24 * 3600 * 1000;
 const GEOCLUE: &str = "org.freedesktop.GeoClue2";
-const MANAGER_PATH: &str = "/org/freedesktop/GeoClue2/Manager";
-const MANAGER: &str = "org.freedesktop.GeoClue2.Manager";
 const CLIENT: &str = "org.freedesktop.GeoClue2.Client";
-const LOCATION: &str = "org.freedesktop.GeoClue2.Location";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 /// GeoClue's "exact": Android coarsens it for apps with approximate access.
 const ACCURACY_EXACT: u32 = 8;
 /// Qt's default, which the C++ bridge used for every GeoClue call.
 const CALL_TIMEOUT: Duration = Duration::from_secs(25);
 
-/// A GeoClue Location's properties.
-#[derive(Debug, Default, Deserialize, Serialize, Type)]
-#[zvariant(signature = "a{sv}")]
-#[serde(default, rename_all = "PascalCase")]
+/// A GeoClue Location's properties; `timestamp` is seconds and microseconds.
+#[derive(Debug, Default, DeserializeDict, Type)]
+#[zvariant(signature = "a{sv}", rename_all = "PascalCase")]
 pub struct Fix {
-    #[serde(with = "as_value::optional", skip_serializing_if = "Option::is_none")]
     pub latitude: Option<f64>,
-    #[serde(with = "as_value::optional", skip_serializing_if = "Option::is_none")]
     pub longitude: Option<f64>,
-    #[serde(with = "as_value::optional", skip_serializing_if = "Option::is_none")]
     pub accuracy: Option<f64>,
-    #[serde(with = "as_value::optional", skip_serializing_if = "Option::is_none")]
     pub altitude: Option<f64>,
-    #[serde(with = "as_value::optional", skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
-    #[serde(with = "as_value::optional", skip_serializing_if = "Option::is_none")]
     pub heading: Option<f64>,
-    /// Seconds and microseconds since the epoch.
-    #[serde(with = "as_value::optional", skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<(u64, u64)>,
+}
+
+fn within(value: Option<f64>, range: impl RangeBounds<f64>) -> Option<f64> {
+    value.filter(|v| range.contains(v))
 }
 
 /// A fix as the bridge's `location` message; `None` when it names no place.
 #[must_use]
 pub fn message(fix: &Fix) -> Option<Map<String, Value>> {
-    let finite = |value: Option<f64>| value.filter(|v| v.is_finite());
-    let lat = finite(fix.latitude).filter(|v| (-90.0..=90.0).contains(v))?;
-    let lon = finite(fix.longitude).filter(|v| (-180.0..=180.0).contains(v))?;
-    let acc = finite(fix.accuracy).filter(|v| *v > 0.0)?;
+    let lat = within(fix.latitude, -90.0..=90.0)?;
+    let lon = within(fix.longitude, -180.0..=180.0)?;
+    let acc = within(fix.accuracy, (Excluded(0.0), Excluded(f64::INFINITY)))?;
     let (seconds, micros) = fix.timestamp?;
     let time = seconds.saturating_mul(1000).saturating_add(micros / 1000);
-    if time == 0 {
-        return None;
-    }
     let Value::Object(mut out) = json!({
         "t": "location", "lat": lat, "lon": lon, "acc": acc.min(1e7), "time": time as f64,
     }) else {
@@ -72,25 +61,16 @@ pub fn message(fix: &Fix) -> Option<Map<String, Value>> {
     };
     // GeoClue's "unknown" values: -DBL_MAX altitude, -1 speed and heading.
     let optional = [
-        (
-            "alt",
-            finite(fix.altitude).filter(|v| *v > -1e5 && *v < 1e5),
-        ),
-        (
-            "speed",
-            finite(fix.speed).filter(|v| (0.0..1e4).contains(v)),
-        ),
-        (
-            "heading",
-            finite(fix.heading).filter(|v| (0.0..360.0).contains(v)),
-        ),
+        ("alt", within(fix.altitude, (Excluded(-1e5), Excluded(1e5)))),
+        ("speed", within(fix.speed, 0.0..1e4)),
+        ("heading", within(fix.heading, 0.0..360.0)),
     ];
     for (key, value) in optional {
         if let Some(value) = value {
             out.insert(key.into(), json!(value));
         }
     }
-    Some(out)
+    (time > 0).then_some(out)
 }
 
 #[derive(Default)]
@@ -112,17 +92,14 @@ impl LocationSync {
     pub fn start(bus: zbus::Connection, send: Arc<Outbound>) -> Self {
         let desired = Arc::new(Desired::default());
         let (wake, woken) = async_channel::bounded(1);
-        let (events, received) = async_channel::bounded(8);
         let actor = Actor {
             bus: bus.clone(),
             send,
             desired: Arc::clone(&desired),
-            events,
             client: None,
-            creating: false,
         };
         let run = async move {
-            if let Err(error) = actor.run(woken, received).await {
+            if let Err(error) = actor.run(woken).await {
                 eprintln!("deckard-bridge: location stopped: {error}");
             }
         };
@@ -130,23 +107,12 @@ impl LocationSync {
         Self { desired, wake }
     }
 
-    /// Takes a `location_request`; other messages are ignored.
+    /// Takes a `location_request`: `on`, and `interval` in ms.
     pub fn handle(&self, message: &Map<String, Value>) {
-        if message.get("t").and_then(Value::as_str) != Some("location_request") {
-            return;
-        }
-        let interval = message
-            .get("interval")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        let interval = if interval.is_finite() {
-            interval.clamp(0.0, MAX_INTERVAL_MS as f64) as u64
-        } else {
-            0
-        };
-        let on = message.get("on").and_then(Value::as_bool).unwrap_or(false);
+        let interval = message.get("interval").and_then(Value::as_f64);
+        let interval = interval.unwrap_or(0.0).clamp(0.0, MAX_INTERVAL_MS as f64) as u64;
         self.desired.interval_ms.store(interval, Ordering::Release);
-        self.set_wanted(on);
+        self.set_wanted(message.get("on").and_then(Value::as_bool) == Some(true));
     }
 
     /// DeckardBridge went away: its request went with it.
@@ -161,46 +127,44 @@ impl LocationSync {
     }
 }
 
-enum Event {
-    Wake,
-    Created(zbus::Result<OwnedObjectPath>),
-    StartFailed,
-    OwnerLost,
-    Updated(OwnedObjectPath),
-    Ignored,
-}
-
 struct Client {
     path: OwnedObjectPath,
     started: bool,
     updates: MessageStream,
 }
 
+enum Event {
+    Wake,
+    OwnerLost,
+    Updated(OwnedObjectPath),
+    Ignored,
+}
+
+/// Owns the GeoClue client. Calls are awaited in turn: a request that
+/// arrives meanwhile is applied after, as Android's latest state.
 struct Actor {
     bus: zbus::Connection,
     send: Arc<Outbound>,
     desired: Arc<Desired>,
-    events: Sender<Event>,
     client: Option<Client>,
-    creating: bool,
 }
 
 async fn call<B>(
     bus: &zbus::Connection,
     path: &str,
-    interface: &str,
+    iface: &str,
     method: &str,
     body: &B,
 ) -> zbus::Result<Message>
 where
     B: serde::Serialize + Type,
 {
-    let reply = bus.call_method(Some(GEOCLUE), path, Some(interface), method, body);
-    future::or(reply, async {
+    let reply = bus.call_method(Some(GEOCLUE), path, Some(iface), method, body);
+    let timeout = async {
         Timer::after(CALL_TIMEOUT).await;
         Err(zbus::Error::Failure("GeoClue didn't answer".into()))
-    })
-    .await
+    };
+    future::or(reply, timeout).await
 }
 
 async fn set(bus: &zbus::Connection, client: &str, name: &str, value: Variant<'_>) {
@@ -209,18 +173,48 @@ async fn set(bus: &zbus::Connection, client: &str, name: &str, value: Variant<'_
     }
 }
 
+async fn create(bus: &zbus::Connection) -> zbus::Result<Client> {
+    let manager = "org.freedesktop.GeoClue2.Manager";
+    let reply = call(
+        bus,
+        "/org/freedesktop/GeoClue2/Manager",
+        manager,
+        "GetClient",
+        &(),
+    )
+    .await?;
+    let path: OwnedObjectPath = reply.body().deserialize()?;
+    let rule = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(GEOCLUE)?
+        .path(path.clone())?
+        .interface(CLIENT)?
+        .member("LocationUpdated")?
+        .build();
+    let updates = MessageStream::for_match_rule(rule, bus, Some(16)).await?;
+    set(bus, &path, "DesktopId", DESKTOP_ID.into()).await;
+    set(bus, &path, "RequestedAccuracyLevel", ACCURACY_EXACT.into()).await;
+    Ok(Client {
+        path,
+        started: false,
+        updates,
+    })
+}
+
 impl Actor {
-    async fn run(mut self, woken: Receiver<()>, received: Receiver<Event>) -> zbus::Result<()> {
-        let mut owners = DBusProxy::new(&self.bus)
-            .await?
+    async fn run(mut self, woken: Receiver<()>) -> zbus::Result<()> {
+        let proxy = DBusProxy::new(&self.bus).await?;
+        let mut owners = proxy
             .receive_name_owner_changed_with_args(&[(0, GEOCLUE)])
             .await?;
         loop {
             let wake = async { woken.recv().await.ok().map(|()| Event::Wake) };
-            let internal = async { received.recv().await.ok() };
             let owner = async {
-                let signal = owners.next().await?;
-                let lost = signal.args().is_ok_and(|args| args.old_owner().is_some());
+                let lost = owners
+                    .next()
+                    .await?
+                    .args()
+                    .is_ok_and(|a| a.old_owner().is_some());
                 Some(if lost {
                     Event::OwnerLost
                 } else {
@@ -231,135 +225,67 @@ impl Actor {
                 let Some(client) = self.client.as_mut() else {
                     return future::pending().await;
                 };
-                let Some(Ok(message)) = client.updates.next().await else {
+                let Some(Ok(signal)) = client.updates.next().await else {
                     return Some(Event::Ignored);
                 };
-                let paths = message
+                let paths = signal
                     .body()
                     .deserialize::<(OwnedObjectPath, OwnedObjectPath)>();
                 Some(paths.map_or(Event::Ignored, |(_, new)| Event::Updated(new)))
             };
-            let event = future::or(future::or(wake, internal), future::or(owner, updated)).await;
-            let Some(event) = event else {
-                return Ok(());
-            };
-            self.on(event).await;
-        }
-    }
-
-    async fn on(&mut self, event: Event) {
-        match event {
-            Event::Wake => self.apply().await,
-            Event::Created(result) => {
-                self.creating = false;
-                match result {
-                    Ok(path) => self.created(path).await,
-                    Err(error) => {
-                        eprintln!("deckard-bridge: no GeoClue client for Android: {error}")
+            let event = future::or(wake, future::or(owner, updated)).await;
+            match event {
+                None => return Ok(()),
+                Some(Event::Wake) => self.apply().await,
+                // GeoClue exits when idle and forgets its clients.
+                Some(Event::OwnerLost) => {
+                    if self.client.take().is_some() {
+                        self.apply().await;
                     }
                 }
+                Some(Event::Updated(path)) => self.updated(&path).await,
+                Some(Event::Ignored) => {}
             }
-            Event::StartFailed => {
-                if let Some(client) = self.client.as_mut() {
-                    client.started = false;
-                }
-            }
-            // GeoClue exits when idle and forgets its clients.
-            Event::OwnerLost => {
-                if self.client.take().is_some() {
-                    self.creating = false;
-                    self.apply().await;
-                }
-            }
-            Event::Updated(path) => self.updated(&path).await,
-            Event::Ignored => {}
         }
-    }
-
-    async fn created(&mut self, path: OwnedObjectPath) {
-        let rule = MatchRule::builder()
-            .msg_type(zbus::message::Type::Signal)
-            .sender(GEOCLUE)
-            .and_then(|rule| rule.path(path.clone()))
-            .and_then(|rule| rule.interface(CLIENT))
-            .and_then(|rule| rule.member("LocationUpdated"))
-            .map(|rule| rule.build());
-        let updates = match rule {
-            Ok(rule) => MessageStream::for_match_rule(rule, &self.bus, Some(16)).await,
-            Err(error) => Err(error),
-        };
-        let updates = match updates {
-            Ok(updates) => updates,
-            Err(error) => {
-                eprintln!("deckard-bridge: GeoClue updates: {error}");
-                return;
-            }
-        };
-        set(&self.bus, path.as_str(), "DesktopId", DESKTOP_ID.into()).await;
-        set(
-            &self.bus,
-            path.as_str(),
-            "RequestedAccuracyLevel",
-            ACCURACY_EXACT.into(),
-        )
-        .await;
-        self.client = Some(Client {
-            path,
-            started: false,
-            updates,
-        });
-        self.apply().await;
     }
 
     async fn apply(&mut self) {
         let wanted = self.desired.wanted.load(Ordering::Acquire);
-        let Some(client) = self.client.as_mut() else {
-            if wanted && !self.creating {
-                self.creating = true;
-                let (bus, events) = (self.bus.clone(), self.events.clone());
-                let create = async move {
-                    let reply = call(&bus, MANAGER_PATH, MANAGER, "GetClient", &()).await;
-                    let path =
-                        reply.and_then(|reply| reply.body().deserialize::<OwnedObjectPath>());
-                    let _ = events.send(Event::Created(path)).await;
-                };
-                self.bus.executor().spawn(create, "geoclue-client").detach();
+        if wanted && self.client.is_none() {
+            match create(&self.bus).await {
+                Ok(client) => self.client = Some(client),
+                Err(error) => eprintln!("deckard-bridge: no GeoClue client for Android: {error}"),
             }
+        }
+        let Some(client) = self.client.as_mut() else {
             return;
         };
-        let path = client.path.as_str();
         if wanted {
             let seconds = self.desired.interval_ms.load(Ordering::Acquire) / 1000;
             let seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
-            set(&self.bus, path, "TimeThreshold", seconds.into()).await;
-            if client.started {
-                return;
-            }
-            client.started = true;
-            let (bus, events, path) = (self.bus.clone(), self.events.clone(), path.to_owned());
-            let start = async move {
-                if let Err(error) = call(&bus, &path, CLIENT, "Start", &()).await {
+            set(&self.bus, &client.path, "TimeThreshold", seconds.into()).await;
+            if !client.started {
+                let started = call(&self.bus, &client.path, CLIENT, "Start", &()).await;
+                if let Err(error) = &started {
                     eprintln!("deckard-bridge: GeoClue refused Android's location: {error}");
-                    let _ = events.send(Event::StartFailed).await;
                 }
-            };
-            self.bus.executor().spawn(start, "geoclue-start").detach();
+                client.started = started.is_ok();
+            }
         } else if client.started {
             client.started = false;
-            let _ = call(&self.bus, path, CLIENT, "Stop", &()).await;
+            let _ = call(&self.bus, &client.path, CLIENT, "Stop", &()).await;
         }
     }
 
-    async fn updated(&self, path: &OwnedObjectPath) {
-        if !self.desired.wanted.load(Ordering::Acquire) {
+    async fn updated(&self, path: &str) {
+        let wanted = || self.desired.wanted.load(Ordering::Acquire);
+        if !wanted() {
             return;
         }
-        let reply = call(&self.bus, path.as_str(), PROPERTIES, "GetAll", &(LOCATION,)).await;
+        let location = ("org.freedesktop.GeoClue2.Location",);
+        let reply = call(&self.bus, path, PROPERTIES, "GetAll", &location).await;
         let fix = reply.and_then(|reply| reply.body().deserialize::<Fix>());
-        if !self.desired.wanted.load(Ordering::Acquire) {
-            return;
-        }
-        if let Some(out) = fix.ok().as_ref().and_then(message) {
+        if let Some(out) = fix.ok().as_ref().and_then(message).filter(|_| wanted()) {
             (self.send)(out);
         }
     }
@@ -369,8 +295,9 @@ impl Actor {
 mod tests {
     use super::*;
 
-    fn place() -> Fix {
-        Fix {
+    #[test]
+    fn a_fix_becomes_the_bridge_message() {
+        let place = || Fix {
             latitude: Some(53.35),
             longitude: Some(-6.26),
             accuracy: Some(40.0),
@@ -378,40 +305,16 @@ mod tests {
             speed: Some(-1.0),
             heading: Some(90.0),
             timestamp: Some((1_790_000_000, 500_000)),
-        }
-    }
-
-    #[test]
-    fn a_fix_becomes_the_bridge_message() {
+        };
         let m = message(&place()).unwrap_or_default();
-        assert_eq!(m["t"], "location");
-        assert_eq!(m["lat"], 53.35);
-        assert_eq!(m["acc"], 40.0);
-        assert_eq!(m["alt"], 12.5);
-        assert_eq!(m["heading"], 90.0);
-        assert!(!m.contains_key("speed"));
-        assert_eq!(m["time"], 1_790_000_000_500.0);
-
-        let bad = [
-            Fix {
-                latitude: Some(91.0),
-                ..place()
-            },
-            Fix {
-                accuracy: Some(0.0),
-                ..place()
-            },
-            Fix {
-                longitude: Some(f64::NAN),
-                ..place()
-            },
-            Fix {
-                timestamp: None,
-                ..place()
-            },
-        ];
-        for fix in bad {
-            assert!(message(&fix).is_none());
-        }
+        let expected = json!({"t":"location", "lat":53.35, "lon":-6.26, "acc":40.0,
+            "alt":12.5, "heading":90.0, "time":1_790_000_000_500.0});
+        assert_eq!(Value::Object(m), expected);
+        let mut bad = [place(), place(), place(), place()];
+        bad[0].latitude = Some(91.0);
+        bad[1].accuracy = Some(0.0);
+        bad[2].longitude = Some(f64::NAN);
+        bad[3].timestamp = None;
+        assert!(bad.iter().all(|fix| message(fix).is_none()));
     }
 }

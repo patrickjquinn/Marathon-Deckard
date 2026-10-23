@@ -17,8 +17,8 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 const CLIENT_PATH: &str = "/org/freedesktop/GeoClue2/Client/1";
 const LOCATION_PATH: &str = "/org/freedesktop/GeoClue2/Location/1";
 
-#[derive(Default)]
-struct Seen {
+#[derive(Debug, Default, PartialEq)]
+struct Asked {
     clients: u32,
     desktop_id: String,
     accuracy: u32,
@@ -27,9 +27,9 @@ struct Seen {
     stops: u32,
 }
 
-type Shared = Arc<Mutex<Seen>>;
+type Seen = Arc<Mutex<Asked>>;
 
-struct Manager(Shared);
+struct Manager(Seen);
 
 #[interface(name = "org.freedesktop.GeoClue2.Manager")]
 impl Manager {
@@ -40,7 +40,7 @@ impl Manager {
     }
 }
 
-struct Client(Shared);
+struct Client(Seen);
 
 #[interface(name = "org.freedesktop.GeoClue2.Client")]
 impl Client {
@@ -84,6 +84,7 @@ impl Client {
     ) -> zbus::Result<()>;
 }
 
+/// A fix with GeoClue's unknown altitude, and a property the bridge ignores.
 struct Location;
 
 #[interface(name = "org.freedesktop.GeoClue2.Location")]
@@ -104,14 +105,6 @@ impl Location {
     fn altitude(&self) -> f64 {
         -f64::MAX
     }
-    #[zbus(property, name = "Speed")]
-    fn speed(&self) -> f64 {
-        -1.0
-    }
-    #[zbus(property, name = "Heading")]
-    fn heading(&self) -> f64 {
-        -1.0
-    }
     #[zbus(property, name = "Description")]
     fn description(&self) -> String {
         String::new()
@@ -122,16 +115,12 @@ impl Location {
     }
 }
 
-fn until(seen: &Shared, done: impl Fn(&Seen) -> bool) {
+fn until(seen: &Seen, done: impl Fn(&Asked) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !done(&seen.lock().unwrap()) {
         assert!(Instant::now() < deadline, "GeoClue never saw it");
         std::thread::sleep(Duration::from_millis(10));
     }
-}
-
-fn request(sync: &LocationSync, request: Value) {
-    sync.handle(request.as_object().unwrap());
 }
 
 // Run with: dbus-run-session -- env DECKARD_BRIDGE_PRIVATE_BUS=1 cargo test -p deckard-bridge --test location
@@ -140,63 +129,64 @@ fn cxx_location_follows_androids_request() -> Result<(), Box<dyn std::error::Err
     if std::env::var_os("DECKARD_BRIDGE_PRIVATE_BUS").is_none() {
         return Ok(());
     }
-    let seen = Shared::default();
+    let seen = Seen::default();
     let geoclue = Connection::session()?;
     let server = geoclue.object_server();
     server.at("/org/freedesktop/GeoClue2/Manager", Manager(seen.clone()))?;
     server.at(CLIENT_PATH, Client(seen.clone()))?;
     server.at(LOCATION_PATH, Location)?;
     geoclue.request_name("org.freedesktop.GeoClue2")?;
-    let updated = || {
+    let updated = || -> zbus::Result<()> {
         let client = server.interface::<_, Client>(CLIENT_PATH).unwrap();
-        let location = ObjectPath::from_static_str_unchecked(LOCATION_PATH);
-        let root = ObjectPath::from_static_str_unchecked("/");
+        let (root, location) = (
+            ObjectPath::try_from("/")?,
+            ObjectPath::try_from(LOCATION_PATH)?,
+        );
         zbus::block_on(Client::location_updated(
             client.signal_emitter(),
             root,
             location,
         ))
-        .unwrap();
     };
 
     let (tx, sent) = mpsc::channel();
     let tx = Mutex::new(tx);
     let bus = Connection::session()?;
-    let send = Arc::new(move |message| tx.lock().unwrap().send(message).is_ok());
-    let sync = LocationSync::start(bus.inner().clone(), send);
-
-    request(
-        &sync,
-        json!({"t":"location_request", "on":true, "interval":60000}),
+    let sync = LocationSync::start(
+        bus.inner().clone(),
+        Arc::new(move |m| tx.lock().unwrap().send(m).is_ok()),
     );
+    let request = |on: bool, interval: u64| {
+        sync.handle(json!({"on":on, "interval":interval}).as_object().unwrap())
+    };
+
+    request(true, 60000);
     until(&seen, |s| s.starts == 1 && s.threshold == 60);
-    {
-        let s = seen.lock().unwrap();
-        assert_eq!(
-            (s.clients, s.desktop_id.as_str(), s.accuracy),
-            (1, DESKTOP_ID, 8)
-        );
-    }
-    updated();
+    let asked = Asked {
+        clients: 1,
+        desktop_id: DESKTOP_ID.into(),
+        accuracy: 8,
+        threshold: 60,
+        starts: 1,
+        stops: 0,
+    };
+    assert_eq!(*seen.lock().unwrap(), asked);
+    updated()?;
     let fix = sent.recv_timeout(Duration::from_secs(5))?;
-    assert_eq!((&fix["lon"], &fix["acc"]), (&json!(-6.26), &json!(25000.0)));
-    assert_eq!(fix["time"], 1_790_000_000_500.0);
-    assert!(!fix.contains_key("alt") && !fix.contains_key("speed"));
+    let expected = json!({"t":"location", "lat":53.35, "lon":-6.26, "acc":25000.0, "time":1_790_000_000_500.0});
+    assert_eq!(Value::Object(fix), expected);
 
     // A new interval while running changes the threshold, not the client.
-    request(
-        &sync,
-        json!({"t":"location_request", "on":true, "interval":5000}),
-    );
+    request(true, 5000);
     until(&seen, |s| s.threshold == 5);
     assert_eq!(seen.lock().unwrap().starts, 1);
 
-    request(&sync, json!({"t":"location_request", "on":false}));
+    request(false, 0);
     until(&seen, |s| s.stops == 1);
-    updated();
+    updated()?;
     assert!(sent.recv_timeout(Duration::from_millis(200)).is_err());
 
-    request(&sync, json!({"t":"location_request", "on":true}));
+    request(true, 0);
     until(&seen, |s| s.starts == 2);
     assert_eq!(seen.lock().unwrap().clients, 1);
     sync.bridge_lost();
@@ -205,7 +195,7 @@ fn cxx_location_follows_androids_request() -> Result<(), Box<dyn std::error::Err
     // GeoClue exits when idle; the next request gets a new client.
     geoclue.release_name("org.freedesktop.GeoClue2")?;
     geoclue.request_name("org.freedesktop.GeoClue2")?;
-    request(&sync, json!({"t":"location_request", "on":true}));
+    request(true, 0);
     until(&seen, |s| s.clients == 2 && s.starts == 3);
     Ok(())
 }
