@@ -217,7 +217,13 @@ fn stops_and_restarts_the_deckard_container() {
     let fixture = Fixture::new();
     fixture.seed();
     fixture.activate("deckard-container.service");
-    assert_eq!(status(&fixture.reset(&[])), 0);
+    let output = fixture.reset(&[]);
+    assert_eq!(
+        status(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let log = fixture.log();
     assert!(
         log.contains(&"stop deckard-container.service".to_owned()),

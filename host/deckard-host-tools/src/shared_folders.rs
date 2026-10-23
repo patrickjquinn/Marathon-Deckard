@@ -275,19 +275,18 @@ pub fn share(
     gid: u32,
     operations: &mut impl Operations,
 ) -> io::Result<Report> {
-    let relative = data
-        .strip_prefix(home)
-        .map_err(|_| invalid("Android data is outside the user's home"))?;
-    if relative.as_os_str().is_empty() {
-        return Err(invalid("Android data cannot be the user's home"));
-    }
     let home = open_absolute(home)?;
-    if fs::fstat(&home)?.st_uid != uid {
+    let home_stat = fs::fstat(&home)?;
+    if home_stat.st_uid != uid {
         return Err(invalid("home directory has a different owner"));
     }
-    let data = walk(&home, relative)?;
-    if fs::fstat(&data)?.st_uid != uid {
+    let data = open_absolute(data)?;
+    let data_stat = fs::fstat(&data)?;
+    if data_stat.st_uid != uid {
         return Err(invalid("Android data has a different owner"));
+    }
+    if (data_stat.st_dev, data_stat.st_ino) == (home_stat.st_dev, home_stat.st_ino) {
+        return Err(invalid("Android data cannot be the user's home"));
     }
     let root = open_absolute(rootfs)?;
     let media = create_directory(&data, "media", MEDIA_RW, MEDIA_RW, 0o770, operations)?;

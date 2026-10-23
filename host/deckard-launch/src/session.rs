@@ -109,10 +109,11 @@ impl NativeBackend {
     }
 
     fn platform(&mut self) -> Result<&Platform> {
-        if self.platform.is_none() {
-            self.platform = Some(Platform::connect(&self.config)?);
-        }
-        Ok(self.platform.as_ref().expect("platform initialized"))
+        let platform = match self.platform.take() {
+            Some(platform) => platform,
+            None => Platform::connect(&self.config)?,
+        };
+        Ok(self.platform.insert(platform))
     }
 
     fn wait_for_user_ready(&mut self) -> Result<()> {

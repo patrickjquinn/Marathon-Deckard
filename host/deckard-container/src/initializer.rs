@@ -1,87 +1,159 @@
-//! Offline, local-image portion of Waydroid's initializer. Nothing here stops
-//! a container, downloads images, or modifies an existing LXC instance.
+//! `waydroid init` from images already on the device (upstream
+//! `tools/actions/initializer.py`, `tools/helpers/lxc.py`,
+//! `tools/helpers/images.py`). Renders the LXC instance, `waydroid.cfg` and
+//! `waydroid_base.prop` from the templates in `lxc/`, which Deckard ships.
+//! Images are never downloaded.
 
+use crate::command::{CommandSpec, Runner};
+use crate::config;
+use crate::drivers::DriverNodes;
+use crate::lxc::{validate_property_key, validate_property_value};
+use crate::mounts::mountpoints_beneath;
 use crate::{Error, Result};
-use rustix::fs::{CWD, RenameFlags, renameat_with};
 use std::collections::BTreeSet;
+use std::env;
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Inputs for the preinstalled/local-image branch of `waydroid init`.
-/// The output is always `work/lxc/name` and must not already exist.
-pub struct LocalImageInit {
+const CONFIG_BASE: &str = include_str!("../lxc/config_base");
+const CONFIG_3: &str = include_str!("../lxc/config_3");
+const CONFIG_4: &str = include_str!("../lxc/config_4");
+const SECCOMP: &str = include_str!("../lxc/waydroid.seccomp");
+
+/// Image directories that take precedence over `images_path`.
+pub const PREINSTALLED: [&str; 2] = [
+    "/etc/waydroid-extra/images",
+    "/usr/share/waydroid-extra/images",
+];
+/// The Waydroid tools version the image is told it runs under.
+const TOOLS_VERSION: &str = "1.6.3";
+const PRODUCTS: [&str; 5] = ["brand", "device", "manufacturer", "model", "name"];
+
+/// One LXC instance: its state directory, container name and bridge.
+pub struct Instance {
     pub work: PathBuf,
-    pub images: PathBuf,
-    pub templates: PathBuf,
     pub name: String,
     pub bridge: String,
-    pub arch: String,
-    pub lxc_major: u32,
-    pub binder: String,
-    pub vndbinder: String,
-    pub hwbinder: String,
 }
 
-/// Host device nodes that existed when static config was generated.
+impl Instance {
+    pub fn production() -> Self {
+        Self {
+            work: PathBuf::from("/var/lib/waydroid"),
+            name: "waydroid".into(),
+            bridge: "waydroid0".into(),
+        }
+    }
+
+    fn lxc(&self) -> PathBuf {
+        self.work.join("lxc").join(&self.name)
+    }
+}
+
+/// Where `system.img` and `vendor.img` are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Images {
+    /// A preinstalled directory: OTA settings are cleared, the updater off.
+    Preinstalled(PathBuf),
+    /// The instance's `images` directory: configured OTA settings are kept.
+    Installed(PathBuf),
+}
+
+impl Images {
+    /// The first preinstalled directory holding both images, else `installed`.
+    ///
+    /// # Errors
+    /// No directory holds both images.
+    pub fn find(preinstalled: &[PathBuf], installed: &Path) -> Result<Self> {
+        let has_images = |dir: &Path| {
+            ["system.img", "vendor.img"].iter().all(|name| {
+                fs::symlink_metadata(dir.join(name)).is_ok_and(|metadata| {
+                    metadata.is_file() || metadata.file_type().is_block_device()
+                })
+            })
+        };
+        if let Some(dir) = preinstalled.iter().find(|dir| has_images(dir)) {
+            return Ok(Self::Preinstalled(dir.clone()));
+        }
+        if has_images(installed) {
+            return Ok(Self::Installed(installed.to_owned()));
+        }
+        Err(Error::Invalid(
+            "Android images are not installed; Deckard does not download them".into(),
+        ))
+    }
+
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Preinstalled(path) | Self::Installed(path) => path,
+        }
+    }
+}
+
+/// Device nodes and paths present on the host.
 #[derive(Default)]
 pub struct NodeInventory {
     paths: BTreeSet<String>,
 }
 
+const FIXED_NODES: [&str; 25] = [
+    "/dev/zero",
+    "/dev/null",
+    "/dev/full",
+    "/dev/ashmem",
+    "/dev/fuse",
+    "/dev/ion",
+    "/dev/tty",
+    "/dev/char",
+    "/dev/kgsl-3d0",
+    "/dev/mali0",
+    "/dev/pvr_sync",
+    "/dev/pmsg0",
+    "/dev/dxg",
+    "/dev/uhid",
+    "/dev/net/tun",
+    "/sys/module/lowmemorykiller",
+    "/dev/sw_sync",
+    "/sys/kernel/debug",
+    "/sys/class/leds/vibrator",
+    "/sys/devices/virtual/timed_output/vibrator",
+    "/dev/Vcodec",
+    "/dev/MTK_SMI",
+    "/dev/mdp_sync",
+    "/dev/mtk_cmdq",
+    "/mnt/wslg",
+];
+
 impl NodeInventory {
+    /// # Errors
+    /// A device directory cannot be listed or holds an unusable name.
     pub fn from_host() -> Result<Self> {
         let mut inventory = Self::default();
-        for path in [
-            "/dev/zero",
-            "/dev/null",
-            "/dev/full",
-            "/dev/ashmem",
-            "/dev/fuse",
-            "/dev/ion",
-            "/dev/tty",
-            "/dev/char",
-            "/dev/kgsl-3d0",
-            "/dev/mali0",
-            "/dev/pvr_sync",
-            "/dev/pmsg0",
-            "/dev/dxg",
-            "/dev/uhid",
-            "/dev/net/tun",
-            "/dev/sw_sync",
-            "/dev/Vcodec",
-            "/dev/MTK_SMI",
-            "/dev/mdp_sync",
-            "/dev/mtk_cmdq",
-            "/sys/module/lowmemorykiller",
-            "/sys/kernel/debug",
-            "/sys/class/leds/vibrator",
-            "/sys/devices/virtual/timed_output/vibrator",
-            "/mnt/wslg",
-            "/system/etc/libnfc-nci.conf",
-        ] {
-            if fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.file_type().is_symlink()) {
-                inventory.paths.insert(path.to_owned());
+        let fixed = FIXED_NODES.iter().chain(&["/system/etc/libnfc-nci.conf"]);
+        for path in fixed {
+            if Path::new(path).exists() {
+                inventory.paths.insert((*path).to_owned());
             }
         }
-        for dir in ["/dev/dri", "/dev", "/dev/graphics", "/dev/dma_heap"] {
-            if !Path::new(dir).is_dir() {
+        for (dir, prefix) in [
+            ("/dev", "fb"),
+            ("/dev/graphics", "fb"),
+            ("/dev", "video"),
+            ("/dev/dma_heap", ""),
+        ] {
+            let Ok(entries) = fs::read_dir(dir) else {
                 continue;
-            }
-            for entry in fs::read_dir(dir)? {
+            };
+            for entry in entries {
                 let entry = entry?;
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                let supported = match dir {
-                    "/dev/dri" => name.starts_with("renderD"),
-                    "/dev" => name.starts_with("fb") || name.starts_with("video"),
-                    "/dev/graphics" => name.starts_with("fb"),
-                    _ => true,
-                };
-                if supported && entry.file_type()?.is_char_device() {
+                if entry.file_name().to_string_lossy().starts_with(prefix)
+                    && entry.file_type()?.is_char_device()
+                {
                     let path = entry.path().to_string_lossy().into_owned();
                     validate_token(&path)?;
                     inventory.paths.insert(path);
@@ -91,6 +163,8 @@ impl NodeInventory {
         Ok(inventory)
     }
 
+    /// # Errors
+    /// A path is relative or unusable in an LXC mount entry.
     pub fn from_paths(paths: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut inventory = Self::default();
         for path in paths {
@@ -106,451 +180,444 @@ impl NodeInventory {
     fn contains(&self, path: &str) -> bool {
         self.paths.contains(path)
     }
-}
 
-struct Rendered {
-    config: String,
-    nodes: String,
-    seccomp: Vec<u8>,
-}
-
-impl LocalImageInit {
-    fn validate(&self) -> Result<()> {
-        for path in [&self.work, &self.images, &self.templates] {
-            if !path.is_absolute() {
-                return Err(Error::Invalid("initializer paths must be absolute".into()));
-            }
-            if path
-                .components()
-                .any(|component| component == Component::ParentDir)
-            {
-                return Err(Error::Invalid(
-                    "initializer paths must not contain '..'".into(),
-                ));
-            }
-            validate_token(&path.to_string_lossy())?;
-        }
-        for token in [
-            &self.name,
-            &self.bridge,
-            &self.arch,
-            &self.binder,
-            &self.vndbinder,
-            &self.hwbinder,
-        ] {
-            validate_identifier(token)?;
-        }
-        if self.lxc_major < 3 {
-            return Err(Error::Invalid("only LXC 3 or newer is supported".into()));
-        }
-        for image in ["system.img", "vendor.img"] {
-            validate_ext_image(&self.images.join(image))?;
-        }
-        Ok(())
+    fn with_prefix<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a String> {
+        self.paths
+            .iter()
+            .filter(move |path| path.starts_with(prefix))
     }
+}
 
-    fn render(&self, inventory: &NodeInventory) -> Result<Rendered> {
-        self.validate()?;
-        let base = read_regular(&self.templates.join("config_base"))?;
-        let version3 = read_regular(&self.templates.join("config_3"))?;
-        let mut config = String::from_utf8(base)
-            .map_err(|_| Error::Invalid("non-UTF-8 LXC base template".into()))?;
-        config.push_str(
-            &String::from_utf8(version3)
-                .map_err(|_| Error::Invalid("non-UTF-8 LXC v3 template".into()))?,
-        );
-        if self.lxc_major >= 4 && self.templates.join("config_4").exists() {
-            config.push_str(
-                &String::from_utf8(read_regular(&self.templates.join("config_4"))?)
-                    .map_err(|_| Error::Invalid("non-UTF-8 LXC v4 template".into()))?,
-            );
+/// The host facts the rendered files depend on.
+pub struct Host {
+    /// Waydroid's name for the architecture (`waydroid.cfg` `arch`).
+    pub arch: &'static str,
+    /// The kernel's name (`lxc.arch`).
+    pub lxc_arch: &'static str,
+    pub lxc_major: u32,
+    pub nodes: DriverNodes,
+    pub devices: NodeInventory,
+    /// The first DRM render node not driven by an unsupported driver.
+    pub render_node: Option<String>,
+    pub vulkan: Option<&'static str>,
+    /// `ro.product.waydroid.*` values from the device tree.
+    pub products: Vec<(&'static str, String)>,
+    pub ashmem: bool,
+}
+
+impl Host {
+    /// Call after the Binder nodes are set up.
+    ///
+    /// # Errors
+    /// The host is a Halium (Android-vendor) device, its architecture or LXC
+    /// is unsupported, or a Binder node is missing.
+    pub fn probe(runner: &mut impl Runner) -> Result<Self> {
+        if on_path("getprop") {
+            return Err(Error::Invalid(
+                "Halium hosts (with getprop) are not supported".into(),
+            ));
         }
-        for required in [
-            "lxc.rootfs.path = /var/lib/waydroid/rootfs",
-            "lxc.include = /var/lib/waydroid/lxc/waydroid/config_nodes",
-            "lxc.include = /var/lib/waydroid/lxc/waydroid/config_session",
-            "lxc.seccomp.profile = /var/lib/waydroid/lxc/waydroid/waydroid.seccomp",
-            "lxc.net.0.link = waydroid0",
-            "lxc.uts.name = waydroid",
-            "lxc.arch = LXCARCH",
-        ] {
-            if !config.contains(required) {
-                return Err(Error::Invalid(format!("LXC template missing {required}")));
-            }
+        let (arch, lxc_arch) = match env::consts::ARCH {
+            "aarch64" => ("arm64", "aarch64"),
+            "x86_64" => ("x86_64", "x86_64"),
+            other => return Err(Error::Invalid(format!("unsupported architecture: {other}"))),
+        };
+        let version = runner.run(
+            CommandSpec::new("lxc-info", ["--version"]).with_timeout(Duration::from_secs(3)),
+        )?;
+        let lxc_major = version
+            .trim()
+            .split('.')
+            .next()
+            .and_then(|major| major.parse().ok())
+            .ok_or_else(|| Error::Invalid("invalid LXC version".into()))?;
+        if lxc_major < 3 {
+            return Err(Error::Invalid("LXC 3 or newer is required".into()));
         }
-        let work = self.work.to_string_lossy();
-        config = config.replace(
-            "/var/lib/waydroid/lxc/waydroid/",
-            &format!("{work}/lxc/{}/", self.name),
-        );
-        config = config.replace("/var/lib/waydroid/", &format!("{work}/"));
-        config = config.replace(
-            "lxc.net.0.link = waydroid0",
-            &format!("lxc.net.0.link = {}", self.bridge),
-        );
-        config = config.replace(
-            "lxc.uts.name = waydroid",
-            &format!("lxc.uts.name = {}", self.name),
-        );
-        config = config.replace("LXCARCH", &self.arch);
-        if config.contains("/var/lib/waydroid") || config.contains("LXCARCH") {
-            return Err(Error::Invalid("unresolved LXC template token".into()));
-        }
-        let seccomp = read_regular(&self.templates.join("waydroid.seccomp"))?;
-        if seccomp.is_empty() {
-            return Err(Error::Invalid("empty LXC seccomp profile".into()));
-        }
-        Ok(Rendered {
-            config,
-            nodes: self.render_nodes(inventory)?,
-            seccomp,
+        let render_node = render_node(Path::new("/dev/dri"), Path::new("/sys/class/drm"));
+        let vulkan = render_node
+            .as_deref()
+            .and_then(|node| kernel_driver(Path::new("/sys/class/drm"), node))
+            .and_then(|driver| vulkan_driver(&driver));
+        Ok(Self {
+            arch,
+            lxc_arch,
+            lxc_major,
+            nodes: DriverNodes::discover(Path::new("/dev"))?,
+            devices: NodeInventory::from_host()?,
+            render_node,
+            vulkan,
+            products: device_tree(Path::new("/proc/device-tree")),
+            ashmem: Path::new("/dev/ashmem").exists(),
         })
     }
+}
 
-    /// Publish a new, offline LXC config directory. A failed write is removed;
-    /// `RENAME_NOREPLACE` prevents replacing a concurrent or existing instance.
-    pub fn prepare_local(&self, inventory: &NodeInventory) -> Result<PathBuf> {
-        self.prepare_local_cancellable(inventory, &AtomicBool::new(false), None)
+fn on_path(program: &str) -> bool {
+    env::var_os("PATH")
+        .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+fn kernel_driver(drm: &Path, node: &str) -> Option<String> {
+    let name = Path::new(node).file_name()?;
+    let uevent = fs::read_to_string(drm.join(name).join("device/uevent")).ok()?;
+    uevent
+        .lines()
+        .find_map(|line| line.strip_prefix("DRIVER="))
+        .map(str::to_owned)
+}
+
+fn render_node(dri: &Path, drm: &Path) -> Option<String> {
+    let mut nodes = Vec::new();
+    for entry in fs::read_dir(dri).ok()?.flatten() {
+        if entry.file_name().to_string_lossy().starts_with("renderD") {
+            nodes.push(entry.path().to_string_lossy().into_owned());
+        }
     }
+    nodes.sort();
+    nodes
+        .into_iter()
+        .find(|node| kernel_driver(drm, node).as_deref() != Some("nvidia"))
+}
 
-    /// Cancellation and deadline are checked before each write and publication.
-    /// They cannot interrupt a filesystem operation already in progress.
-    pub fn prepare_local_cancellable(
-        &self,
-        inventory: &NodeInventory,
-        cancelled: &AtomicBool,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<PathBuf> {
-        let check = || {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(Error::Invalid("local initialization cancelled".into()));
-            }
-            if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
-                return Err(Error::Timeout("local initialization timed out".into()));
-            }
-            Ok(())
+fn vulkan_driver(kernel_driver: &str) -> Option<&'static str> {
+    match kernel_driver {
+        "i915" | "xe" => Some("intel"),
+        "amdgpu" => Some("radeon"),
+        "panfrost" => Some("panfrost"),
+        "msm" | "msm_dpu" => Some("freedreno"),
+        "vc4" => Some("broadcom"),
+        "nouveau" => Some("nouveau"),
+        _ => None,
+    }
+}
+
+fn device_tree(root: &Path) -> Vec<(&'static str, String)> {
+    let mut products = Vec::new();
+    for product in PRODUCTS {
+        let Ok(value) = fs::read_to_string(root.join(product)) else {
+            continue;
         };
-        check()?;
-        let rendered = self.render(inventory)?;
-        check()?;
-        let parent = self.work.join("lxc");
-        let destination = parent.join(&self.name);
-        let metadata = fs::symlink_metadata(&parent)?;
-        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-            return Err(Error::Invalid("LXC parent is not a directory".into()));
+        let value = value.trim().trim_end_matches('\0').trim();
+        if !value.is_empty() && validate_property_value(value).is_ok() {
+            products.push((product, value.to_owned()));
         }
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .as_nanos();
-        let staging = parent.join(format!(
-            ".{}-{}-{nonce}.staging",
-            self.name,
-            std::process::id()
-        ));
-        fs::create_dir(&staging)?;
-        let result = (|| -> Result<()> {
-            fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
-            check()?;
-            write_new(&staging.join("config"), rendered.config.as_bytes())?;
-            check()?;
-            write_new(&staging.join("config_nodes"), rendered.nodes.as_bytes())?;
-            check()?;
-            write_new(&staging.join("config_session"), b"")?;
-            check()?;
-            write_new(&staging.join("waydroid.seccomp"), &rendered.seccomp)?;
-            File::open(&staging)?.sync_all()?;
-            fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))?;
-            check()?;
-            renameat_with(CWD, &staging, CWD, &destination, RenameFlags::NOREPLACE)
-                .map_err(std::io::Error::from)?;
-            File::open(&parent)?.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&staging);
+    }
+    products
+}
+
+/// One initialization of `instance` from `images` on `host`.
+pub struct Init<'a> {
+    pub instance: &'a Instance,
+    pub images: Images,
+    pub host: Host,
+}
+
+impl Init<'_> {
+    fn render_lxc(&self) -> String {
+        let lxc = self.instance.lxc();
+        let mut config = format!("{CONFIG_BASE}{CONFIG_3}");
+        if self.host.lxc_major >= 4 {
+            config.push_str(CONFIG_4);
         }
-        result.map(|()| destination)
+        config
+            .replace("@LXC@", &lxc.to_string_lossy())
+            .replace("@WORK@", &self.instance.work.to_string_lossy())
+            .replace("@ARCH@", self.host.lxc_arch)
+            .replace("@NAME@", &self.instance.name)
+            .replace("@BRIDGE@", &self.instance.bridge)
     }
 
-    fn render_nodes(&self, inventory: &NodeInventory) -> Result<String> {
-        let mut nodes = String::from("lxc.mount.entry = tmpfs dev tmpfs nosuid 0 0\n");
-        for path in [
-            "/dev/zero",
-            "/dev/null",
-            "/dev/full",
-            "/dev/ashmem",
-            "/dev/fuse",
-            "/dev/ion",
-            "/dev/tty",
-            "/dev/char",
-            "/dev/kgsl-3d0",
-            "/dev/mali0",
-            "/dev/pvr_sync",
-            "/dev/pmsg0",
-            "/dev/dxg",
-        ] {
-            if inventory.contains(path) {
-                let options = if path == "/dev/char" {
-                    "bind,create=dir,optional"
-                } else {
-                    "bind,create=file,optional"
-                };
-                push_node(&mut nodes, path, &path[1..], "none", options);
-            }
-        }
-        for path in &inventory.paths {
-            if path.starts_with("/dev/dri/renderD")
-                || path.starts_with("/dev/fb")
-                || path.starts_with("/dev/graphics/fb")
-                || path.starts_with("/dev/video")
-                || path.starts_with("/dev/dma_heap/")
-            {
-                push_node(
-                    &mut nodes,
-                    path,
-                    &path[1..],
-                    "none",
-                    "bind,create=file,optional",
-                );
-            }
-        }
-        for (source, target) in [
-            (&self.binder, "dev/binder"),
-            (&self.vndbinder, "dev/vndbinder"),
-            (&self.hwbinder, "dev/hwbinder"),
-        ] {
-            push_node(
-                &mut nodes,
-                &format!("/dev/{source}"),
-                target,
-                "none",
-                "bind,create=file,optional",
+    /// Upstream's `generate_nodes_lxc_config`, in its order.
+    fn render_nodes(&self) -> String {
+        let devices = &self.host.devices;
+        let mut nodes = String::new();
+        let mut entry = |source: &str, target: &str, kind: &str, options: &str| {
+            let _ = writeln!(
+                nodes,
+                "lxc.mount.entry = {source} {target} {kind} {options} 0 0"
             );
+        };
+        let file = "bind,create=file,optional";
+        let dir = "bind,create=dir,optional";
+        entry("tmpfs", "dev", "tmpfs", "nosuid");
+        for path in &FIXED_NODES[..7] {
+            if devices.contains(path) {
+                entry(path, &path[1..], "none", file);
+            }
         }
-        push_node(
-            &mut nodes,
+        if devices.contains("/dev/char") {
+            entry("/dev/char", "dev/char", "none", dir);
+        }
+        for path in &FIXED_NODES[8..13] {
+            if devices.contains(path) {
+                entry(path, &path[1..], "none", file);
+            }
+        }
+        if let Some(render) = &self.host.render_node {
+            entry(render, &render[1..], "none", file);
+        }
+        for prefix in [
+            "/dev/fb",
+            "/dev/graphics/fb",
+            "/dev/video",
+            "/dev/dma_heap/",
+        ] {
+            let matches: Vec<&String> = devices.with_prefix(prefix).collect();
+            for path in matches {
+                entry(path, &path[1..], "none", file);
+            }
+        }
+        let binder_nodes = [
+            (&self.host.nodes.binder, "dev/binder"),
+            (&self.host.nodes.vndbinder, "dev/vndbinder"),
+            (&self.host.nodes.hwbinder, "dev/hwbinder"),
+        ];
+        for (name, target) in binder_nodes {
+            entry(&format!("/dev/{name}"), target, "none", file);
+        }
+        entry(
             "none",
             "dev/pts",
             "devpts",
             "defaults,mode=644,ptmxmode=666,create=dir",
         );
-        for path in [
-            "/dev/uhid",
-            "/dev/net/tun",
-            "/dev/sw_sync",
-            "/dev/Vcodec",
-            "/dev/MTK_SMI",
-            "/dev/mdp_sync",
-            "/dev/mtk_cmdq",
-        ] {
-            if inventory.contains(path) {
-                let target = if path == "/dev/net/tun" {
-                    "dev/tun"
-                } else {
-                    &path[1..]
-                };
-                push_node(
-                    &mut nodes,
-                    path,
-                    target,
-                    "none",
-                    "bind,create=file,optional",
-                );
+        if devices.contains("/dev/uhid") {
+            entry("/dev/uhid", "dev/uhid", "none", file);
+        }
+        if devices.contains("/dev/net/tun") {
+            entry("/dev/net/tun", "dev/tun", "none", file);
+        }
+        if devices.contains("/sys/module/lowmemorykiller") {
+            entry(
+                "/sys/module/lowmemorykiller",
+                "sys/module/lowmemorykiller",
+                "none",
+                dir,
+            );
+        }
+        let host_perms = self.instance.work.join("host-permissions");
+        entry(
+            &host_perms.to_string_lossy(),
+            "vendor/etc/host-permissions",
+            "none",
+            "bind,optional",
+        );
+        if devices.contains("/dev/sw_sync") {
+            entry("/dev/sw_sync", "dev/sw_sync", "none", file);
+        }
+        if devices.contains("/sys/kernel/debug") {
+            entry(
+                "/sys/kernel/debug",
+                "sys/kernel/debug",
+                "none",
+                "rbind,create=dir,optional",
+            );
+        }
+        for path in &FIXED_NODES[18..20] {
+            if devices.contains(path) {
+                entry(path, &path[1..], "none", dir);
             }
         }
-        let host_perms = self.work.join("host-permissions");
-        if host_perms.exists() {
-            push_node(
-                &mut nodes,
-                &host_perms.to_string_lossy(),
-                "vendor/etc/host-permissions",
+        for path in &FIXED_NODES[20..24] {
+            if devices.contains(path) {
+                entry(path, &path[1..], "none", file);
+            }
+        }
+        entry("tmpfs", "mnt_extra", "tmpfs", "nodev");
+        if devices.contains("/mnt/wslg") {
+            entry(
+                "/mnt/wslg",
+                "mnt_extra/wslg",
+                "none",
+                "rbind,create=dir,optional",
+            );
+        }
+        for path in ["tmp", "var", "run"] {
+            entry("tmpfs", path, "tmpfs", "nodev");
+        }
+        if devices.contains("/system/etc/libnfc-nci.conf") {
+            entry(
+                "/system/etc/libnfc-nci.conf",
+                "system/etc/libnfc-nci.conf",
                 "none",
                 "bind,optional",
             );
         }
-        for path in [
-            "/sys/module/lowmemorykiller",
-            "/sys/kernel/debug",
-            "/sys/class/leds/vibrator",
-            "/sys/devices/virtual/timed_output/vibrator",
-            "/mnt/wslg",
-            "/system/etc/libnfc-nci.conf",
-        ] {
-            if inventory.contains(path) {
-                let (target, options) = match path {
-                    "/sys/kernel/debug" => (&path[1..], "rbind,create=dir,optional"),
-                    "/mnt/wslg" => ("mnt_extra/wslg", "rbind,create=dir,optional"),
-                    "/system/etc/libnfc-nci.conf" => (&path[1..], "bind,optional"),
-                    _ => (&path[1..], "bind,create=dir,optional"),
-                };
-                push_node(&mut nodes, path, target, "none", options);
+        nodes
+    }
+
+    fn render_config(&self, existing: &str) -> Result<String> {
+        let images = self
+            .images
+            .path()
+            .to_str()
+            .ok_or_else(|| Error::Invalid("images path is not UTF-8".into()))?;
+        let nodes = &self.host.nodes;
+        let mut updates = vec![
+            ("arch", self.host.arch),
+            ("vendor_type", "MAINLINE"),
+            ("binder", nodes.binder.as_str()),
+            ("vndbinder", nodes.vndbinder.as_str()),
+            ("hwbinder", nodes.hwbinder.as_str()),
+            ("images_path", images),
+        ];
+        if matches!(self.images, Images::Preinstalled(_)) {
+            updates.extend([
+                ("system_ota", "None"),
+                ("vendor_ota", "None"),
+                ("system_datetime", "0"),
+                ("vendor_datetime", "0"),
+            ]);
+        }
+        for (key, value) in config::DEFAULTS {
+            if config::get(existing, key).is_none() {
+                updates.push((key, value));
             }
         }
-        push_node(&mut nodes, "tmpfs", "mnt_extra", "tmpfs", "nodev");
-        for path in ["tmp", "var", "run"] {
-            push_node(&mut nodes, "tmpfs", path, "tmpfs", "nodev");
+        config::set(existing, &updates)
+    }
+
+    /// Upstream's `make_base_props` for a mainline host.
+    fn render_base_properties(&self, config_text: &str) -> Result<String> {
+        let host = &self.host;
+        let mut props: Vec<(String, String)> = Vec::new();
+        let mut push = |key: &str, value: &str| props.push((key.to_owned(), value.to_owned()));
+        if !host.ashmem {
+            push("sys.use_memfd", "true");
         }
-        Ok(nodes)
+        push("ro.adb.secure", "1");
+        push("ro.debuggable", "0");
+        let (gralloc, egl) = match &host.render_node {
+            Some(node) => {
+                push("gralloc.gbm.device", node);
+                ("gbm", "mesa")
+            }
+            None => ("default", "swiftshader"),
+        };
+        push("debug.stagefright.ccodec", "0");
+        push("ro.hardware.gralloc", gralloc);
+        push("ro.hardware.egl", egl);
+        if let Some(vulkan) = host.vulkan {
+            push("ro.hardware.vulkan", vulkan);
+        }
+        push("ro.hardware.camera", "v4l2");
+        push("ro.opengles.version", "196610");
+        match self.images {
+            Images::Preinstalled(_) => push("waydroid.updater.disabled", "true"),
+            Images::Installed(_) => {
+                for key in ["system_ota", "vendor_ota"] {
+                    let value = config::get(config_text, key).unwrap_or("None");
+                    validate_property_value(value)?;
+                    push(&format!("waydroid.{key}"), value);
+                }
+            }
+        }
+        push("waydroid.tools_version", TOOLS_VERSION);
+        push("ro.vndk.lite", "true");
+        for (product, value) in &host.products {
+            push(&format!("ro.product.waydroid.{product}"), value);
+        }
+        for (key, value) in property_overrides(config_text)? {
+            props.retain(|(existing, _)| *existing != key);
+            props.push((key, value));
+        }
+        let mut text = String::new();
+        for (key, value) in props {
+            let _ = writeln!(text, "{key}={value}");
+        }
+        Ok(text)
     }
-}
 
-/// The installed, offline Waydroid initialization layout. The caller must
-/// establish that LXC is stopped before entering this transaction.
-pub struct ProductionInit {
-    pub work: PathBuf,
-    pub images: PathBuf,
-    pub templates: PathBuf,
-    pub arch: String,
-    pub lxc_major: u32,
-    pub binder: String,
-    pub vndbinder: String,
-    pub hwbinder: String,
-    pub ota: Option<OtaConfig>,
-}
-
-pub struct OtaConfig {
-    pub system_url: String,
-    pub vendor_url: String,
-    pub system_datetime: u64,
-    pub vendor_datetime: u64,
-}
-
-impl ProductionInit {
-    pub fn initialize_stopped(
-        &self,
-        inventory: &NodeInventory,
-        cancelled: &AtomicBool,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<()> {
-        self.initialize_stopped_transactional(inventory, cancelled, deadline)?
-            .commit()
-    }
-
-    pub fn initialize_stopped_transactional(
-        &self,
-        inventory: &NodeInventory,
-        cancelled: &AtomicBool,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<PublishedInit> {
+    /// Publishes the instance. Cancellation and the deadline are checked
+    /// before each step up to publication; nothing is replaced on error.
+    ///
+    /// # Errors
+    /// The work directory is untrusted, the images are invalid, the rootfs is
+    /// still mounted, a step fails, or the job was cancelled or timed out.
+    pub fn run(&self, cancelled: &AtomicBool, deadline: Option<Instant>) -> Result<Published> {
         let check = || {
             if cancelled.load(Ordering::Acquire) {
                 return Err(Error::Invalid("initialization cancelled".into()));
             }
-            if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+            if deadline.is_some_and(|end| Instant::now() >= end) {
                 return Err(Error::Timeout("initialization timed out".into()));
             }
             Ok(())
         };
         check()?;
-        for path in [&self.work, &self.images, &self.templates] {
-            trusted_dir(path)?;
-        }
+        let work = &self.instance.work;
+        trusted_dir(work)?;
         for image in ["system.img", "vendor.img"] {
-            read_image_metadata(&self.images.join(image))?;
+            validate_image(&self.images.path().join(image))?;
         }
-        for template in ["config_base", "config_3", "waydroid.seccomp"] {
-            read_optional_trusted(&self.templates.join(template))?
-                .ok_or_else(|| Error::Invalid(format!("missing template: {template}")))?;
-        }
-        if self.lxc_major >= 4 && self.templates.join("config_4").exists() {
-            read_optional_trusted(&self.templates.join("config_4"))?;
-        }
-        if !self.images.starts_with(&self.work)
-            && !self.images.starts_with("/etc/waydroid-extra/images")
-            && !self.images.starts_with("/usr/share/waydroid-extra/images")
-        {
+        let rootfs = work.join("rootfs");
+        let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+        if !mountpoints_beneath(&rootfs, &mountinfo).is_empty() {
             return Err(Error::Invalid(
-                "images are outside installed locations".into(),
+                "the Android rootfs is still mounted; stop the container first".into(),
             ));
         }
-        let lxc_parent = self.work.join("lxc");
-        let local = LocalImageInit {
-            work: self.work.clone(),
-            images: self.images.clone(),
-            templates: self.templates.clone(),
-            name: "waydroid".into(),
-            bridge: "waydroid0".into(),
-            arch: self.arch.clone(),
-            lxc_major: self.lxc_major,
-            binder: self.binder.clone(),
-            vndbinder: self.vndbinder.clone(),
-            hwbinder: self.hwbinder.clone(),
-        };
-        let mut rendered = local.render(inventory)?;
-        let post_stop = Path::new("/usr/lib/waydroid/data/scripts/waydroid-post-stop.sh");
-        if rendered.config.contains("LXCPOSTSTOP") {
-            if !post_stop.is_file() {
-                return Err(Error::Invalid("missing LXC post-stop hook".into()));
-            }
-            rendered.config = rendered
-                .config
-                .replace("LXCPOSTSTOP", &post_stop.to_string_lossy());
-        }
-        let cfg_path = self.work.join("waydroid.cfg");
-        let old_cfg = read_optional_trusted(&cfg_path)?.unwrap_or_default();
-        let cfg = render_config(&old_cfg, self)?;
-        let prop_path = self.work.join("waydroid_base.prop");
-        let old_prop = read_optional_trusted(&prop_path)?;
-        let props = render_base_properties(old_prop.as_deref(), &cfg)?;
+        let config_text = self.render_config(&config::read(&work.join("waydroid.cfg"))?)?;
+        let properties = self.render_base_properties(&config_text)?;
+        let lxc_config = self.render_lxc();
+        let nodes = self.render_nodes();
         check()?;
 
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .as_nanos();
-        let staging = self
-            .work
-            .join(format!(".deckard-init-{}-{nonce}", std::process::id()));
-        let directories = [
-            lxc_parent.clone(),
-            self.work.join("rootfs"),
-            self.work.join("overlay"),
-            self.work.join("overlay/vendor"),
-            self.work.join("overlay_rw"),
-            self.work.join("overlay_rw/system"),
-            self.work.join("overlay_rw/vendor"),
-        ];
         let mut created = Vec::new();
-        let result = (|| -> Result<()> {
-            for directory in &directories {
+        let directories = [
+            work.join("lxc"),
+            rootfs,
+            work.join("overlay"),
+            work.join("overlay/vendor"),
+            work.join("host-permissions"),
+        ];
+        for directory in &directories {
+            let prepared = (|| -> Result<()> {
                 if fs::symlink_metadata(directory).is_err() {
                     fs::create_dir(directory)?;
                     created.push(directory.clone());
                     fs::set_permissions(directory, fs::Permissions::from_mode(0o755))?;
                 }
-                trusted_dir(directory)?;
+                trusted_dir(directory)
+            })();
+            if let Err(error) = prepared {
+                remove_created(&created);
+                return Err(error);
             }
-            fs::create_dir(&staging)?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            for directory in created.iter().rev() {
-                let _ = fs::remove_dir(directory);
-            }
-            return Err(error);
         }
-        let result = (|| -> Result<Vec<PublishedEntry>> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .as_nanos();
+        let staging = work.join(format!(".deckard-init-{}-{nonce}", std::process::id()));
+        let staged = (|| -> Result<Vec<(PathBuf, PathBuf)>> {
+            fs::create_dir(&staging)?;
             fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
-            let lxc_staging = staging.join("waydroid");
+            let lxc_staging = staging.join("lxc");
             fs::create_dir(&lxc_staging)?;
-            write_new(&lxc_staging.join("config"), rendered.config.as_bytes())?;
-            check()?;
-            write_new(&lxc_staging.join("config_nodes"), rendered.nodes.as_bytes())?;
-            let existing = lxc_parent.join("waydroid");
-            let session = existing.join("config_session");
+            write_new(&lxc_staging.join("config"), lxc_config.as_bytes())?;
+            write_new(&lxc_staging.join("config_nodes"), nodes.as_bytes())?;
+            let existing = self.instance.lxc();
             if fs::symlink_metadata(&existing).is_ok() {
                 trusted_dir(&existing)?;
             }
-            let session_bytes = read_optional_trusted(&session)?.unwrap_or_default();
-            write_new(&lxc_staging.join("config_session"), &session_bytes)?;
-            write_new(&lxc_staging.join("waydroid.seccomp"), &rendered.seccomp)?;
+            let session = config::read(&existing.join("config_session"))?;
+            write_new(&lxc_staging.join("config_session"), session.as_bytes())?;
+            write_new(&lxc_staging.join("waydroid.seccomp"), SECCOMP.as_bytes())?;
             fs::set_permissions(&lxc_staging, fs::Permissions::from_mode(0o755))?;
-            write_new(&staging.join("waydroid.cfg"), cfg.as_bytes())?;
-            write_new(&staging.join("waydroid_base.prop"), props.as_bytes())?;
+            write_new(&staging.join("waydroid.cfg"), config_text.as_bytes())?;
+            write_new(&staging.join("waydroid_base.prop"), properties.as_bytes())?;
+            for path in [
+                "overlay_rw",
+                "overlay_rw/system",
+                "overlay_rw/vendor",
+                "overlay_work",
+            ] {
+                fs::create_dir(staging.join(path))?;
+                fs::set_permissions(staging.join(path), fs::Permissions::from_mode(0o755))?;
+            }
             check()?;
-            // Files are fully rendered before the first production rename. If a
-            // later rename fails, restore every published predecessor.
             let mut outputs = Vec::new();
             if existing.exists() {
                 for name in [
@@ -564,56 +631,96 @@ impl ProductionInit {
             } else {
                 outputs.push((lxc_staging, existing));
             }
-            outputs.push((staging.join("waydroid.cfg"), cfg_path));
-            outputs.push((staging.join("waydroid_base.prop"), prop_path));
-            publish_with_rollback(&outputs, &staging)
+            // Upstream drops the writable layers on every init.
+            for name in [
+                "waydroid.cfg",
+                "waydroid_base.prop",
+                "overlay_rw",
+                "overlay_work",
+            ] {
+                outputs.push((staging.join(name), work.join(name)));
+            }
+            Ok(outputs)
         })();
-        match result {
-            Ok(published) => Ok(PublishedInit {
+        let published = staged.and_then(|outputs| publish_with_rollback(&outputs, &staging));
+        match published {
+            Ok(published) => Ok(Published {
                 staging,
                 published,
                 created,
             }),
             Err(error) => {
-                let has_backup = fs::read_dir(&staging).is_ok_and(|mut entries| {
-                    entries.any(|entry| {
-                        entry.ok().is_some_and(|entry| {
-                            entry.file_name().to_string_lossy().starts_with("backup-")
-                        })
-                    })
-                });
-                if !has_backup {
+                if !has_backup(&staging) {
                     let _ = fs::remove_dir_all(&staging);
                 }
-                for directory in created.iter().rev() {
-                    let _ = fs::remove_dir(directory);
-                }
+                remove_created(&created);
                 Err(error)
             }
         }
     }
 }
 
+fn property_overrides(config_text: &str) -> Result<Vec<(String, String)>> {
+    let mut overrides = Vec::new();
+    let mut in_properties = false;
+    for line in config_text.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+            in_properties = name.eq_ignore_ascii_case("properties");
+        } else if in_properties && !trimmed.is_empty() && !trimmed.starts_with(['#', ';']) {
+            let (key, value) = trimmed
+                .split_once('=')
+                .ok_or_else(|| Error::Invalid("invalid property override".into()))?;
+            let key = key.trim().to_ascii_lowercase();
+            let value = value.trim();
+            validate_property_key(&key)?;
+            validate_property_value(value)?;
+            overrides.push((key, value.to_owned()));
+        }
+    }
+    Ok(overrides)
+}
+
+fn has_backup(staging: &Path) -> bool {
+    fs::read_dir(staging).is_ok_and(|mut entries| {
+        entries.any(|entry| {
+            entry.is_ok_and(|entry| entry.file_name().to_string_lossy().starts_with("backup-"))
+        })
+    })
+}
+
+fn remove_created(created: &[PathBuf]) {
+    for directory in created.iter().rev() {
+        let _ = fs::remove_dir(directory);
+    }
+}
+
 type PublishedEntry = (PathBuf, PathBuf, bool);
 
-pub struct PublishedInit {
+/// A published initialization; [`commit`](Self::commit) drops what it replaced.
+#[must_use]
+pub struct Published {
     staging: PathBuf,
     published: Vec<PublishedEntry>,
     created: Vec<PathBuf>,
 }
 
-impl PublishedInit {
+impl Published {
+    /// # Errors
+    /// The replaced files cannot be removed.
     pub fn commit(self) -> Result<()> {
         fs::remove_dir_all(&self.staging)?;
         Ok(())
     }
 
+    /// Restores everything this initialization replaced.
+    ///
+    /// # Errors
+    /// A predecessor cannot be moved back.
     pub fn rollback(self) -> Result<()> {
         restore_outputs(&self.published)?;
         fs::remove_dir_all(&self.staging)?;
-        for directory in self.created.iter().rev() {
-            let _ = fs::remove_dir(directory);
-        }
+        remove_created(&self.created);
         Ok(())
     }
 }
@@ -621,7 +728,6 @@ impl PublishedInit {
 fn trusted_dir(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir()
-        || metadata.file_type().is_symlink()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o022 != 0
     {
@@ -633,42 +739,37 @@ fn trusted_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn read_image_metadata(path: &Path) -> Result<()> {
+fn trusted_file(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink()
-        || !(metadata.is_file() || metadata.file_type().is_block_device())
+    if !(metadata.is_file() || metadata.file_type().is_block_device())
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o022 != 0
     {
         return Err(Error::Invalid(format!(
-            "untrusted image: {}",
+            "untrusted file: {}",
             path.display()
         )));
     }
     Ok(())
 }
 
-fn read_optional_trusted(path: &Path) -> Result<Option<Vec<u8>>> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if !metadata.is_file()
-                || metadata.file_type().is_symlink()
-                || metadata.uid() != rustix::process::geteuid().as_raw()
-                || metadata.mode() & 0o022 != 0
-            {
-                return Err(Error::Invalid(format!(
-                    "untrusted file: {}",
-                    path.display()
-                )));
-            }
-            read_regular(path).map(Some)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+/// A daemon-owned regular file or block device holding an ext filesystem.
+fn validate_image(path: &Path) -> Result<()> {
+    trusted_file(path)?;
+    let mut image = File::open(path)?;
+    image.seek(SeekFrom::Start(1024 + 56))?;
+    let mut magic = [0; 2];
+    image.read_exact(&mut magic)?;
+    if magic != [0x53, 0xef] {
+        return Err(Error::Invalid(format!(
+            "not an ext image: {}",
+            path.display()
+        )));
     }
+    Ok(())
 }
 
-pub(crate) fn publish_with_rollback(
+fn publish_with_rollback(
     outputs: &[(PathBuf, PathBuf)],
     staging: &Path,
 ) -> Result<Vec<PublishedEntry>> {
@@ -680,13 +781,8 @@ pub(crate) fn publish_with_rollback(
             if had_previous {
                 if source.is_dir() {
                     trusted_dir(destination)?;
-                } else if source
-                    .extension()
-                    .is_some_and(|extension| extension == "img")
-                {
-                    read_image_metadata(destination)?;
                 } else {
-                    read_optional_trusted(destination)?;
+                    trusted_file(destination)?;
                 }
                 fs::rename(destination, &backup)?;
                 published.push((destination.clone(), backup.clone(), true));
@@ -733,209 +829,6 @@ fn restore_outputs(published: &[PublishedEntry]) -> Result<()> {
     Ok(())
 }
 
-fn render_config(existing: &[u8], init: &ProductionInit) -> Result<String> {
-    let text = std::str::from_utf8(existing)
-        .map_err(|_| Error::Invalid("invalid waydroid.cfg encoding".into()))?;
-    if text.contains('\0') || text.contains('\r') || text.len() > 1024 * 1024 {
-        return Err(Error::Invalid("invalid waydroid.cfg".into()));
-    }
-    let (system_url, vendor_url, system_datetime, vendor_datetime) = if let Some(ota) = &init.ota {
-        (
-            ota.system_url.as_str(),
-            ota.vendor_url.as_str(),
-            ota.system_datetime.to_string(),
-            ota.vendor_datetime.to_string(),
-        )
-    } else {
-        ("None", "None", "0".into(), "0".into())
-    };
-    for url in [system_url, vendor_url] {
-        if url.contains(['\n', '\r', '\0']) || url.len() > 4096 {
-            return Err(Error::Invalid("invalid OTA URL".into()));
-        }
-    }
-    let updates = [
-        ("arch", init.arch.as_str()),
-        (
-            "images_path",
-            init.images
-                .to_str()
-                .ok_or_else(|| Error::Invalid("invalid images path".into()))?,
-        ),
-        ("vendor_type", "MAINLINE"),
-        ("binder", init.binder.as_str()),
-        ("vndbinder", init.vndbinder.as_str()),
-        ("hwbinder", init.hwbinder.as_str()),
-        ("system_ota", system_url),
-        ("vendor_ota", vendor_url),
-        ("system_datetime", system_datetime.as_str()),
-        ("vendor_datetime", vendor_datetime.as_str()),
-    ];
-    let mut result = String::new();
-    let mut in_waydroid = false;
-    let mut found_section = false;
-    let mut seen = BTreeSet::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            if in_waydroid {
-                append_missing(&mut result, &updates, &seen);
-            }
-            in_waydroid = trimmed.eq_ignore_ascii_case("[waydroid]");
-            if in_waydroid && found_section {
-                return Err(Error::Invalid("duplicate [waydroid] section".into()));
-            }
-            found_section |= in_waydroid;
-            seen.clear();
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-        if in_waydroid && let Some((key, _)) = trimmed.split_once('=') {
-            let key = key.trim().to_ascii_lowercase();
-            if let Some((_, value)) = updates.iter().find(|(candidate, _)| *candidate == key) {
-                if !seen.insert(key.clone()) {
-                    return Err(Error::Invalid(format!("duplicate config key: {key}")));
-                }
-                result.push_str(&format!("{key} = {value}\n"));
-                continue;
-            }
-        }
-        result.push_str(line);
-        result.push('\n');
-    }
-    if in_waydroid {
-        append_missing(&mut result, &updates, &seen);
-    } else if !found_section {
-        result.push_str("[waydroid]\n");
-        append_missing(&mut result, &updates, &BTreeSet::new());
-    }
-    Ok(result)
-}
-
-fn append_missing(output: &mut String, updates: &[(&str, &str)], seen: &BTreeSet<String>) {
-    for (key, value) in updates {
-        if !seen.contains(*key) {
-            output.push_str(&format!("{key} = {value}\n"));
-        }
-    }
-}
-
-fn render_base_properties(previous: Option<&[u8]>, config: &str) -> Result<String> {
-    let system_ota = config_value(config, "system_ota").unwrap_or("None");
-    let vendor_ota = config_value(config, "vendor_ota").unwrap_or("None");
-    let local_images = system_ota == "None" && vendor_ota == "None";
-    let mut props = if let Some(previous) = previous {
-        String::from_utf8(previous.to_vec())
-            .map_err(|_| Error::Invalid("invalid base properties encoding".into()))?
-    } else {
-        let mut baseline = String::from(
-            "ro.adb.secure=1\nro.debuggable=0\nwaydroid.updater.disabled=true\nro.vndk.lite=true\n",
-        );
-        if !Path::new("/dev/ashmem").exists() {
-            baseline.push_str("sys.use_memfd=true\n");
-        }
-        let render_node = fs::read_dir("/dev/dri").ok().and_then(|entries| {
-            entries
-                .filter_map(std::result::Result::ok)
-                .find_map(|entry| {
-                    let name = entry.file_name();
-                    if name.to_string_lossy().starts_with("renderD")
-                        && entry.file_type().is_ok_and(|kind| kind.is_char_device())
-                    {
-                        Some(entry.path())
-                    } else {
-                        None
-                    }
-                })
-        });
-        if let Some(node) = render_node {
-            baseline.push_str(&format!(
-                "ro.hardware.gralloc=gbm\nro.hardware.egl=mesa\ngralloc.gbm.device={}\n",
-                node.display()
-            ));
-        } else {
-            baseline.push_str("ro.hardware.gralloc=default\nro.hardware.egl=swiftshader\n");
-        }
-        baseline.push_str(
-            "ro.opengles.version=196610\ndebug.stagefright.ccodec=0\nro.hardware.camera=v4l2\n",
-        );
-        baseline
-    };
-    if props.contains('\0') || props.contains('\r') {
-        return Err(Error::Invalid("invalid base properties".into()));
-    }
-    props = props
-        .lines()
-        .filter(|line| {
-            !line.starts_with("waydroid.system_ota=")
-                && !line.starts_with("waydroid.vendor_ota=")
-                && !line.starts_with("waydroid.updater.disabled=")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !props.is_empty() {
-        props.push('\n');
-    }
-    if local_images {
-        props.push_str("waydroid.updater.disabled=true\n");
-    } else {
-        props.push_str(&format!(
-            "waydroid.system_ota={system_ota}\nwaydroid.vendor_ota={vendor_ota}\n"
-        ));
-    }
-    let mut in_properties = false;
-    for line in config.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_properties = trimmed.eq_ignore_ascii_case("[properties]");
-        } else if in_properties && !trimmed.is_empty() && !trimmed.starts_with(['#', ';']) {
-            let (key, value) = trimmed
-                .split_once('=')
-                .ok_or_else(|| Error::Invalid("invalid property override".into()))?;
-            let key = key.trim();
-            let value = value.trim();
-            crate::lxc::validate_property_key(key)?;
-            crate::lxc::validate_property_value(value)?;
-            props = props
-                .lines()
-                .filter(|entry| !entry.starts_with(&format!("{key}=")))
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !props.is_empty() {
-                props.push('\n');
-            }
-            props.push_str(&format!("{key}={value}\n"));
-        }
-    }
-    if !props.ends_with('\n') {
-        props.push('\n');
-    }
-    Ok(props)
-}
-
-fn config_value<'a>(config: &'a str, key: &str) -> Option<&'a str> {
-    let mut in_waydroid = false;
-    for line in config.lines() {
-        let line = line.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            in_waydroid = line.eq_ignore_ascii_case("[waydroid]");
-        } else if in_waydroid
-            && let Some((candidate, value)) = line.split_once('=')
-            && candidate.trim().eq_ignore_ascii_case(key)
-        {
-            return Some(value.trim());
-        }
-    }
-    None
-}
-
-fn push_node(output: &mut String, source: &str, target: &str, kind: &str, options: &str) {
-    output.push_str(&format!(
-        "lxc.mount.entry = {source} {target} {kind} {options} 0 0\n"
-    ));
-}
-
 fn validate_token(token: &str) -> Result<()> {
     if token.is_empty()
         || token
@@ -943,67 +836,6 @@ fn validate_token(token: &str) -> Result<()> {
             .any(|byte| byte.is_ascii_whitespace() || byte == 0 || byte == b'\\')
     {
         return Err(Error::Invalid("unsafe LXC token".into()));
-    }
-    Ok(())
-}
-
-fn validate_identifier(value: &str) -> Result<()> {
-    validate_token(value)?;
-    if !value
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err(Error::Invalid("invalid LXC identifier".into()));
-    }
-    Ok(())
-}
-
-fn read_regular(path: &Path) -> Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err(Error::Invalid(format!(
-            "not a regular template: {}",
-            path.display()
-        )));
-    }
-    if metadata.len() > 1024 * 1024 {
-        return Err(Error::Invalid(format!(
-            "oversized LXC template: {}",
-            path.display()
-        )));
-    }
-    let mut bytes = Vec::new();
-    File::open(path)?
-        .take(1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(Error::Invalid(format!(
-            "oversized LXC template: {}",
-            path.display()
-        )));
-    }
-    Ok(bytes)
-}
-
-fn validate_ext_image(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink()
-        || !(metadata.file_type().is_file() || metadata.file_type().is_block_device())
-    {
-        return Err(Error::Invalid(format!(
-            "not a local image: {}",
-            path.display()
-        )));
-    }
-    let mut image = File::open(path)?;
-    image.seek(SeekFrom::Start(1024 + 56))?;
-    let mut magic = [0; 2];
-    image.read_exact(&mut magic)?;
-    if magic != [0x53, 0xef] {
-        return Err(Error::Invalid(format!(
-            "not an ext image: {}",
-            path.display()
-        )));
     }
     Ok(())
 }
@@ -1022,333 +854,297 @@ fn write_new(path: &Path, data: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
 
     struct Fixture {
-        root: PathBuf,
+        root: tempfile::TempDir,
+        instance: Instance,
     }
 
     impl Fixture {
         fn new() -> Result<Self> {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("deckard-init-{}-{nonce}", std::process::id()));
-            fs::create_dir(&root)?;
-            for path in ["work/lxc", "images", "templates"] {
-                fs::create_dir_all(root.join(path))?;
-            }
+            let root = tempfile::tempdir()?;
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755))?;
+            let work = root.path().join("work");
+            fs::create_dir_all(work.join("images"))?;
             for image in ["system.img", "vendor.img"] {
                 let mut bytes = vec![0; 1082];
                 bytes[1080..1082].copy_from_slice(&[0x53, 0xef]);
-                fs::write(root.join("images").join(image), bytes)?;
+                fs::write(work.join("images").join(image), bytes)?;
             }
-            fs::write(
-                root.join("templates/config_base"),
-                b"lxc.rootfs.path = /var/lib/waydroid/rootfs\nlxc.arch = LXCARCH\nlxc.include = /var/lib/waydroid/lxc/waydroid/config_nodes\nlxc.include = /var/lib/waydroid/lxc/waydroid/config_session\nlxc.hook.mount = /usr/libexec/deckard-shared-folders\n",
-            )?;
-            fs::write(
-                root.join("templates/config_3"),
-                b"lxc.uts.name = waydroid\nlxc.seccomp.profile = /var/lib/waydroid/lxc/waydroid/waydroid.seccomp\nlxc.net.0.link = waydroid0\n",
-            )?;
-            fs::write(
-                root.join("templates/config_4"),
-                b"lxc.seccomp.allow_nesting = 1\n",
-            )?;
-            fs::write(root.join("templates/waydroid.seccomp"), b"2\nblacklist\n")?;
-            Ok(Self { root })
+            Ok(Self {
+                instance: Instance {
+                    work,
+                    name: "waydroid".into(),
+                    bridge: "waydroid0".into(),
+                },
+                root,
+            })
         }
 
-        fn init(&self) -> LocalImageInit {
-            LocalImageInit {
-                work: self.root.join("work"),
-                images: self.root.join("images"),
-                templates: self.root.join("templates"),
-                name: "deckard".into(),
-                bridge: "deckard0".into(),
-                arch: "aarch64".into(),
-                lxc_major: 7,
+        fn init(&self, images: Images) -> Result<Init<'_>> {
+            let devices = [
+                "/dev/zero",
+                "/dev/fuse",
+                "/dev/char",
+                "/dev/fb0",
+                "/dev/net/tun",
+            ];
+            Ok(Init {
+                instance: &self.instance,
+                images,
+                host: host(&devices)?,
+            })
+        }
+
+        fn installed(&self) -> Images {
+            Images::Installed(self.instance.work.join("images"))
+        }
+
+        fn run(&self, images: Images, cancelled: bool) -> Result<Published> {
+            self.init(images)?.run(&AtomicBool::new(cancelled), None)
+        }
+
+        fn read(&self, path: &str) -> Result<String> {
+            Ok(fs::read_to_string(self.instance.work.join(path))?)
+        }
+
+        fn write(&self, path: &str, text: &str) -> Result<()> {
+            Ok(fs::write(self.instance.work.join(path), text)?)
+        }
+    }
+
+    fn host(devices: &[&str]) -> Result<Host> {
+        Ok(Host {
+            arch: "arm64",
+            lxc_arch: "aarch64",
+            lxc_major: 7,
+            nodes: DriverNodes {
                 binder: "binder".into(),
                 vndbinder: "vndbinder".into(),
                 hwbinder: "hwbinder".into(),
-            }
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
-    }
-
-    #[test]
-    fn prepares_static_config_from_local_images_without_overwriting() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let init = fixture.init();
-        let inventory = NodeInventory::from_paths([
-            "/dev/zero".into(),
-            "/dev/dri/renderD128".into(),
-            "/dev/dma_heap/system".into(),
-            "/dev/net/tun".into(),
-        ])?;
-        let output = init.prepare_local(&inventory)?;
-        let config = fs::read_to_string(output.join("config"))?;
-        let nodes = fs::read_to_string(output.join("config_nodes"))?;
-        assert!(config.contains(&format!("lxc.rootfs.path = {}/rootfs", init.work.display())));
-        assert!(config.contains(&format!(
-            "lxc.include = {}/lxc/deckard/config_nodes",
-            init.work.display()
-        )));
-        assert!(config.contains("lxc.arch = aarch64"));
-        assert!(config.contains("lxc.uts.name = deckard"));
-        assert!(config.contains("lxc.net.0.link = deckard0"));
-        assert!(config.contains("lxc.seccomp.allow_nesting = 1"));
-        assert!(config.contains("lxc.hook.mount = /usr/libexec/deckard-shared-folders"));
-        assert!(nodes.contains("/dev/dri/renderD128 dev/dri/renderD128"));
-        assert!(nodes.contains("/dev/net/tun dev/tun"));
-        assert!(nodes.contains("/dev/binder dev/binder"));
-        assert!(!nodes.contains("/dev/video"));
-        assert_eq!(fs::read(output.join("config_session"))?, b"");
-        assert_eq!(
-            fs::read(output.join("waydroid.seccomp"))?,
-            b"2\nblacklist\n"
-        );
-        assert!(init.prepare_local(&inventory).is_err());
-        assert_eq!(fs::read_to_string(output.join("config"))?, config);
-        assert_eq!(fs::read_dir(init.work.join("lxc"))?.count(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_invalid_and_symlinked_images_before_writing() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let init = fixture.init();
-        let inventory = NodeInventory::default();
-        fs::write(init.images.join("vendor.img"), b"not an image")?;
-        assert!(init.prepare_local(&inventory).is_err());
-        fs::remove_file(init.images.join("vendor.img"))?;
-        symlink(
-            init.images.join("system.img"),
-            init.images.join("vendor.img"),
-        )?;
-        assert!(init.prepare_local(&inventory).is_err());
-        assert_eq!(fs::read_dir(init.work.join("lxc"))?.count(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_changed_templates_and_unsafe_identifiers() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let mut init = fixture.init();
-        init.bridge = "deckard0\nlxc.hook.mount=/tmp/evil".into();
-        assert!(init.prepare_local(&NodeInventory::default()).is_err());
-        init.bridge = "deckard0".into();
-        fs::write(init.templates.join("config_base"), b"lxc.arch = LXCARCH\n")?;
-        assert!(init.prepare_local(&NodeInventory::default()).is_err());
-        assert_eq!(fs::read_dir(init.work.join("lxc"))?.count(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn cancelled_local_init_never_publishes() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let cancelled = AtomicBool::new(true);
-        let init = fixture.init();
-        assert!(
-            init.prepare_local_cancellable(&NodeInventory::default(), &cancelled, None)
-                .is_err()
-        );
-        assert_eq!(fs::read_dir(init.work.join("lxc"))?.count(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn expired_local_init_never_publishes() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let cancelled = AtomicBool::new(false);
-        let init = fixture.init();
-        assert!(
-            init.prepare_local_cancellable(
-                &NodeInventory::default(),
-                &cancelled,
-                Some(std::time::Instant::now()),
-            )
-            .is_err()
-        );
-        assert_eq!(fs::read_dir(init.work.join("lxc"))?.count(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn lxc_three_does_not_include_v4_snippet() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let mut init = fixture.init();
-        init.lxc_major = 3;
-        let output = init.prepare_local(&NodeInventory::default())?;
-        assert!(!fs::read_to_string(output.join("config"))?.contains("allow_nesting"));
-        Ok(())
-    }
-
-    fn production(fixture: &Fixture) -> Result<ProductionInit> {
-        let images = fixture.root.join("work/images");
-        fs::create_dir(&images)?;
-        for image in ["system.img", "vendor.img"] {
-            fs::copy(fixture.root.join("images").join(image), images.join(image))?;
-        }
-        Ok(ProductionInit {
-            work: fixture.root.join("work"),
-            images,
-            templates: fixture.root.join("templates"),
-            arch: "aarch64".into(),
-            lxc_major: 4,
-            binder: "binder".into(),
-            vndbinder: "vndbinder".into(),
-            hwbinder: "hwbinder".into(),
-            ota: None,
+            },
+            devices: NodeInventory::from_paths(devices.iter().map(|path| (*path).to_owned()))?,
+            render_node: Some("/dev/dri/renderD128".into()),
+            vulkan: None,
+            products: vec![("model", "Raspberry Pi Compute Module 5 Lite Rev 1.0".into())],
+            ashmem: false,
         })
     }
 
     #[test]
-    fn production_init_preserves_existing_session_and_properties() -> Result<()> {
+    fn renders_the_installed_pi_instance() -> Result<()> {
         let fixture = Fixture::new()?;
-        let init = production(&fixture)?;
-        fs::create_dir(init.work.join("lxc/waydroid"))?;
-        fs::write(init.work.join("lxc/waydroid/config"), "old config\n")?;
-        fs::write(
-            init.work.join("lxc/waydroid/config_session"),
-            "session bind\n",
+        fixture.write(
+            "waydroid.cfg",
+            "[waydroid]\narch = arm64\n\
+             system_ota = https://ota.waydro.id/system/lineage/waydroid_arm64/VANILLA.json\n\
+             vendor_ota = https://ota.waydro.id/vendor/waydroid_arm64/MAINLINE.json\n\
+             binder_protocol = aidl3\n\n\
+             [properties]\nro.sf.lcd_density = 254\nro.product.cpu.abilist32 = \n",
         )?;
-        fs::write(init.work.join("lxc/waydroid/custom.conf"), "keep me\n")?;
-        fs::write(
-            init.work.join("waydroid.cfg"),
-            "[waydroid]\nmount_overlays = True\nimages_path = /old\n[properties]\nro.sf.lcd_density = 254\n",
-        )?;
-        fs::write(
-            init.work.join("waydroid_base.prop"),
-            "ro.hardware.egl=mesa\n",
-        )?;
-        init.initialize_stopped(&NodeInventory::default(), &AtomicBool::new(false), None)?;
-        let cfg = fs::read_to_string(init.work.join("waydroid.cfg"))?;
-        assert!(cfg.contains("mount_overlays = True"));
-        assert!(cfg.contains(&format!("images_path = {}", init.images.display())));
-        assert!(cfg.contains("ro.sf.lcd_density = 254"));
+        fixture.run(fixture.installed(), false)?.commit()?;
+        let work = fixture.instance.work.display();
+        let config = fixture.read("lxc/waydroid/config")?;
+        for line in [
+            format!("lxc.rootfs.path = {work}/rootfs\nlxc.arch = aarch64\n"),
+            format!("lxc.include = {work}/lxc/waydroid/config_session\n"),
+            format!("lxc.seccomp.profile = {work}/lxc/waydroid/waydroid.seccomp\n"),
+            "lxc.mount.auto = cgroup:rw sys:ro proc\n".into(),
+            "lxc.hook.mount = /usr/libexec/deckard-shared-folders\n".into(),
+            "lxc.uts.name = waydroid\n".into(),
+            "lxc.net.0.link = waydroid0\n".into(),
+        ] {
+            assert!(config.contains(&line), "{line:?} missing");
+        }
+        assert!(config.ends_with("lxc.seccomp.allow_nesting = 1\n\n"));
+        assert!(!config.contains('@'));
+        let mut expected = String::new();
+        let file = "none bind,create=file,optional";
+        for line in [
+            "tmpfs dev tmpfs nosuid".to_owned(),
+            format!("/dev/zero dev/zero {file}"),
+            format!("/dev/fuse dev/fuse {file}"),
+            "/dev/char dev/char none bind,create=dir,optional".to_owned(),
+            format!("/dev/dri/renderD128 dev/dri/renderD128 {file}"),
+            format!("/dev/fb0 dev/fb0 {file}"),
+            format!("/dev/binder dev/binder {file}"),
+            format!("/dev/vndbinder dev/vndbinder {file}"),
+            format!("/dev/hwbinder dev/hwbinder {file}"),
+            "none dev/pts devpts defaults,mode=644,ptmxmode=666,create=dir".to_owned(),
+            format!("/dev/net/tun dev/tun {file}"),
+            format!("{work}/host-permissions vendor/etc/host-permissions none bind,optional"),
+            "tmpfs mnt_extra tmpfs nodev".to_owned(),
+            "tmpfs tmp tmpfs nodev".to_owned(),
+            "tmpfs var tmpfs nodev".to_owned(),
+            "tmpfs run tmpfs nodev".to_owned(),
+        ] {
+            let _ = writeln!(expected, "lxc.mount.entry = {line} 0 0");
+        }
+        assert_eq!(fixture.read("lxc/waydroid/config_nodes")?, expected);
+        assert_eq!(fixture.read("lxc/waydroid/config_session")?, "");
+        assert_eq!(fixture.read("lxc/waydroid/waydroid.seccomp")?, SECCOMP);
         assert_eq!(
-            fs::read(init.work.join("lxc/waydroid/config_session"))?,
-            b"session bind\n"
+            fixture.read("waydroid_base.prop")?,
+            "sys.use_memfd=true\nro.adb.secure=1\nro.debuggable=0\n\
+             gralloc.gbm.device=/dev/dri/renderD128\ndebug.stagefright.ccodec=0\n\
+             ro.hardware.gralloc=gbm\nro.hardware.egl=mesa\nro.hardware.camera=v4l2\n\
+             ro.opengles.version=196610\n\
+             waydroid.system_ota=https://ota.waydro.id/system/lineage/waydroid_arm64/VANILLA.json\n\
+             waydroid.vendor_ota=https://ota.waydro.id/vendor/waydroid_arm64/MAINLINE.json\n\
+             waydroid.tools_version=1.6.3\nro.vndk.lite=true\n\
+             ro.product.waydroid.model=Raspberry Pi Compute Module 5 Lite Rev 1.0\n\
+             ro.sf.lcd_density=254\nro.product.cpu.abilist32=\n"
         );
-        assert_eq!(
-            fs::read(init.work.join("lxc/waydroid/custom.conf"))?,
-            b"keep me\n"
-        );
-        let props = fs::read_to_string(init.work.join("waydroid_base.prop"))?;
-        assert!(props.contains("ro.hardware.egl=mesa\n"));
-        assert!(props.contains("ro.sf.lcd_density=254\n"));
-        assert!(init.work.join("overlay_rw/system").is_dir());
+        let cfg = fixture.read("waydroid.cfg")?;
+        for line in [
+            "arch = arm64\n",
+            "vendor_type = MAINLINE\n",
+            "binder = binder\n",
+            "binder_protocol = aidl3\n",
+            "suspend_action = freeze\n",
+            "mount_overlays = True\n",
+            "auto_adb = False\n",
+            "system_ota = https://ota.waydro.id/system/",
+        ] {
+            assert!(cfg.contains(line), "{line:?} missing from {cfg}");
+        }
+        for dir in [
+            "rootfs",
+            "overlay/vendor",
+            "overlay_rw/system",
+            "overlay_work",
+            "host-permissions",
+        ] {
+            assert!(fixture.instance.work.join(dir).is_dir(), "{dir}");
+        }
+        assert_eq!(fs::read_dir(&fixture.instance.work)?.count(), 9);
         Ok(())
     }
 
     #[test]
-    fn production_init_bootstraps_missing_layout() -> Result<()> {
+    fn preinstalled_images_clear_ota_and_keep_session_and_custom_files() -> Result<()> {
         let fixture = Fixture::new()?;
-        let init = production(&fixture)?;
-        fs::remove_dir(init.work.join("lxc"))?;
-        init.initialize_stopped(&NodeInventory::default(), &AtomicBool::new(false), None)?;
-        assert!(init.work.join("lxc/waydroid/config").is_file());
-        assert!(init.work.join("rootfs").is_dir());
-        assert!(init.work.join("overlay/vendor").is_dir());
-        assert!(init.work.join("overlay_rw/system").is_dir());
-        assert!(init.work.join("waydroid_base.prop").is_file());
-        assert!(fs::read_to_string(init.work.join("waydroid.cfg"))?.contains("system_ota = None"));
-        Ok(())
-    }
-
-    #[test]
-    fn transactional_init_can_restore_existing_files() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let init = production(&fixture)?;
-        fs::write(init.work.join("waydroid.cfg"), "[waydroid]\narch = old\n")?;
-        let transaction = init.initialize_stopped_transactional(
-            &NodeInventory::default(),
-            &AtomicBool::new(false),
-            None,
+        let lxc = fixture.instance.work.join("lxc/waydroid");
+        fs::create_dir_all(&lxc)?;
+        fs::write(lxc.join("config_session"), "session bind\n")?;
+        fs::write(lxc.join("custom.conf"), "keep me\n")?;
+        fixture.write(
+            "waydroid.cfg",
+            "[waydroid]\nsystem_ota = https://example.invalid\nsystem_datetime = 9\nmount_overlays = False\n",
         )?;
-        assert!(init.work.join("lxc/waydroid/config").exists());
-        transaction.rollback()?;
+        fs::create_dir_all(fixture.instance.work.join("overlay_rw/system/app"))?;
+        let shipped = fixture.root.path().join("shipped");
+        fs::create_dir(&shipped)?;
+        for image in ["system.img", "vendor.img"] {
+            fs::copy(
+                fixture.instance.work.join("images").join(image),
+                shipped.join(image),
+            )?;
+        }
+        let images = Images::find(
+            std::slice::from_ref(&shipped),
+            &fixture.instance.work.join("images"),
+        )?;
+        assert_eq!(images, Images::Preinstalled(shipped.clone()));
+        fixture.run(images, false)?.commit()?;
+        let cfg = fixture.read("waydroid.cfg")?;
+        assert!(cfg.contains("system_ota = None\n"));
+        assert!(cfg.contains("system_datetime = 0\n"));
+        assert!(cfg.contains("mount_overlays = False\n"));
+        assert!(cfg.contains(&format!("images_path = {}\n", shipped.display())));
+        let props = fixture.read("waydroid_base.prop")?;
+        assert!(props.contains("waydroid.updater.disabled=true\n"));
+        assert!(!props.contains("waydroid.system_ota"));
         assert_eq!(
-            fs::read_to_string(init.work.join("waydroid.cfg"))?,
-            "[waydroid]\narch = old\n"
+            fixture.read("lxc/waydroid/config_session")?,
+            "session bind\n"
         );
-        assert!(!init.work.join("lxc/waydroid").exists());
+        assert_eq!(fixture.read("lxc/waydroid/custom.conf")?, "keep me\n");
+        assert!(!fixture.instance.work.join("overlay_rw/system/app").exists());
         Ok(())
     }
 
     #[test]
-    fn invalid_image_or_cancel_never_changes_production() -> Result<()> {
+    fn missing_images_cancel_and_bad_input_change_nothing() -> Result<()> {
         let fixture = Fixture::new()?;
-        let init = production(&fixture)?;
-        fs::write(init.work.join("waydroid.cfg"), "[waydroid]\narch = old\n")?;
-        let cancelled = AtomicBool::new(true);
+        let empty = fixture.root.path().join("empty");
+        fs::create_dir(&empty)?;
+        assert!(Images::find(&[], &empty).is_err());
+        let old = "[waydroid]\narch = old\n";
+        fixture.write("waydroid.cfg", old)?;
+        assert!(fixture.run(fixture.installed(), true).is_err());
         assert!(
-            init.initialize_stopped(&NodeInventory::default(), &cancelled, None)
+            fixture
+                .init(fixture.installed())?
+                .run(&AtomicBool::new(false), Some(Instant::now()))
                 .is_err()
         );
-        assert_eq!(
-            fs::read_to_string(init.work.join("waydroid.cfg"))?,
-            "[waydroid]\narch = old\n"
-        );
-        fs::write(init.images.join("system.img"), "invalid")?;
-        assert!(
-            init.initialize_stopped(&NodeInventory::default(), &AtomicBool::new(false), None)
-                .is_err()
-        );
-        assert_eq!(
-            fs::read_to_string(init.work.join("waydroid.cfg"))?,
-            "[waydroid]\narch = old\n"
-        );
+        fixture.write("waydroid.cfg", "[waydroid]\n[properties]\nnot a property\n")?;
+        assert!(fixture.run(fixture.installed(), false).is_err());
+        fixture.write("waydroid.cfg", old)?;
+        fixture.write("images/system.img", "not an image")?;
+        assert!(fixture.run(fixture.installed(), false).is_err());
+        assert_eq!(fixture.read("waydroid.cfg")?, old);
+        assert_eq!(fs::read_dir(&fixture.instance.work)?.count(), 2);
         Ok(())
     }
 
     #[test]
-    fn renderer_rejects_duplicate_config_and_property_injection() -> Result<()> {
+    fn rollback_restores_the_previous_instance() -> Result<()> {
         let fixture = Fixture::new()?;
-        let init = production(&fixture)?;
-        assert!(render_config(b"[waydroid]\narch=aarch64\narch=x86_64\n", &init).is_err());
-        assert!(
-            render_base_properties(None, "[properties]\nro.adb.secure = 0\nother = bad\nline\n")
-                .is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn stale_ota_properties_are_removed_for_local_images() -> Result<()> {
-        let result = render_base_properties(
-            Some(b"waydroid.system_ota=https://example.invalid\nwaydroid.vendor_ota=https://example.invalid\nro.hardware.egl=mesa\n"),
-            "[waydroid]\n",
-        )?;
-        assert!(!result.contains("waydroid.system_ota="));
-        assert!(!result.contains("waydroid.vendor_ota="));
-        assert!(result.contains("waydroid.updater.disabled=true\n"));
-        assert!(result.contains("ro.hardware.egl=mesa\n"));
+        fixture.write("waydroid.cfg", "[waydroid]\narch = old\n")?;
+        fs::create_dir_all(fixture.instance.work.join("overlay_rw/system/app"))?;
+        let published = fixture.run(fixture.installed(), false)?;
+        assert!(fixture.instance.work.join("lxc/waydroid/config").exists());
+        published.rollback()?;
+        assert_eq!(fixture.read("waydroid.cfg")?, "[waydroid]\narch = old\n");
+        assert!(!fixture.instance.work.join("lxc").exists());
+        assert!(fixture.instance.work.join("overlay_rw/system/app").is_dir());
         Ok(())
     }
 
     #[test]
     fn publication_failure_restores_predecessor() -> Result<()> {
         let fixture = Fixture::new()?;
-        let staging = fixture.root.join("work/staging");
+        let work = &fixture.instance.work;
+        let staging = work.join("staging");
         fs::create_dir(&staging)?;
         fs::write(staging.join("new-first"), "new")?;
-        fs::write(fixture.root.join("work/first"), "old")?;
+        fs::write(work.join("first"), "old")?;
         let outputs = [
-            (staging.join("new-first"), fixture.root.join("work/first")),
-            (staging.join("missing"), fixture.root.join("work/second")),
+            (staging.join("new-first"), work.join("first")),
+            (staging.join("missing"), work.join("second")),
         ];
         assert!(publish_with_rollback(&outputs, &staging).is_err());
-        assert_eq!(fs::read(fixture.root.join("work/first"))?, b"old");
-        assert!(!fixture.root.join("work/second").exists());
+        assert_eq!(fs::read(work.join("first"))?, b"old");
+        assert!(!work.join("second").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn host_facts_follow_upstream_detection() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let dri = root.path().join("dri");
+        let drm = root.path().join("drm");
+        fs::create_dir_all(&dri)?;
+        for (node, driver) in [("renderD128", "nvidia"), ("renderD129", "v3d")] {
+            fs::write(dri.join(node), "")?;
+            fs::create_dir_all(drm.join(node).join("device"))?;
+            fs::write(
+                drm.join(node).join("device/uevent"),
+                format!("DRIVER={driver}\n"),
+            )?;
+        }
+        let node = render_node(&dri, &drm).ok_or_else(|| Error::Invalid("no node".into()))?;
+        assert!(node.ends_with("renderD129"));
+        assert_eq!(kernel_driver(&drm, &node).as_deref(), Some("v3d"));
+        assert_eq!(vulkan_driver("v3d"), None);
+        assert_eq!(vulkan_driver("vc4"), Some("broadcom"));
+        let tree = root.path().join("tree");
+        fs::create_dir(&tree)?;
+        fs::write(tree.join("model"), "Pi 5\0")?;
+        fs::write(tree.join("name"), "\0")?;
+        assert_eq!(device_tree(&tree), [("model", "Pi 5".to_owned())]);
         Ok(())
     }
 }

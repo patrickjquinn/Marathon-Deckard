@@ -1,48 +1,43 @@
-# deckard-runtime (session slice)
+# deckard-runtime
 
-This crate is the native Rust Deckard-owned user session. The Deckard package
-installs `deckard-session.service`; `deckard-launch` starts it on demand, and
-`deckardd` honors the user's start-at-login preference. It is not a
-complete replacement for upstream Waydroid's Python root control plane.
+The native Deckard user session, replacing `waydroid session`. The Deckard
+package installs `deckard-session.service`; `deckard-launch` starts it on
+demand and `deckardd` honors the start-at-login preference.
 
 `deckard-runtime session start` validates the graphical user and Wayland
 socket, owns `id.waydro.Session` without queueing, exports `/SessionManager`
-`Stop`, starts the existing system container unit, and sends the 14-field
-`Start(a{ss})` payload expected by the installed container manager. Normal
-signals and D-Bus Stop request `Stop(false)`; SIGUSR1 exits without stopping
-the container, matching upstream. `session stop` requests the session method,
-falling back to `Stop(true)` on the system bus.
-The session also watches the Wayland socket inode. If Shell replaces its
-compositor socket, it stops the Android container and exits with failure so
-`deckard-session.service` can restart against the new compositor.
+`Stop`, starts `deckard-container.service` and sends the 14-field
+`Start(a{ss})` the container manager expects. Signals and D-Bus `Stop` request
+`Stop(false)`; SIGUSR1 exits without stopping the container, as upstream.
+`session stop` calls the session's `Stop`, falling back to `Stop(true)` on the
+system bus. If Shell replaces its compositor socket the session stops Android
+and exits with failure, so systemd restarts it against the new compositor.
 
-`deckard-runtime prop get KEY` and `prop set KEY VALUE` are root-only native
-operations. They inspect the session state through D-Bus, unfreeze/refreeze
-when required, and run bounded `lxc-attach` calls to Android's getprop/setprop.
-They deliberately fail for an unprivileged graphical user: this slice does not
-yet contain an authenticated privileged property broker or Binder adapter.
+Once the container runs, the session:
 
-After the container starts, the session starts a nonblocking native Android
-catalog export. It waits for boot completion and user 0 credential-encrypted
-storage unlock, reads `IPlatform.getAppsInfo` through libgbinder, and atomically
-updates `waydroid.<package>.desktop` launchers under the graphical user's
-`XDG_DATA_HOME/applications`. Existing localized/custom fields are retained;
-the launcher identity, Rust `deckard-launch` app and app-settings commands, categories,
-form factor, system-app visibility, and Android-written icon paths match the
-installed Python exporter. An empty or malformed snapshot leaves existing
-launchers untouched. The session refreshes the catalog every 15 seconds;
-`deckard-runtime session export` reruns this export for
-the current non-root user; it is useful for a manual repair or isolated test.
+- registers `waydroidusermonitor` (`lineageos.waydroid.IUserMonitor`), which
+  Android's framework calls on user unlock and package changes. Unlock rewrites
+  every `waydroid.<package>.desktop` launcher under
+  `XDG_DATA_HOME/applications`; a package change rewrites or removes one
+  (`IPlatform.getAppInfo`). Up to 64 events queue; beyond that the next idle
+  tick rereads the whole catalog. The catalog is not polled.
+- exports the launchers once after boot completion and user 0 unlock, in case
+  Android unlocked before the service was registered. Launchers keep localized
+  and custom fields; identity, `deckard-launch` commands, categories, form
+  factor, system-app visibility and Android-written icon paths match the
+  Python exporter. An empty or malformed snapshot changes nothing.
+- sets `persist.sys.timezone` from `org.freedesktop.timedate1` `Timezone`
+  through `IPlatform` setprop, then again on each change (what
+  `marathon-waydroid-session` did with `waydroid prop set`).
 
-The upstream `IUserMonitor` callback and event-driven package-change monitor, optional
-clipboard bridge, auto-ADB, session-wide boot-completion wait, and host
-timezone propagation are **not implemented**. The icon PNGs are created by
-Android; this crate references them but does not generate them. The Python container service,
-Android app launch/property Binder client, and image/network lifecycle also
-remain. The root container manager and C++ bridge remain selected; this
-session cutover must not be mistaken for replacing them.
+`session export` reruns the launcher export for the current user.
+`prop get KEY` and `prop set KEY VALUE` are root-only `lxc-attach` property
+calls; the user-facing property commands are `deckard-launch prop`.
 
-Run the D-Bus contract tests on an isolated bus with:
+Not implemented, because Marathon does not use them: the clipboard bridge
+(Shell keeps its own clipboard and the device has no wl-clipboard for
+upstream's pyclip), auto-ADB (`auto_adb = False`) and upstream's
+notification forwarder (`deckardd` handles notifications).
 
 ```
 dbus-run-session -- env DECKARD_RUNTIME_PRIVATE_BUS=1 cargo test -p deckard-runtime --frozen
