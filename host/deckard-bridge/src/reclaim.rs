@@ -22,9 +22,9 @@ use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use serde_json::{Map, Value};
 
-const MAX_LOGGED: usize = 8;
+use crate::Outbound;
 
-type SendFn = dyn Fn(Map<String, Value>) -> bool + Send + Sync;
+const MAX_LOGGED: usize = 8;
 
 /// The watch thread, and the socket whose drop wakes it to exit.
 type Watch = (UnixStream, JoinHandle<()>);
@@ -32,7 +32,7 @@ type Watch = (UnixStream, JoinHandle<()>);
 struct Inner {
     cgroup: PathBuf,
     system_pressure: PathBuf,
-    send: Box<SendFn>,
+    send: Arc<Outbound>,
     policy: Mutex<ReclaimPolicy>,
     watch: Mutex<Option<Watch>>,
 }
@@ -60,15 +60,11 @@ impl Source {
 impl Reclaimer {
     /// `cgroup` is the Android container's; `send` hands a message to
     /// DeckardSystem and says whether it was queued.
-    pub fn new(
-        cgroup: PathBuf,
-        system_pressure: PathBuf,
-        send: impl Fn(Map<String, Value>) -> bool + Send + Sync + 'static,
-    ) -> Self {
+    pub fn new(cgroup: PathBuf, system_pressure: PathBuf, send: Arc<Outbound>) -> Self {
         Self(Arc::new(Inner {
             cgroup,
             system_pressure,
-            send: Box::new(send),
+            send,
             policy: Mutex::default(),
             watch: Mutex::default(),
         }))
