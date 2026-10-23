@@ -276,6 +276,23 @@ fn android_apps_serve_keel_actions() {
     );
     assert_eq!(share.join().unwrap(), error("Failed"));
 
+    // A call in flight when the manifest changes still gets its answer.
+    let share = invoke_later("share.text", r#"{"text":"hi"}"#, false);
+    let send = take(&sent, BridgeRoute::User);
+    let changed = object(json!({"t": "keel_changed", "pkg": "org.example.chat"}));
+    keel.handle(BridgeRoute::System, &changed);
+    let before = owner();
+    answer(
+        &keel,
+        &take(&sent, BridgeRoute::System),
+        json!({"ok": true, "shortcuts": [{"id": "anna", "label": "Anna", "long": "Chat with Anna"}]}),
+    );
+    wait("a new owner", || {
+        owner().is_some_and(|now| Some(now) != before)
+    });
+    answer(&keel, &send, json!({"t": "launched", "ok": true}));
+    assert_eq!(share.join().unwrap(), Ok("{}".into()));
+
     // A shell that expects the window shows it itself.
     shell
         .object_server()

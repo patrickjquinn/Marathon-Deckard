@@ -120,6 +120,8 @@ struct Entry {
     manifest: Manifest,
     connection: Connection,
     _tick: Task<()>,
+    /// Upgraded by each call in flight.
+    calls: Weak<()>,
     /// The last `screen.read`'s.
     snapshot: i64,
 }
@@ -472,7 +474,7 @@ impl Shared {
         if locked(&self.state).apps.len() >= MAX_APPS {
             return eprintln!("deckard-bridge: keel: too many apps; not publishing {id}");
         }
-        let (connection, tick) = match self.serve(&app.pkg).await {
+        let (connection, tick, calls) = match self.serve(&app.pkg).await {
             Ok(served) => served,
             Err(error) => return eprintln!("deckard-bridge: keel: cannot publish {id}: {error}"),
         };
@@ -483,6 +485,7 @@ impl Shared {
             manifest,
             connection: connection.clone(),
             _tick: tick,
+            calls,
             snapshot: 0,
         };
         // In the catalogue before the name is owned: Describe never answers {}.
@@ -499,10 +502,13 @@ impl Shared {
         }
     }
 
-    async fn serve(self: &Arc<Self>, pkg: &str) -> zbus::Result<(Connection, Task<()>)> {
+    async fn serve(self: &Arc<Self>, pkg: &str) -> zbus::Result<(Connection, Task<()>, Weak<()>)> {
+        let calls = Arc::new(());
+        let weak = Arc::downgrade(&calls);
         let provider = Provider {
             apps: Arc::downgrade(self),
             pkg: pkg.to_owned(),
+            calls,
         };
         let connection = connection::Builder::session()?
             .internal_executor(false)
@@ -515,7 +521,7 @@ impl Shared {
                 ticker.executor().tick().await;
             }
         });
-        Ok((connection, tick))
+        Ok((connection, tick, weak))
     }
 
     /// Releases the name before the next owner asks for it.
@@ -528,6 +534,15 @@ impl Shared {
             eprintln!("deckard-bridge: keel: cannot release {id}: {error}");
         }
         eprintln!("deckard-bridge: keel: withdrew {id}");
+        // Calls in flight run on the connection's executor: tick it until they end.
+        let drain = async move {
+            while entry.calls.strong_count() > 1 {
+                Timer::after(WINDOW_POLL).await;
+            }
+            Timer::after(WINDOW_POLL).await;
+            drop(entry);
+        };
+        self.executor.spawn(drain).detach();
     }
 
     fn connected_changed(&self, route: BridgeRoute, connected: bool) {
@@ -897,6 +912,7 @@ impl Shared {
 struct Provider {
     apps: Weak<Shared>,
     pkg: String,
+    calls: Arc<()>,
 }
 
 impl Provider {
@@ -954,6 +970,7 @@ impl Provider {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> Result<String, Error> {
+        let _call = Arc::clone(&self.calls);
         let what = "use an Android app's actions";
         let (shared, host) = self.trusted(&header, connection, what).await?;
         let Ok(Value::Object(args)) = serde_json::from_str::<Value>(&arguments) else {
@@ -985,6 +1002,7 @@ impl Provider {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &Connection,
     ) -> Result<String, Error> {
+        let _call = Arc::clone(&self.calls);
         let what = "read an Android app's context";
         let (shared, host) = self.trusted(&header, connection, what).await?;
         Ok(shared.context(&self.pkg, host).await.to_string())
