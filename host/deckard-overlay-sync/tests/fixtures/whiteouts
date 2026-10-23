@@ -1,0 +1,5 @@
+# entries are relative to the overlay
+system/removed.apk
+system/conflict.apk
+
+../escape
