@@ -6,15 +6,19 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
+use deckard_bridge::Outbound;
 use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
 use deckard_bridge::app_channel::{AppChannel, ChannelEvent, ChannelHandle};
 use deckard_bridge::ime::{
     ImeController, ShellBus, ShellEvent, listen_shell, send_shell_calls, watch_shell_owner,
 };
+use deckard_bridge::location::LocationSync;
 use deckard_bridge::manage::Manage;
 use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
+use deckard_bridge::prompts::PermissionPrompts;
 use deckard_bridge::runtime::{Runtime, call_unit, watch_unit};
+use deckard_bridge::storage::{self, SharedStorage};
 use deckard_core::ids::PackageName;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
@@ -51,6 +55,33 @@ fn emit_runtime(bus: &Connection, runtime: &Runtime) {
     );
 }
 
+/// What the system channel feeds besides Manage.
+#[derive(Clone)]
+struct SystemFeatures {
+    packages: PackageBridge,
+    prompts: PermissionPrompts,
+    storage: SharedStorage,
+}
+
+impl SystemFeatures {
+    fn connected(&self) {
+        self.storage.set_connected(true);
+    }
+
+    fn handle(&self, message: &Map<String, Value>) {
+        if let Err(error) = self.packages.handle(BridgeRoute::System, message) {
+            eprintln!("deckard-bridge: system package event failed: {error}");
+        }
+        self.prompts.handle(message);
+    }
+
+    fn lost(&self) {
+        let _ = self.packages.disconnected(BridgeRoute::System);
+        self.prompts.system_lost();
+        self.storage.set_connected(false);
+    }
+}
+
 fn serve_session(
     mut session: BridgeSession,
     generation: u64,
@@ -58,7 +89,7 @@ fn serve_session(
     manage: Manage,
     runtime: Runtime,
     bus: Connection,
-    packages: PackageBridge,
+    features: SystemFeatures,
 ) {
     if session
         .set_read_timeout(Some(Duration::from_millis(100)))
@@ -84,9 +115,7 @@ fn serve_session(
         match session.read_message() {
             Ok(Some(message)) => {
                 manage.handle(generation, &message);
-                if let Err(error) = packages.handle(BridgeRoute::System, &message) {
-                    eprintln!("deckard-bridge: system package event failed: {error}");
-                }
+                features.handle(&message);
             }
             Ok(None) => break,
             Err(error)
@@ -101,7 +130,7 @@ fn serve_session(
         }
     }
     manage.disconnect(generation);
-    let _ = packages.disconnected(BridgeRoute::System);
+    features.lost();
     if runtime.set_connected(manage.connected()) {
         emit_runtime(&bus, &runtime)
     }
@@ -112,7 +141,7 @@ fn listen_system(
     manage: Manage,
     runtime: Runtime,
     bus: Connection,
-    packages: PackageBridge,
+    features: SystemFeatures,
 ) {
     let mut reader: Option<thread::JoinHandle<()>> = None;
     let mut info_worker: Option<thread::JoinHandle<()>> = None;
@@ -127,6 +156,7 @@ fn listen_system(
                 if let Some(worker) = info_worker.take() {
                     let _ = worker.join();
                 }
+                features.connected();
                 if runtime.set_connected(true) {
                     emit_runtime(&bus, &runtime)
                 }
@@ -148,7 +178,7 @@ fn listen_system(
                 let thread_manage = manage.clone();
                 let thread_runtime = runtime.clone();
                 let thread_bus = bus.clone();
-                let thread_packages = packages.clone();
+                let thread_features = features.clone();
                 reader = Some(thread::spawn(move || {
                     serve_session(
                         session,
@@ -157,7 +187,7 @@ fn listen_system(
                         thread_manage,
                         thread_runtime,
                         thread_bus,
-                        thread_packages,
+                        thread_features,
                     )
                 }));
             }
@@ -172,6 +202,7 @@ fn serve_app(
     packages: PackageBridge,
     notifications: NotificationBridge,
     actions: Receiver<deckard_core::notification_state::BridgeEvent>,
+    location: LocationSync,
 ) {
     let mut current = None;
     loop {
@@ -184,7 +215,10 @@ fn serve_app(
             }
             Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
                 let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
-                let result = if matches!(
+                let result = if kind == "location_request" {
+                    location.handle(&message);
+                    Ok(())
+                } else if matches!(
                     kind,
                     "inspect_result"
                         | "device_result"
@@ -208,6 +242,7 @@ fn serve_app(
             Ok(ChannelEvent::Disconnected(generation)) if current == Some(generation) => {
                 current = None;
                 let _ = packages.disconnected(BridgeRoute::User);
+                location.bridge_lost();
             }
             Ok(_) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -361,16 +396,50 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (notifications, actions) =
         NotificationBridge::new(bus.clone(), state.join("notifications.json"), cache)?;
     let _hub_listener = notifications.listen_hub()?;
+    let location_send = app_handle.clone();
+    let location = LocationSync::start(
+        Connection::system()?.inner().clone(),
+        Arc::new(move |message| location_send.send(message).is_ok()),
+    );
     let app_packages = packages.clone();
-    thread::spawn(move || serve_app(app_events, app_handle, app_packages, notifications, actions));
+    thread::spawn(move || {
+        serve_app(
+            app_events,
+            app_handle,
+            app_packages,
+            notifications,
+            actions,
+            location,
+        )
+    });
     thread::spawn(move || {
         if let Err(error) = app_channel.run() {
             eprintln!("deckard-bridge: app socket failed: {error}");
         }
     });
+    let prompt_send = manage.clone();
+    let system_out: Arc<Outbound> = Arc::new(move |message| prompt_send.send(message));
+    let prompts = PermissionPrompts::new(bus.inner().clone(), Arc::clone(&system_out));
+    let storage = SharedStorage::start(
+        storage::user_folders(&home),
+        state.join("shared-acl-v1"),
+        system_out,
+    )?;
     let bridge_bus = bus.clone();
     let bridge_runtime = runtime.clone();
-    thread::spawn(move || listen_system(listener, manage, bridge_runtime, bridge_bus, packages));
+    thread::spawn(move || {
+        listen_system(
+            listener,
+            manage,
+            bridge_runtime,
+            bridge_bus,
+            SystemFeatures {
+                packages,
+                prompts,
+                storage,
+            },
+        )
+    });
     let ime_bus = bus.clone();
     thread::spawn(move || serve_ime(ime_events, ime_handle, ime_bus));
     thread::spawn(move || {
