@@ -77,9 +77,8 @@ Checked on the device:
 
 Android draws nothing: `heads_up_notifications_enabled` is 0, and Waydroid's own
 forwarder (`notification_manager.py`, which posted every notification a second
-time and has no replies, removal from the Hub or progress) is turned off. The
-session runs through `deckard-waydroid`, which replaces the forwarder's
-`start` before running Waydroid's `main`.
+time and has no replies, removal from the Hub or progress) does not run: the
+Rust session (`deckard-runtime`) has no forwarder of its own.
 
 ## Media sessions as MPRIS players
 
