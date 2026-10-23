@@ -106,6 +106,8 @@ async fn refresh_palette(bus: &zbus::Connection, path: &Path) {
 
 /// Writes Android's 65 system colours for the current ambience highlight to
 /// `path`, again whenever the ambience or the Shell's bus owner changes.
+/// Changes during a `GetAmbience` fold into one more read, and the signal
+/// queues keep draining meanwhile, so a burst never wedges the connection.
 ///
 /// # Errors
 /// Returns the D-Bus error that prevented the subscription.
@@ -128,12 +130,21 @@ pub fn sync_palette(bus: &zbus::Connection, path: &Path) -> zbus::Result<()> {
         let ambience = MessageStream::for_match_rule(ambience, bus, Some(8)).await?;
         let owner = MessageStream::for_match_rule(owner, bus, Some(8)).await?;
         let mut triggers = ambience.or(owner);
-        refresh_palette(bus, path).await;
-        while let Some(trigger) = triggers.next().await {
-            if trigger.is_ok() {
+        let (stale, refreshes) = async_channel::bounded(1);
+        let follow = async move {
+            while let Some(trigger) = triggers.next().await {
+                if trigger.is_ok() {
+                    let _ = stale.try_send(());
+                }
+            }
+        };
+        let refresh = async {
+            refresh_palette(bus, path).await;
+            while refreshes.recv().await.is_ok() {
                 refresh_palette(bus, path).await;
             }
-        }
+        };
+        future::zip(follow, refresh).await;
         Ok(())
     })
 }

@@ -78,13 +78,16 @@ fn mirrors_ambience_and_doze_into_data_deckard() -> TestResult {
     assert_eq!(colors(&palette).len(), 65);
 
     *highlight.lock().unwrap() = "#ffff8a3d".into();
-    shell.emit_signal(
-        None::<&str>,
-        "/org/marathonos/Shell/Ambience",
-        "org.marathonos.Shell.Ambience1",
-        "AmbienceChanged",
-        &(HashMap::<String, Value<'static>>::new(),),
-    )?;
+    // A burst while GetAmbience is in flight never wedges the bus.
+    for _ in 0..64 {
+        shell.emit_signal(
+            None::<&str>,
+            "/org/marathonos/Shell/Ambience",
+            "org.marathonos.Shell.Ambience1",
+            "AmbienceChanged",
+            &(HashMap::<String, Value<'static>>::new(),),
+        )?;
+    }
     wait_for("the new palette", || {
         colors(&palette)
             .get("system_accent1_100")
