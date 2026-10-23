@@ -1,7 +1,7 @@
 # deckard-container prototype
 
-This is an independent, root-side Rust **prototype**. It is not in the
-production Cargo workspace, no systemd unit is installed, and it must not be
+This is a root-side Rust **prototype** in the root Cargo workspace. No systemd
+unit is installed, and it must not be
 deployed until the parity gaps below are closed and tested on a non-production
 device. The experimental `deckard-containerd` binary requires root and an
 explicit `--experimental-run` argument; it is not selected by any service. It
@@ -97,6 +97,6 @@ reference. Specifically unsupported:
   session paths. Descriptor-pinned mounts and ownership/permission checks are
   required before deployment.
 
-Run `cargo test --manifest-path host/deckard-container/Cargo.toml` and
-`cargo clippy --manifest-path host/deckard-container/Cargo.toml --all-targets -- -D warnings`.
+Run `cargo test -p deckard-container --locked` and
+`cargo clippy -p deckard-container --all-targets --locked -- -D warnings`.
 The private-bus test requires `dbus-daemon` on the test host.

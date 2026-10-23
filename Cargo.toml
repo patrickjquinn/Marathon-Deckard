@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "host/deckard-core",
+    "host/deckard-container",
     "host/deckard-fonts-sync",
     "host/deckard-host-tools",
     "host/deckard-ime",
