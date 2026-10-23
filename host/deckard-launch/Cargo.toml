@@ -6,8 +6,6 @@ rust-version = "1.82"
 license = "Apache-2.0"
 publish = false
 
-[workspace]
-
 [dependencies]
 libloading = "0.8.9"
 zbus = { version = "5.19.0", default-features = false, features = ["blocking-api", "async-io"] }

@@ -1,9 +1,8 @@
 # deckard-ime
 
-Standalone native Rust IME adapter for the current DeckardIme Android app and
-Marathon Shell `org.marathonos.Shell.TextInput1` contract. This crate has its
-own Cargo workspace and lockfile; it does not change the root workspace or the
-production `deckardd` service.
+Native Rust IME adapter for the current DeckardIme Android app and Marathon
+Shell `org.marathonos.Shell.TextInput1` contract. It is part of the root Cargo
+workspace but does not change the production `deckardd` service.
 
 The binary listens on `~/.local/share/waydroid/data/deckard/ime.sock` (or the
 equivalent `XDG_DATA_HOME` path). It uses `deckard-core::transport` for framed
@@ -13,11 +12,11 @@ Shell with `waydroid.<package>` app ids and relays only validated, active-app
 Shell signals back to Android. String lengths and offsets are UTF-16 code
 units, as in Java and Qt. The Shell is re-registered when its bus name appears.
 
-Run the fixtures with `cargo test --manifest-path host/deckard-ime/Cargo.toml`.
+Run the fixtures with `cargo test -p deckard-ime --locked`.
 Run the D-Bus signature test with:
 
 ```sh
-dbus-run-session -- env DECKARD_IME_PRIVATE_BUS=1 cargo test --manifest-path host/deckard-ime/Cargo.toml --all-targets
+dbus-run-session -- env DECKARD_IME_PRIVATE_BUS=1 cargo test -p deckard-ime --all-targets --locked
 ```
 
 ## Cutover gaps

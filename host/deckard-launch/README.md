@@ -1,9 +1,9 @@
 # deckard-launch
 
-Standalone native Rust replacement for the generated desktop-file commands
+Native Rust replacement for the generated desktop-file commands
 `waydroid app launch`, `waydroid app intent`, and the user-facing `waydroid prop`
-operations. This crate intentionally is **not** in the root Cargo workspace and
-does not change live desktop files, packages, or services.
+operations. This crate is in the root Cargo workspace but does not change live
+desktop files, packages, or services.
 
 ```text
 deckard-launch app launch PACKAGE
@@ -57,7 +57,7 @@ that target configuration. Build an AArch64 dynamic-musl executable with:
 ```sh
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
 RUSTFLAGS='-C target-feature=-crt-static' cargo build \
-  --manifest-path host/deckard-launch/Cargo.toml \
+  -p deckard-launch \
   --target aarch64-unknown-linux-musl --release --frozen
 ```
 
@@ -68,8 +68,8 @@ Rust target name says musl. The package must keep `libgbinder.so.1` and
 
 ## Tests
 
-Run `cargo test --manifest-path host/deckard-launch/Cargo.toml` and
-`cargo clippy --manifest-path host/deckard-launch/Cargo.toml --all-targets -- -D warnings`.
+Run `cargo test -p deckard-launch --locked` and
+`cargo clippy -p deckard-launch --all-targets --locked -- -D warnings`.
 Unit tests use an injected backend to verify Binder operation order, intent
 return behavior, immersive policy, frozen property behavior, config parsing,
 and Wayland path validation. They do not prove device Binder round trips.
