@@ -93,11 +93,11 @@ and Wayland path validation. They do not prove device Binder round trips.
   Binder callback. Parent integration must confirm those properties are an
   equivalent readiness barrier for the target image or expose a native
   session-manager readiness signal before switching desktop files.
-- An immediate cold launch still has a Shell window-lifecycle regression on
-  the Pi: Binder returns success and Android resumes the app, but a transient
-  window can disappear and leave Shell on home. See
-  `docs/rust-cutover-baseline.md`. Warm foreground handoff passed, but the
-  candidate is not ready to replace desktop-file commands.
+- The first immediate cold-launch tests exposed a Shell window-lifecycle
+  regression even though Binder succeeded. A bounded Shell handoff then kept
+  Feeder visible through two stable-Shell cold session cycles on the Pi. See
+  `docs/rust-cutover-baseline.md` for the failed and passing evidence; Shell
+  restart overlap and production service activation remain unqualified.
 - Desktop/icon export is owned by the session manager. It must emit `Exec=`
   lines for this binary and the app-settings intent action after both the
   launcher and native session service are packaged and device-tested.

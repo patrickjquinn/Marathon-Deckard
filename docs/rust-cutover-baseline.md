@@ -79,15 +79,21 @@ top-resumed. `deckard-runtime session stop` released the bus name and left LXC
 launch. The legacy `marathon-waydroid.service` was then restored and confirmed
 active with LXC running.
 
-An *immediate cold launch* during a subsequent candidate session start is not
-yet reliable. The launcher returned success and Android reported Feeder
-top-resumed, but Shell briefly logged the Feeder window then returned to home
-(`GetForegroundApp` returned empty). This reproduced with one launcher and
-with two concurrent launchers. Asking the Shell to `LaunchApp` later restored
-Feeder, so the candidate still has a cold-window lifecycle/handoff gap. Merely
-calling `ShowAndroidApp` before as well as after the Binder launch did not
-resolve it. Do not select the candidate session or launcher for production
-until the immediate cold path stays visible under repeated device tests.
+An *immediate cold launch* initially failed despite the launcher returning
+success and Android reporting Feeder top-resumed: Shell briefly logged the
+Feeder window then returned to home. This reproduced with one launcher and
+with two concurrent launchers. Calling the old `ShowAndroidApp` both before
+and after Binder did not help. The Shell was changed to claim the Android task
+before Binder and retain it through a bounded first-window remap. With Shell
+PID 112020 held stable, two subsequent stop/start cycles launched Feeder
+immediately after starting the Rust session, kept it foreground at +3 and
++11 seconds, and showed Feeder in a device screenshot. The launch CLI calls
+took 10.6 and 10.8 seconds, including Android boot; these are not tap-to-first-
+frame measurements. The Rust session stopped LXC each time and the legacy
+service was restored active with LXC running. A separate test with Shell
+restarts during the launch window still reported empty foreground, so Shell
+restart overlap remains unqualified. Neither result activates a Rust daemon or
+replaces the production Python container/session units.
 
 Five sequential, read-only `sys.boot_completed` property requests within one
 SSH/user session took 43.9 ms through `deckard-launch` and 1,351.3 ms through
