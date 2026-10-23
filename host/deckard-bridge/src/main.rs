@@ -202,7 +202,7 @@ fn serve_app(
     packages: PackageBridge,
     notifications: NotificationBridge,
     actions: Receiver<deckard_core::notification_state::BridgeEvent>,
-    location: LocationSync,
+    location: Option<LocationSync>,
 ) {
     let mut current = None;
     loop {
@@ -216,7 +216,9 @@ fn serve_app(
             Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
                 let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
                 let result = if kind == "location_request" {
-                    location.handle(&message);
+                    if let Some(location) = &location {
+                        location.handle(&message);
+                    }
                     Ok(())
                 } else if matches!(
                     kind,
@@ -242,7 +244,9 @@ fn serve_app(
             Ok(ChannelEvent::Disconnected(generation)) if current == Some(generation) => {
                 current = None;
                 let _ = packages.disconnected(BridgeRoute::User);
-                location.bridge_lost();
+                if let Some(location) = &location {
+                    location.bridge_lost();
+                }
             }
             Ok(_) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -397,10 +401,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         NotificationBridge::new(bus.clone(), state.join("notifications.json"), cache)?;
     let _hub_listener = notifications.listen_hub()?;
     let location_send = app_handle.clone();
-    let location = LocationSync::start(
-        Connection::system()?.inner().clone(),
-        Arc::new(move |message| location_send.send(message).is_ok()),
-    );
+    let location = match Connection::system() {
+        Ok(system) => Some(LocationSync::start(
+            system.inner().clone(),
+            Arc::new(move |message| location_send.send(message).is_ok()),
+        )),
+        Err(error) => {
+            eprintln!("deckard-bridge: no system bus, so no location for Android: {error}");
+            None
+        }
+    };
     let app_packages = packages.clone();
     thread::spawn(move || {
         serve_app(
