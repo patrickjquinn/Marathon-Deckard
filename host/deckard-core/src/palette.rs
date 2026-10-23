@@ -16,14 +16,13 @@ impl Color {
     /// # Errors
     /// `value` is neither.
     pub fn parse(value: &str) -> Result<Self, Error> {
-        let hex = value.strip_prefix('#').unwrap_or("");
-        if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(Error::InvalidColor);
+        let bytes = value
+            .strip_prefix('#')
+            .and_then(|hex| hex::decode(hex).ok());
+        match bytes.as_deref() {
+            Some(&[red, green, blue] | &[_, red, green, blue]) => Ok(Self([red, green, blue])),
+            _ => Err(Error::InvalidColor),
         }
-        let rgb =
-            u32::from_str_radix(&hex[hex.len() - 6..], 16).map_err(|_| Error::InvalidColor)?;
-        let [_, red, green, blue] = rgb.to_be_bytes();
-        Ok(Self([red, green, blue]))
     }
 
     /// `#rrggbb`.
