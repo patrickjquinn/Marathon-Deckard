@@ -18,7 +18,7 @@ use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
 use deckard_bridge::prompts::PermissionPrompts;
 use deckard_bridge::runtime::{Runtime, call_unit, watch_unit};
-use deckard_bridge::storage::{self, SharedStorage};
+use deckard_bridge::storage::SharedStorage;
 use deckard_core::ids::PackageName;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
@@ -421,7 +421,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let system_out: Arc<Outbound> = Arc::new(move |message| prompt_send.send(message));
     let prompts = PermissionPrompts::new(bus.inner().clone(), Arc::clone(&system_out));
     let storage = SharedStorage::start(
-        storage::user_folders(&home),
+        deckard_host_tools::shared_folders::host_folders(&home),
         state.join("shared-acl-v1"),
         system_out,
     )?;

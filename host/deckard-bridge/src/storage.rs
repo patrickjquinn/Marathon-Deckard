@@ -13,10 +13,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use deckard_core::acl;
-use deckard_host_tools::shared_folders::{self, MEDIA_RW};
+use deckard_host_tools::shared_folders::MEDIA_RW;
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use serde_json::{Value, json};
 
@@ -27,51 +27,23 @@ pub const SETTLE: Duration = Duration::from_secs(3);
 pub const MAX_PATHS: usize = 64;
 const RECENT: Duration = Duration::from_secs(2 * 3 + 2);
 const QUEUE: usize = 256;
-const ANDROID_ROOT: &str = "/storage/emulated/0";
 
-/// One shared folder: where it is on the host, and its name in Android.
-#[derive(Clone, Debug)]
-pub struct Folder {
-    pub host: PathBuf,
-    pub android: &'static str,
-}
-
-/// The XDG user dirs and ~/DCIM, as the hook maps them.
-#[must_use]
-pub fn user_folders(home: &Path) -> Vec<Folder> {
-    let folders = shared_folders::host_folders(home);
-    folders
-        .into_iter()
-        .map(|(android, host)| Folder { host, android })
-        .collect()
-}
-
-fn clean(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    out
-}
+/// A shared folder: its Android name and its host path, as
+/// `deckard_host_tools::shared_folders::host_folders` lists them.
+pub type Folder = (&'static str, PathBuf);
 
 /// `/storage/emulated/0/...` for a host path in a folder.
 #[must_use]
 pub fn android_path(folders: &[Folder], host: &Path) -> Option<String> {
-    let host = clean(host);
-    let (folder, rest) = folders
-        .iter()
-        .find_map(|folder| Some((folder, host.strip_prefix(&folder.host).ok()?)))?;
-    let mut path = Path::new(ANDROID_ROOT).join(folder.android);
-    if !rest.as_os_str().is_empty() {
-        path.push(rest);
+    if host.components().any(|part| part == Component::ParentDir) {
+        return None;
     }
-    path.to_str().map(str::to_owned)
+    let mut found = folders.iter();
+    let (android, rest) =
+        found.find_map(|(name, dir)| Some((name, host.strip_prefix(dir).ok()?)))?;
+    let rest = rest.to_str()?;
+    let separator = if rest.is_empty() { "" } else { "/" };
+    Some(format!("/storage/emulated/0/{android}{separator}{rest}"))
 }
 
 enum Event {
@@ -97,8 +69,8 @@ impl SharedStorage {
     pub fn start(folders: Vec<Folder>, stamp: PathBuf, send: Arc<Outbound>) -> io::Result<Self> {
         let inotify = Arc::new(inotify::init(CreateFlags::CLOEXEC)?);
         let (events, received) = mpsc::sync_channel(QUEUE);
-        let reader = (Arc::clone(&inotify), events.clone());
-        thread::spawn(move || read(&reader.0, &reader.1));
+        let (reader, sender) = (Arc::clone(&inotify), events.clone());
+        thread::spawn(move || read(&reader, &sender));
         let worker = Worker {
             folders,
             stamp,
@@ -125,18 +97,12 @@ fn read(inotify: &OwnedFd, events: &SyncSender<Event>) {
         let event = match reader.next() {
             Ok(event) => event,
             Err(rustix::io::Errno::INTR) => continue,
-            Err(error) => {
-                eprintln!("deckard-bridge: shared storage watch failed: {error}");
-                return;
-            }
+            Err(error) => return eprintln!("deckard-bridge: shared storage watch failed: {error}"),
         };
-        let flags = event.events();
-        let event = if flags.contains(ReadFlags::QUEUE_OVERFLOW) {
-            Event::Overflow
-        } else if flags.contains(ReadFlags::IGNORED) {
-            Event::Gone(event.wd())
-        } else {
-            Event::Changed(event.wd())
+        let event = match event.events() {
+            flags if flags.contains(ReadFlags::QUEUE_OVERFLOW) => Event::Overflow,
+            flags if flags.contains(ReadFlags::IGNORED) => Event::Gone(event.wd()),
+            _ => Event::Changed(event.wd()),
         };
         if events.send(event).is_err() {
             return;
@@ -144,22 +110,27 @@ fn read(inotify: &OwnedFd, events: &SyncSender<Event>) {
     }
 }
 
+/// `dir`'s entries other than symlinks, with their metadata.
+fn entries(dir: &Path) -> Vec<(PathBuf, fs::Metadata)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let entries = entries.flatten();
+    let entries = entries.filter_map(|entry| Some((entry.path(), entry.metadata().ok()?)));
+    entries
+        .filter(|(_, metadata)| !metadata.is_symlink())
+        .collect()
+}
+
 fn walk(root: &Path) {
     let mut stack = vec![root.to_owned()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        let entries = entries.flatten();
-        for entry in entries {
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() || kind.is_file() {
-                let _ = acl::grant(&entry.path(), MEDIA_RW);
+        for (path, metadata) in entries(&dir) {
+            if metadata.is_dir() || metadata.is_file() {
+                let _ = acl::grant(&path, MEDIA_RW);
             }
-            if kind.is_dir() {
-                stack.push(entry.path());
+            if metadata.is_dir() {
+                stack.push(path);
             }
         }
     }
@@ -184,6 +155,7 @@ impl Worker {
                 Some(at) => events.recv_timeout(at.saturating_duration_since(Instant::now())),
                 None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
+            let all = self.folders.iter().map(|(_, dir)| dir.clone());
             match event {
                 Ok(Event::Changed(wd)) => {
                     if let Some(dir) = self.watched.get(&wd).cloned() {
@@ -191,20 +163,16 @@ impl Worker {
                         settle = Some(Instant::now() + SETTLE);
                     }
                 }
-                Ok(Event::Gone(wd)) => {
-                    self.watched.remove(&wd);
-                }
+                Ok(Event::Gone(wd)) => drop(self.watched.remove(&wd)),
                 Ok(Event::Overflow) => {
-                    self.dirty
-                        .extend(self.folders.iter().map(|f| f.host.clone()));
+                    self.dirty.extend(all);
                     self.watch();
                     settle = Some(Instant::now() + SETTLE);
                 }
                 Ok(Event::Connected(connected)) => {
                     self.connected = connected;
                     if connected {
-                        self.dirty
-                            .extend(self.folders.iter().map(|f| f.host.clone()));
+                        self.dirty.extend(all);
                         self.flush();
                     }
                 }
@@ -220,53 +188,39 @@ impl Worker {
     fn prepare(&mut self) {
         let first = !self.stamp.exists();
         let mut ok = true;
-        for folder in &self.folders {
-            if !folder.host.is_dir() && fs::create_dir_all(&folder.host).is_err() {
+        for (_, dir) in &self.folders {
+            if !dir.is_dir() && fs::create_dir_all(dir).is_err() {
                 continue;
             }
-            if let Err(error) = acl::grant(&folder.host, MEDIA_RW) {
-                let host = folder.host.display();
-                eprintln!(
-                    "deckard-bridge: no ACL on {host} ({error}); Android may not write there"
-                );
+            if let Err(error) = acl::grant(dir, MEDIA_RW) {
+                let dir = dir.display();
+                eprintln!("deckard-bridge: no ACL on {dir} ({error}); Android may not write there");
                 ok = false;
-                continue;
-            }
-            if first {
-                walk(&folder.host);
+            } else if first {
+                walk(dir);
             }
         }
-        if first && ok {
-            let parent = self.stamp.parent().unwrap_or(Path::new("/"));
-            if let Err(error) =
-                fs::create_dir_all(parent).and_then(|()| fs::write(&self.stamp, "1\n"))
-            {
-                eprintln!("deckard-bridge: shared storage stamp: {error}");
-            }
+        let parent = self.stamp.parent().unwrap_or(Path::new("/"));
+        let write = || fs::create_dir_all(parent).and_then(|()| fs::write(&self.stamp, "1\n"));
+        if first
+            && ok
+            && let Err(error) = write()
+        {
+            eprintln!("deckard-bridge: shared storage stamp: {error}");
         }
         self.watch();
     }
 
     fn watch(&mut self) {
-        let flags = WatchFlags::ATTRIB
-            | WatchFlags::MOVE
-            | WatchFlags::CREATE
-            | WatchFlags::DELETE
-            | WatchFlags::DELETE_SELF
-            | WatchFlags::ONLYDIR
-            | WatchFlags::DONT_FOLLOW;
+        let flags = WatchFlags::ATTRIB | WatchFlags::MOVE | WatchFlags::CREATE | WatchFlags::DELETE;
+        let flags = flags | WatchFlags::DELETE_SELF | WatchFlags::ONLYDIR | WatchFlags::DONT_FOLLOW;
         let mut dirs = Vec::new();
-        for folder in &self.folders {
-            dirs.push(folder.host.clone());
-            let Ok(entries) = fs::read_dir(&folder.host) else {
-                continue;
-            };
-            let entries = entries.flatten();
-            for entry in entries {
-                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    dirs.push(entry.path());
-                }
-            }
+        for (_, dir) in &self.folders {
+            let subfolders = entries(dir)
+                .into_iter()
+                .filter(|(_, metadata)| metadata.is_dir());
+            dirs.push(dir.clone());
+            dirs.extend(subfolders.map(|(path, _)| path));
         }
         for dir in dirs {
             if let Ok(wd) = inotify::add_watch(&*self.inotify, &dir, flags) {
@@ -278,20 +232,11 @@ impl Worker {
     /// New entries from the host get the ACL too; what Android made has
     /// the folder's default already.
     fn changed(&mut self, dir: PathBuf) {
-        let recent = SystemTime::now() - RECENT;
-        let recent = recent
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        if let Ok(entries) = fs::read_dir(&dir) {
-            let entries = entries.flatten();
-            for entry in entries {
-                let Ok(metadata) = entry.metadata() else {
-                    continue;
-                };
-                let ctime = u64::try_from(metadata.ctime()).unwrap_or(0);
-                if !metadata.is_symlink() && ctime >= recent {
-                    let _ = acl::grant(&entry.path(), MEDIA_RW);
-                }
+        let recent = (SystemTime::now() - RECENT).duration_since(UNIX_EPOCH);
+        let recent = recent.map_or(0, |since| since.as_secs());
+        for (path, metadata) in entries(&dir) {
+            if u64::try_from(metadata.ctime()).is_ok_and(|ctime| ctime >= recent) {
+                let _ = acl::grant(&path, MEDIA_RW);
             }
         }
         self.dirty.insert(dir);
@@ -303,14 +248,10 @@ impl Worker {
             return;
         }
         let dirty = std::mem::take(&mut self.dirty);
-        let mut paths = Vec::new();
-        for dir in &dirty {
-            if let Some(path) = android_path(&self.folders, dir)
-                && paths.len() < MAX_PATHS
-            {
-                paths.push(path);
-            }
-        }
+        let paths = dirty
+            .iter()
+            .filter_map(|dir| android_path(&self.folders, dir));
+        let paths: Vec<String> = paths.take(MAX_PATHS).collect();
         if paths.is_empty() {
             return;
         }
@@ -327,25 +268,16 @@ mod tests {
     #[test]
     fn maps_to_android_paths() {
         let folders = [
-            Folder {
-                host: "/home/u/Pictures".into(),
-                android: "Pictures",
-            },
-            Folder {
-                host: "/home/u/Videos".into(),
-                android: "Movies",
-            },
+            ("Pictures", "/home/u/Pictures".into()),
+            ("Movies", "/home/u/Videos".into()),
         ];
-        let path = |p: &str| android_path(&folders, Path::new(p));
+        let path = |p: &str| android_path(&folders, Path::new(p)).unwrap_or_default();
+        assert_eq!(path("/home/u/Pictures"), "/storage/emulated/0/Pictures");
         assert_eq!(
-            path("/home/u/Pictures").as_deref(),
-            Some("/storage/emulated/0/Pictures")
+            path("/home/u/Videos/a/b.mp4"),
+            "/storage/emulated/0/Movies/a/b.mp4"
         );
-        assert_eq!(
-            path("/home/u/Videos/a/b.mp4").as_deref(),
-            Some("/storage/emulated/0/Movies/a/b.mp4")
-        );
-        assert_eq!(path("/home/u/Pictures/../.ssh"), None);
-        assert_eq!(path("/home/u/PicturesX"), None);
+        assert_eq!(path("/home/u/Pictures/../.ssh"), "");
+        assert_eq!(path("/home/u/PicturesX"), "");
     }
 }

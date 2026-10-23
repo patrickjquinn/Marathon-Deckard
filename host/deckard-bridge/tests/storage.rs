@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use deckard_bridge::storage::{Folder, SETTLE, SharedStorage};
+use deckard_bridge::storage::{SETTLE, SharedStorage};
 use serde_json::{Map, Value, json};
 
 fn paths(message: &Map<String, Value>) -> Vec<Value> {
@@ -32,14 +32,8 @@ fn indexes_what_the_host_changes() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(marathon.join("old/a.jpg"), "x")?;
     let stamp = home.path().join("state/shared-acl");
     let folders = vec![
-        Folder {
-            host: pictures.clone(),
-            android: "Pictures",
-        },
-        Folder {
-            host: home.path().join("DCIM"),
-            android: "DCIM",
-        },
+        ("Pictures", pictures.clone()),
+        ("DCIM", home.path().join("DCIM")),
     ];
     let (tx, sent) = mpsc::channel();
     let tx = Mutex::new(tx);
