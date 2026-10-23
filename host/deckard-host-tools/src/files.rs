@@ -81,15 +81,23 @@ pub fn is_component(name: &OsStr) -> bool {
         && !bytes.contains(&0)
 }
 
+/// `result` with "not found" as `None`.
+///
+/// # Errors
+/// Any other error of `result`.
+pub fn found<T>(result: io::Result<T>) -> io::Result<Option<T>> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        result => result.map(Some),
+    }
+}
+
 /// The file's text, or empty when it does not exist.
 ///
 /// # Errors
 /// The file exists but cannot be read as UTF-8.
 pub fn read_optional(path: &Path) -> io::Result<String> {
-    match fs::read_to_string(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-        result => result,
-    }
+    Ok(found(fs::read_to_string(path))?.unwrap_or_default())
 }
 
 /// Replaces `path` atomically with `content` in mode `mode`, then syncs its

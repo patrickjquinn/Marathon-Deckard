@@ -4,6 +4,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use deckard_host_tools::files;
+
 use crate::Result;
 use crate::command::{Command, Runner};
 
@@ -198,17 +200,15 @@ fn dnsmasq_account(passwd: &str) -> &'static str {
 }
 
 fn verified_dnsmasq_pid(pidfile: &Path) -> Result<Option<u32>> {
-    let contents = match fs::read_to_string(pidfile) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        contents => contents?,
+    let Some(contents) = files::found(fs::read_to_string(pidfile))? else {
+        return Ok(None);
     };
     let pid: u32 = contents.trim().parse().map_err(|_| "invalid dnsmasq PID")?;
     if pid <= 1 {
         return Err("unsafe dnsmasq PID".into());
     }
-    let cmdline = match fs::read(format!("/proc/{pid}/cmdline")) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        cmdline => cmdline?,
+    let Some(cmdline) = files::found(fs::read(format!("/proc/{pid}/cmdline")))? else {
+        return Ok(None);
     };
     let expected = format!("--pid-file={}", pidfile.display());
     let args: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();

@@ -91,9 +91,8 @@ pub fn set(text: &str, updates: &[(&str, &str)]) -> Result<String> {
 /// # Errors
 /// The file is a link, not owned by the daemon, writable by others or too big.
 pub fn read(path: &Path) -> Result<String> {
-    let metadata = match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-        metadata => metadata?,
+    let Some(metadata) = files::found(fs::symlink_metadata(path))? else {
+        return Ok(String::new());
     };
     if !metadata.is_file()
         || metadata.uid() != rustix::process::geteuid().as_raw()

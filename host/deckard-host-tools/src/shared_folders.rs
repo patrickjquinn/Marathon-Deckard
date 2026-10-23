@@ -85,9 +85,8 @@ fn create_directory(
     mode: u32,
     operations: &mut impl Operations,
 ) -> io::Result<OwnedFd> {
-    match open_directory(parent, OsStr::new(name)) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        result => return result,
+    if let Some(directory) = files::found(open_directory(parent, OsStr::new(name)))? {
+        return Ok(directory);
     }
     rustix::fs::mkdirat(parent, name, Mode::from_raw_mode(mode))?;
     let directory = open_directory(parent, OsStr::new(name))?;

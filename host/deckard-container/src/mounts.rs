@@ -8,6 +8,8 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
+use deckard_host_tools::files;
+
 use crate::Result;
 use crate::command::{Command, Runner};
 
@@ -187,9 +189,8 @@ pub(crate) fn owner_controlled(path: &Path) -> Result<()> {
     let mut current = PathBuf::from("/");
     let mut components = path.components().skip(1).peekable();
     loop {
-        let metadata = match current.symlink_metadata() {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            metadata => metadata?,
+        let Some(metadata) = files::found(current.symlink_metadata())? else {
+            return Ok(());
         };
         let shared = metadata.mode() & 0o022 != 0;
         let sticky_dir = metadata.is_dir() && metadata.mode() & 0o1000 != 0;

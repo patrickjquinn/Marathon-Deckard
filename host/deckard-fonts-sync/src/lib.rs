@@ -72,13 +72,6 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn not_found<T>(result: io::Result<T>) -> io::Result<Option<T>> {
-    match result {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        result => result.map(Some),
-    }
-}
-
 fn open_regular(directory: &OwnedFd, name: &OsStr) -> io::Result<OwnedFd> {
     if !files::is_component(name) {
         return Err(invalid("invalid path component"));
@@ -142,7 +135,7 @@ fn state_path(line: &str) -> io::Result<(&str, &str)> {
 }
 
 fn state_entries(directory: &OwnedFd, name: &OsStr) -> io::Result<Vec<String>> {
-    let Some(file) = not_found(open_regular(directory, name))? else {
+    let Some(file) = files::found(open_regular(directory, name))? else {
         return Ok(Vec::new());
     };
     let text = read_limited(file)?;
@@ -176,10 +169,10 @@ enum Create {
 
 fn remove_entry(system: &OwnedFd, entry: &str) -> io::Result<()> {
     let (parent, name) = state_path(entry)?;
-    let Some(directory) = not_found(destination(system, parent, Create::No))? else {
+    let Some(directory) = files::found(destination(system, parent, Create::No))? else {
         return Ok(());
     };
-    not_found(rustix::fs::unlinkat(&directory, name, AtFlags::empty()).map_err(Into::into))
+    files::found(rustix::fs::unlinkat(&directory, name, AtFlags::empty()).map_err(Into::into))
         .map(drop)
 }
 
@@ -222,7 +215,7 @@ fn scan_fonts(
     found: &mut BTreeMap<String, OwnedFd>,
 ) -> io::Result<()> {
     let wanted = wanted.iter().cloned().collect();
-    match not_found(files::open_dir(root))? {
+    match files::found(files::open_dir(root))? {
         Some(directory) => find_fonts(&directory, &wanted, found),
         None => Ok(()),
     }
@@ -246,7 +239,7 @@ fn sync_dir(directory: &OwnedFd) -> io::Result<()> {
 }
 
 fn remove_state(directory: &OwnedFd, name: &OsStr) -> io::Result<()> {
-    if not_found(rustix::fs::unlinkat(directory, name, AtFlags::empty()).map_err(Into::into))?
+    if files::found(rustix::fs::unlinkat(directory, name, AtFlags::empty()).map_err(Into::into))?
         .is_some()
     {
         sync_dir(directory)?;
@@ -313,9 +306,9 @@ pub fn sync(paths: &Paths, whiteouts: &mut impl Whiteouts) -> io::Result<Outcome
         remove_state(&state_dir, state_name)?;
         Ok(outcome)
     };
-    let share = not_found(files::open_dir(&paths.share))?;
+    let share = files::found(files::open_dir(&paths.share))?;
     let manifest = match &share {
-        Some(share) => not_found(open_regular(share, OsStr::new("fonts.xml")))?,
+        Some(share) => files::found(open_regular(share, OsStr::new("fonts.xml")))?,
         None => None,
     };
     let (Some(share), Some(manifest)) = (share, manifest) else {

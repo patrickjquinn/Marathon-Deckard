@@ -3,12 +3,11 @@
 //! `tools/helpers/protocol.py`).
 
 use std::fs::{self, File, Permissions};
-use std::io::ErrorKind;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use deckard_host_tools::cfg;
+use deckard_host_tools::{cfg, files};
 
 use crate::Result;
 use crate::command::{Command, Runner};
@@ -209,18 +208,14 @@ pub fn open_device_access(dev: &Path, debug_sync: &Path) -> Result<()> {
         nodes.push(graphics);
     }
     for node in nodes {
-        match fs::set_permissions(&node, Permissions::from_mode(0o777)) {
-            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error.into()),
-            _ => {}
-        }
+        files::found(fs::set_permissions(&node, Permissions::from_mode(0o777)))?;
     }
     Ok(())
 }
 
 fn matching(directory: &Path, prefix: &str) -> Result<Vec<PathBuf>> {
-    let entries = match fs::read_dir(directory) {
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        entries => entries?,
+    let Some(entries) = files::found(fs::read_dir(directory))? else {
+        return Ok(Vec::new());
     };
     let mut paths = Vec::new();
     for entry in entries {

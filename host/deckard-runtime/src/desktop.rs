@@ -3,7 +3,6 @@
 
 use std::collections::HashSet;
 use std::fs::{self, DirBuilder, File};
-use std::io::ErrorKind;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
@@ -229,10 +228,11 @@ pub fn update(data_home: &Path, package: &str, app: Option<&AppInfo>) -> Result<
     let applications = applications_dir(data_home)?;
     match app.filter(|app| is_launcher(app)) {
         Some(app) => write_app(&applications, data_home, app)?,
-        None => match fs::remove_file(launcher_path(&applications, package)) {
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-            result => result?,
-        },
+        None => {
+            if files::found(fs::remove_file(launcher_path(&applications, package)))?.is_none() {
+                return Ok(());
+            }
+        }
     }
     File::open(&applications)?.sync_all()?;
     Ok(())

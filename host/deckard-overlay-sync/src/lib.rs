@@ -69,7 +69,7 @@ impl Whiteouts for DeviceWhiteouts {
         let whiteout = |meta: Metadata| {
             meta.file_type().is_char_device() && meta.rdev() == rustix::fs::makedev(0, 0)
         };
-        Ok(present(fs::symlink_metadata(path))?.is_some_and(whiteout))
+        Ok(files::found(fs::symlink_metadata(path))?.is_some_and(whiteout))
     }
 
     fn create(&self, path: &Path) -> io::Result<()> {
@@ -144,13 +144,6 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
 }
 
-fn present<T>(result: io::Result<T>) -> io::Result<Option<T>> {
-    match result {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        result => result.map(Some),
-    }
-}
-
 fn split(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
     let parent = path.parent().ok_or_else(|| invalid("missing parent"))?;
     Ok((
@@ -182,7 +175,7 @@ fn safe_target(dst: &Path, relative: &Path) -> io::Result<PathBuf> {
     let parts = relative.parent().map(Path::components);
     for part in parts.into_iter().flatten() {
         parent.push(part);
-        if present(fs::symlink_metadata(&parent))?.is_some_and(|meta| meta.is_symlink()) {
+        if files::found(fs::symlink_metadata(&parent))?.is_some_and(|meta| meta.is_symlink()) {
             return Err(invalid("overlay path traverses a symlink"));
         }
     }
@@ -190,7 +183,7 @@ fn safe_target(dst: &Path, relative: &Path) -> io::Result<PathBuf> {
 }
 
 fn remove_file(path: &Path) -> io::Result<()> {
-    present(fs::remove_file(path)).map(drop)
+    files::found(fs::remove_file(path)).map(drop)
 }
 
 /// Replaces `path` with `lines`, mode 0600.
@@ -218,7 +211,7 @@ fn copy_tree(
         let target = safe_target(dst, &child)?;
         let metadata = fs::symlink_metadata(&source)?;
         if metadata.is_dir() {
-            if present(fs::symlink_metadata(&target))?.is_some_and(|meta| !meta.is_dir()) {
+            if files::found(fs::symlink_metadata(&target))?.is_some_and(|meta| !meta.is_dir()) {
                 remove_file(&target)?;
             }
             fs::create_dir_all(&target)?;
@@ -303,7 +296,7 @@ fn reconcile_whiteouts(
         let Ok(rel) = relative(&line) else { continue };
         let path = safe_target(dst, &rel)?;
         if !whiteouts.is_whiteout(&path)? {
-            if present(fs::symlink_metadata(&path))?.is_some() {
+            if files::found(fs::symlink_metadata(&path))?.is_some() {
                 writeln!(
                     log,
                     "deckard-overlay-sync: {line} exists in the overlay; not hiding it"
