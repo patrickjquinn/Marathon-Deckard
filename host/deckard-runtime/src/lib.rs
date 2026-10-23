@@ -2,6 +2,7 @@
 
 mod desktop;
 mod monitor;
+mod timezone;
 
 use std::collections::HashMap;
 use std::env;
@@ -303,9 +304,10 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
             eprintln!("deckard-runtime: {} unavailable: {error}", monitor::SERVICE);
         }
     });
-    if let Err(error) = export_installed_apps(data_home, stop) {
+    match export_installed_apps(data_home, stop) {
+        Ok(()) => timezone::propagate(&config, stop),
         // A later userUnlocked callback exports the catalog.
-        eprintln!("deckard-runtime: Android desktop export failed: {error}");
+        Err(error) => eprintln!("deckard-runtime: Android desktop export failed: {error}"),
     }
     while !stop.load(Ordering::Acquire) {
         let event = match events.recv_timeout(Duration::from_millis(500)) {
