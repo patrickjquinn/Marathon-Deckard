@@ -173,7 +173,7 @@ fn cxx_location_follows_androids_request() -> Result<(), Box<dyn std::error::Err
     assert_eq!(*seen.lock().unwrap(), asked);
     updated()?;
     let fix = sent.recv_timeout(Duration::from_secs(5))?;
-    let expected = json!({"t":"location", "lat":53.35, "lon":-6.26, "acc":25000.0, "time":1_790_000_000_500.0});
+    let expected = json!({"t":"location", "lat":53.35, "lon":-6.26, "acc":25000.0, "time":1_790_000_000_500_u64});
     assert_eq!(Value::Object(fix), expected);
 
     // A new interval while running changes the threshold, not the client.

@@ -55,7 +55,7 @@ pub fn message(fix: &Fix) -> Option<Map<String, Value>> {
     let (seconds, micros) = fix.timestamp?;
     let time = seconds.saturating_mul(1000).saturating_add(micros / 1000);
     let Value::Object(mut out) = json!({
-        "t": "location", "lat": lat, "lon": lon, "acc": acc.min(1e7), "time": time as f64,
+        "t": "location", "lat": lat, "lon": lon, "acc": acc.min(1e7), "time": time,
     }) else {
         return None;
     };
@@ -308,7 +308,7 @@ mod tests {
         };
         let m = message(&place()).unwrap_or_default();
         let expected = json!({"t":"location", "lat":53.35, "lon":-6.26, "acc":40.0,
-            "alt":12.5, "heading":90.0, "time":1_790_000_000_500.0});
+            "alt":12.5, "heading":90.0, "time":1_790_000_000_500_u64});
         assert_eq!(Value::Object(m), expected);
         let mut bad = [place(), place(), place(), place()];
         bad[0].latitude = Some(91.0);
