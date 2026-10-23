@@ -5,7 +5,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::io;
 use std::iter;
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
@@ -63,15 +62,22 @@ pub struct SharedStorage {
 impl SharedStorage {
     /// Applies the ACLs (and, once per `stamp`, to everything in the
     /// folders), then watches them and sends `media_scan` with `send`.
-    ///
-    /// # Errors
-    ///
-    /// No inotify instance could be made.
-    pub fn start(folders: Vec<Folder>, stamp: PathBuf, send: Arc<Outbound>) -> io::Result<Self> {
-        let inotify = Arc::new(inotify::init(CreateFlags::CLOEXEC)?);
+    /// Without inotify the folders are still indexed when Android connects.
+    #[must_use]
+    pub fn start(folders: Vec<Folder>, stamp: PathBuf, send: Arc<Outbound>) -> Self {
         let (events, received) = mpsc::sync_channel(QUEUE);
-        let (reader, sender) = (Arc::clone(&inotify), events.clone());
-        thread::spawn(move || read(&reader, &sender));
+        let inotify = match inotify::init(CreateFlags::CLOEXEC) {
+            Ok(inotify) => {
+                let (inotify, sender) = (Arc::new(inotify), events.clone());
+                let reader = Arc::clone(&inotify);
+                thread::spawn(move || read(&reader, &sender));
+                Some(inotify)
+            }
+            Err(error) => {
+                eprintln!("deckard-bridge: shared storage isn't watched: {error}");
+                None
+            }
+        };
         let worker = Worker {
             folders,
             stamp,
@@ -82,7 +88,7 @@ impl SharedStorage {
             connected: false,
         };
         thread::spawn(move || worker.run(&received));
-        Ok(Self { events })
+        Self { events }
     }
 
     /// DeckardSystem came or went; when it comes, every folder is indexed.
@@ -141,7 +147,7 @@ struct Worker {
     folders: Vec<Folder>,
     stamp: PathBuf,
     send: Arc<Outbound>,
-    inotify: Arc<OwnedFd>,
+    inotify: Option<Arc<OwnedFd>>,
     watched: HashMap<i32, PathBuf>,
     dirty: BTreeSet<PathBuf>,
     connected: bool,
@@ -225,6 +231,9 @@ impl Worker {
     }
 
     fn watch(&mut self) {
+        let Some(inotify) = &self.inotify else {
+            return;
+        };
         let flags = WatchFlags::ATTRIB | WatchFlags::MOVE | WatchFlags::CREATE | WatchFlags::DELETE;
         let flags = flags | WatchFlags::DELETE_SELF | WatchFlags::ONLYDIR | WatchFlags::DONT_FOLLOW;
         let mut dirs = Vec::new();
@@ -236,7 +245,7 @@ impl Worker {
             dirs.extend(subfolders.map(|(path, _)| path));
         }
         for dir in dirs {
-            if let Ok(wd) = inotify::add_watch(&*self.inotify, &dir, flags) {
+            if let Ok(wd) = inotify::add_watch(&**inotify, &dir, flags) {
                 self.watched.insert(wd, dir);
             }
         }

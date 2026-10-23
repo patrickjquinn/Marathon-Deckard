@@ -38,7 +38,7 @@ fn indexes_what_the_host_changes() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, sent) = mpsc::channel();
     let tx = Mutex::new(tx);
     let send = Arc::new(move |message| tx.lock().unwrap().send(message).is_ok());
-    let storage = SharedStorage::start(folders, stamp.clone(), send)?;
+    let storage = SharedStorage::start(folders, stamp.clone(), send);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !home.path().join("DCIM").is_dir() {
         assert!(Instant::now() < deadline, "the folders were never prepared");

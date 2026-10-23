@@ -434,7 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         deckard_host_tools::shared_folders::host_folders(&home),
         state.join("shared-acl-v1"),
         system_out,
-    )?;
+    );
     let bridge_bus = bus.clone();
     let bridge_runtime = runtime.clone();
     thread::spawn(move || {
