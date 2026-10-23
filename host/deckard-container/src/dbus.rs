@@ -130,51 +130,48 @@ impl LauncherPolicy {
             })
     }
 
-    fn permits(&self, caller: Caller, owner: Caller) -> bool {
-        if caller.uid != owner.uid || caller.pid == owner.pid {
-            return false;
-        }
+    /// The launcher's metadata, when it and every directory up to the trust
+    /// root are real and guarded.
+    fn trusted_executable(&self) -> Option<fs::Metadata> {
+        let executable = fs::symlink_metadata(&self.executable).ok()?;
         let plain = !self
             .executable
             .components()
             .any(|part| part == Component::ParentDir);
-        let (Ok(executable), Ok(entry)) = (
-            fs::metadata(&self.executable),
-            fs::symlink_metadata(&self.executable),
-        ) else {
-            return false;
-        };
-        if entry.is_symlink() || !self.executable.starts_with(&self.trust_root) || !plain {
-            return false;
+        let runnable = executable.is_file() && executable.mode() & 0o111 != 0;
+        if !plain
+            || !runnable
+            || !self.guarded(&executable)
+            || !self.executable.starts_with(&self.trust_root)
+        {
+            return None;
         }
-        let mut directory = self.executable.parent();
-        loop {
-            let Some(path) = directory else {
-                return false;
-            };
-            let Ok(metadata) = fs::symlink_metadata(path) else {
-                return false;
-            };
+        let parents = self.executable.ancestors().skip(1);
+        for path in parents {
+            let metadata = fs::symlink_metadata(path).ok()?;
             if !metadata.is_dir() || !self.guarded(&metadata) {
-                return false;
+                return None;
             }
             if path == self.trust_root {
-                break;
+                return Some(executable);
             }
-            directory = path.parent();
         }
-        if !executable.is_file() || !self.guarded(&executable) || executable.mode() & 0o111 == 0 {
+        None
+    }
+
+    fn permits(&self, caller: Caller, owner: Caller) -> bool {
+        if caller.uid != owner.uid || caller.pid == owner.pid {
             return false;
         }
-        let process = self.proc_root.join(caller.pid.to_string());
-        if !fs::metadata(&process).is_ok_and(|metadata| metadata.uid() == caller.uid) {
-            return false;
-        }
-        let Ok(running) = fs::metadata(process.join("exe")) else {
+        let Some(executable) = self.trusted_executable() else {
             return false;
         };
-        (executable.dev(), executable.ino()) == (running.dev(), running.ino())
-            && self.in_user_manager(owner.pid, owner)
+        let process = self.proc_root.join(caller.pid.to_string());
+        let mine = fs::metadata(&process).is_ok_and(|metadata| metadata.uid() == caller.uid);
+        let running = fs::metadata(process.join("exe"));
+        mine && running.is_ok_and(|running| {
+            (running.dev(), running.ino()) == (executable.dev(), executable.ino())
+        }) && self.in_user_manager(owner.pid, owner)
             && self.in_user_manager(caller.pid, owner)
     }
 }
@@ -216,19 +213,8 @@ trait Backend: Send {
     }
 }
 
-/// Which instance the daemon runs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Mode {
-    /// The initialized `/var/lib/waydroid` instance, configured by its
-    /// `waydroid.cfg`, with Binder setup and the hardware service.
-    Production,
-    /// A scratch instance with none of that.
-    Experimental,
-}
-
 struct DirectBackend {
     manager: ContainerManager,
-    mode: Mode,
     hardware_sender: SyncSender<HardwareRequest>,
     hardware_stop: Option<Arc<AtomicBool>>,
     suspend_stops: bool,
@@ -301,9 +287,7 @@ impl Backend for DirectBackend {
             stopped,
             "container must be stopped before updating session files",
         )?;
-        if self.mode == Mode::Production {
-            self.prepare_production()?;
-        }
+        self.prepare_production()?;
         let stage = Stage::new(&self.manager.network.runtime);
         let instance = self.manager.lxc.root.join(&self.manager.lxc.name);
         session_config::write(&instance, fields, uid, Path::new("/run/user"), &stage)?;
@@ -315,9 +299,7 @@ impl Backend for DirectBackend {
             }
             return Err(error);
         }
-        if self.mode == Mode::Production {
-            self.start_hardware();
-        }
+        self.start_hardware();
         Ok(())
     }
 
@@ -440,14 +422,9 @@ pub struct ContainerService {
 
 impl ContainerService {
     #[must_use]
-    pub fn new(
-        manager: ContainerManager,
-        mode: Mode,
-        hardware_sender: SyncSender<HardwareRequest>,
-    ) -> Self {
+    pub fn new(manager: ContainerManager, hardware_sender: SyncSender<HardwareRequest>) -> Self {
         let backend = DirectBackend {
             manager,
-            mode,
             hardware_sender,
             hardware_stop: None,
             suspend_stops: false,
@@ -718,10 +695,9 @@ impl ContainerService {
 /// The system bus or the name is unavailable.
 pub async fn serve_system_bus(
     manager: ContainerManager,
-    mode: Mode,
     hardware_sender: SyncSender<HardwareRequest>,
 ) -> zbus::Result<(Connection, ContainerService)> {
-    let service = ContainerService::new(manager, mode, hardware_sender);
+    let service = ContainerService::new(manager, hardware_sender);
     let initializer = InitializerService::production(service.clone());
     let connection = Builder::system()?
         .name(BUS_NAME)?

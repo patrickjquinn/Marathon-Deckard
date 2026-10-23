@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use deckard_container::dbus::{self, Mode};
+use deckard_container::dbus;
 use deckard_container::drivers::DriverNodes;
 use deckard_container::lxc::Lxc;
 use deckard_container::manager::ContainerManager;
@@ -16,7 +16,8 @@ use deckard_container::{Result, hardware, properties};
 use deckard_launch::binder::{self, BinderConfig};
 use deckard_launch::session::ContainerManagerProxyBlocking;
 
-const USAGE: &str = "usage: deckard-containerd --audit-production | --audit-hardware | --production-run | --experimental-run";
+const USAGE: &str =
+    "usage: deckard-containerd --audit-production | --audit-hardware | --production-run";
 
 fn audit_production() -> Result<()> {
     let fields = ContainerManagerProxyBlocking::new(&zbus::blocking::Connection::system()?)?
@@ -54,37 +55,23 @@ fn main() -> Result<()> {
     if !rustix::process::geteuid().is_root() {
         return Err("deckard-containerd requires root".into());
     }
-    // Production reads waydroid.cfg at each Start, so an uninitialized
-    // instance still serves Init.
-    let (work, name, bridge, runtime, mode) =
-        match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-            ["--audit-production"] => return audit_production(),
-            ["--audit-hardware"] => return audit_hardware(),
-            ["--production-run"] => (
-                "/var/lib/waydroid",
-                "waydroid",
-                "waydroid0",
-                "/run/waydroid-lxc",
-                Mode::Production,
-            ),
-            ["--experimental-run"] => (
-                "/var/lib/deckard",
-                "deckard",
-                "deckard0",
-                "/run/deckard-container",
-                Mode::Experimental,
-            ),
-            _ => return Err(USAGE.into()),
-        };
-    let work = PathBuf::from(work);
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["--audit-production"] => return audit_production(),
+        ["--audit-hardware"] => return audit_hardware(),
+        // waydroid.cfg is read at each Start, so an uninitialized instance
+        // still serves Init.
+        ["--production-run"] => {}
+        _ => return Err(USAGE.into()),
+    }
+    let work = PathBuf::from("/var/lib/waydroid");
     let manager = ContainerManager {
-        lxc: Lxc::new(work.join("lxc"), name.into())?,
+        lxc: Lxc::new(work.join("lxc"), "waydroid".into())?,
         mounts: MountLayout {
             images: work.join("images"),
             work,
             overlays: true,
         },
-        network: Network::new(bridge.into(), runtime.into())?,
+        network: Network::new("waydroid0".into(), "/run/waydroid-lxc".into())?,
     };
     let (hardware_sender, hardware_receiver) = mpsc::sync_channel(hardware::QUEUE_DEPTH);
     let terminating = Arc::new(AtomicBool::new(false));
@@ -92,7 +79,7 @@ fn main() -> Result<()> {
         signal_hook::flag::register(signal, Arc::clone(&terminating))?;
     }
     async_io::block_on(async {
-        let (_connection, service) = dbus::serve_system_bus(manager, mode, hardware_sender).await?;
+        let (_connection, service) = dbus::serve_system_bus(manager, hardware_sender).await?;
         while !terminating.load(Ordering::Relaxed) {
             let batch = hardware_receiver.try_iter().take(8);
             for request in batch {

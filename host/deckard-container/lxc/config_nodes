@@ -1,0 +1,36 @@
+tmpfs dev tmpfs nosuid
+?/dev/zero
+?/dev/null
+?/dev/full
+?/dev/ashmem
+?/dev/fuse
+?/dev/ion
+?/dev/tty
+?/dev/char dev/char none bind,create=dir,optional
+?/dev/kgsl-3d0
+?/dev/mali0
+?/dev/pvr_sync
+?/dev/pmsg0
+?/dev/dxg
+@render
+@devices
+@binder
+none dev/pts devpts defaults,mode=644,ptmxmode=666,create=dir
+?/dev/uhid
+?/dev/net/tun dev/tun none bind,create=file,optional
+?/sys/module/lowmemorykiller sys/module/lowmemorykiller none bind,create=dir,optional
+@WORK@/host-permissions vendor/etc/host-permissions none bind,optional
+?/dev/sw_sync
+?/sys/kernel/debug sys/kernel/debug none rbind,create=dir,optional
+?/sys/class/leds/vibrator sys/class/leds/vibrator none bind,create=dir,optional
+?/sys/devices/virtual/timed_output/vibrator sys/devices/virtual/timed_output/vibrator none bind,create=dir,optional
+?/dev/Vcodec
+?/dev/MTK_SMI
+?/dev/mdp_sync
+?/dev/mtk_cmdq
+tmpfs mnt_extra tmpfs nodev
+?/mnt/wslg mnt_extra/wslg none rbind,create=dir,optional
+tmpfs tmp tmpfs nodev
+tmpfs var tmpfs nodev
+tmpfs run tmpfs nodev
+?/system/etc/libnfc-nci.conf system/etc/libnfc-nci.conf none bind,optional

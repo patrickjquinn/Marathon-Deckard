@@ -158,8 +158,7 @@ fn initialize(progress: &Progress<'_>, cancelled: &AtomicBool) -> Result<()> {
         images,
         host,
     };
-    init.run(cancelled, Some(Instant::now() + DEADLINE))?
-        .commit()
+    init.run(cancelled, Some(Instant::now() + DEADLINE))
 }
 
 /// Accepts upstream's three-field request with the default channels.
