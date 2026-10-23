@@ -6,14 +6,14 @@ use std::thread;
 use std::time::Duration;
 
 use deckard_bridge::app_channel::{AppChannel, ChannelEvent, INBOUND_CAPACITY};
-use deckard_core::framing;
 use deckard_core::ids::PackageName;
+use deckard_core::transport;
 use serde_json::{Map, Value, json};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 fn frame(value: Value) -> Result<Vec<u8>, deckard_core::Error> {
-    framing::encode(&value.as_object().cloned().unwrap_or_else(Map::new))
+    transport::encode(&value.as_object().cloned().unwrap_or_else(Map::new))
 }
 
 #[test]

@@ -214,7 +214,7 @@ impl ShellBus {
 )]
 mod tests {
     use super::*;
-    use deckard_core::framing;
+    use deckard_core::transport;
     use std::sync::{Arc, Mutex};
     use zbus::interface;
 
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn framed_fixture_round_trip() {
         let message = message(json!({"t":"commit","text":"😀","before":2,"after":0}));
-        let frame = framing::encode(&message).unwrap();
+        let frame = transport::encode(&message).unwrap();
         assert_eq!(
             u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize,
             frame.len() - 4

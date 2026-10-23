@@ -7,9 +7,8 @@ use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
 use deckard_bridge::contract;
 use deckard_bridge::manage::Manage;
 use deckard_bridge::runtime::Runtime;
-use deckard_core::framing;
 use deckard_core::ids::PackageName;
-use deckard_core::transport::BridgeListener;
+use deckard_core::transport::{self, BridgeListener};
 use serde_json::json;
 use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
@@ -105,7 +104,7 @@ fn cxx_system_socket_framing_and_peer_uid() -> Result<(), Box<dyn std::error::Er
     let mut client = UnixStream::connect(&socket)?;
     let mut session = listener.accept()?;
     let message = json!({"t":"managed","id":"0000000000000001","ok":true});
-    client.write_all(&framing::encode(message.as_object().unwrap())?)?;
+    client.write_all(&transport::encode(message.as_object().unwrap())?)?;
     assert_eq!(session.read_message()?.unwrap()["id"], "0000000000000001");
     session.send_message(
         json!({"t":"manage","op":"info","id":"0000000000000002"})

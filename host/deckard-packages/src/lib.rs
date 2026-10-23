@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use async_channel::Sender;
 use async_io::Timer;
-use deckard_core::framing::MAX_FRAME_SIZE;
 use deckard_core::ids::PackageName;
+use deckard_core::transport::MAX_FRAME_SIZE;
 use deckard_core::validate::{base64_png, clean_text};
 use futures_lite::future;
 use regex::Regex;

@@ -1,5 +1,4 @@
 pub mod acl;
-pub mod framing;
 pub mod ids;
 pub mod keel;
 pub mod messages;
