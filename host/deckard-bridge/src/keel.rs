@@ -101,6 +101,8 @@ enum Need {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Host {
     Local,
+    /// Local, for a request the person started: may act on the screen.
+    Person,
     /// A paired computer: no screen content.
     External,
 }
@@ -718,8 +720,8 @@ impl Shared {
         }))
     }
 
-    /// Whether DeckardSystem says a window of the app is secure; None when
-    /// it cannot say.
+    /// DeckardSystem's `secure` for the app, which it may leave out; None
+    /// when it does not answer.
     async fn secure(&self, pkg: &str) -> Option<Option<bool>> {
         if !sync::lock(&self.state).system {
             return None;
@@ -788,7 +790,6 @@ impl Shared {
         pkg: &str,
         action: &str,
         args: &Map<String, Value>,
-        user_initiated: bool,
         host: Host,
     ) -> Result<Value, Error> {
         let unknown =
@@ -845,7 +846,7 @@ impl Shared {
                 return self.read_screen(pkg, SCREEN_UNITS).await;
             }
             "ui.tap" | "ui.type" => {
-                if !user_initiated || host == Host::External {
+                if host != Host::Person {
                     let why =
                         "only Pilot acts on an app's screen, for a request the person started";
                     return Err(unavailable(why));
@@ -970,8 +971,11 @@ impl Provider {
         let user_initiated = options
             .get("userInitiated")
             .map(|value| bool::try_from(&**value));
-        let user_initiated = matches!(user_initiated, Some(Ok(true)));
-        let result = shared.invoke(&self.pkg, &action, &args, user_initiated, host);
+        let host = match host {
+            Host::Local if matches!(user_initiated, Some(Ok(true))) => Host::Person,
+            host => host,
+        };
+        let result = shared.invoke(&self.pkg, &action, &args, host);
         Ok(result.await?.to_string())
     }
 
