@@ -224,7 +224,8 @@ pub fn shortcuts(list: &[Value]) -> Vec<Shortcut> {
 /// The Keel action a shortcut becomes: `shortcut.<word>`, unique in `taken`.
 fn shortcut_action(id: &str, taken: &[String]) -> String {
     let mut word = String::new();
-    for character in id.to_lowercase().chars() {
+    let lower = id.to_lowercase();
+    for character in lower.chars() {
         if character.is_ascii_lowercase() || character.is_ascii_digit() {
             word.push(character);
         } else if !word.is_empty() && !word.ends_with('_') {

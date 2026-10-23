@@ -113,9 +113,10 @@ fn action_id(value: &str) -> bool {
 
 fn conversation(object: &Map<String, Value>) -> Value {
     let messages = json::array(object, "messages");
+    let last = &messages[messages.len().saturating_sub(10)..];
     let empty = Map::new();
     let mut recent = Vec::new();
-    for entry in &messages[messages.len().saturating_sub(10)..] {
+    for entry in last {
         let item = entry.as_object().unwrap_or(&empty);
         recent.push(json!({
             "sender": json::text(item, "sender", 128),
