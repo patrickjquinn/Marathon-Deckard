@@ -12,12 +12,14 @@ use deckard_bridge::audio::{self, AudioWake};
 use deckard_bridge::ime::{
     ImeController, ShellBus, ShellEvent, listen_shell, send_shell_calls, watch_shell_owner,
 };
+use deckard_bridge::intents::{Intents, SendSystem};
 use deckard_bridge::keel::KeelApps;
 use deckard_bridge::manage::Manage;
 use deckard_bridge::notifications::{NotificationBridge, bridge_event};
 use deckard_bridge::packages::PackageBridge;
 use deckard_bridge::reclaim::Reclaimer;
 use deckard_bridge::runtime::{Runtime, call_unit, try_restart_unit, watch_unit};
+use deckard_bridge::sharing::Sharing;
 use deckard_bridge::shell_sync;
 use deckard_bridge::watchdog::{self, BootWatchdog};
 use deckard_core::ids::PackageName;
@@ -66,6 +68,8 @@ struct System {
     packages: PackageBridge,
     reclaimer: Reclaimer,
     keel: KeelApps,
+    intents: Intents,
+    sharing: Sharing,
 }
 
 fn serve_session(
@@ -90,6 +94,8 @@ fn serve_session(
                 if let Err(error) = system.packages.handle(BridgeRoute::System, &message) {
                     eprintln!("deckard-bridge: system package event failed: {error}");
                 }
+                system.intents.handle(generation, &message);
+                system.sharing.handle(generation, &message);
             }
             Ok(None) => break,
             Err(error)
@@ -106,6 +112,8 @@ fn serve_session(
     system.manage.disconnect(generation);
     let _ = system.packages.disconnected(BridgeRoute::System);
     system.keel.set_connected(BridgeRoute::System, false);
+    system.intents.disconnected(generation);
+    system.sharing.disconnected(generation);
     if !system.manage.connected() {
         system.reclaimer.disconnected();
     }
@@ -122,6 +130,8 @@ fn listen_system(mut listener: BridgeListener, system: System) {
             Ok(session) => {
                 let (tx, rx) = async_channel::bounded(64);
                 let generation = system.manage.connect(tx);
+                system.intents.connected(generation);
+                system.sharing.connected(generation);
                 if let Some(worker) = reader.take() {
                     let _ = worker.join();
                 }
@@ -165,6 +175,7 @@ fn serve_app(
     mut media: MprisAdapter,
     audio: AudioWake,
     keel: KeelApps,
+    intents: Intents,
 ) {
     let mut current = None;
     loop {
@@ -182,7 +193,10 @@ fn serve_app(
             }
             Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
                 let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
-                let result = if KeelApps::handles(kind) {
+                let result = if kind == "pick_done" {
+                    intents.pick_done(message.get("id").and_then(Value::as_str).unwrap_or(""));
+                    Ok(())
+                } else if KeelApps::handles(kind) {
                     keel.handle(BridgeRoute::User, &message);
                     Ok(())
                 } else if kind.starts_with("media") {
@@ -383,7 +397,24 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _hub_listener = notifications.listen_hub()?;
     let audio = audio::spawn(bus.clone(), app_handle.clone())?;
     let app_packages = packages.clone();
+    let intents_send: Arc<SendSystem> = {
+        let manage = manage.clone();
+        Arc::new(move |message| manage.send(message))
+    };
+    let xfer = data.join("deckard/xfer");
+    let camera = dirs::picture_dir()
+        .unwrap_or_else(|| home.join("Pictures"))
+        .join("Marathon");
+    let intents = Intents::start(
+        bus.inner().clone(),
+        intents_send.clone(),
+        xfer.clone(),
+        camera,
+    );
+    let sharing = Sharing::new(bus.inner().clone(), intents_send, xfer);
+    bus.object_server().at(OBJECT_PATH, sharing.clone())?;
     let app_keel = keel.clone();
+    let app_intents = intents.clone();
     thread::spawn(move || {
         serve_app(
             app_events,
@@ -394,6 +425,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             media,
             audio,
             app_keel,
+            app_intents,
         )
     });
     thread::spawn(move || {
@@ -414,6 +446,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         packages,
         reclaimer,
         keel,
+        intents,
+        sharing,
     };
     thread::spawn(move || listen_system(listener, system));
     let ime_bus = bus.clone();
