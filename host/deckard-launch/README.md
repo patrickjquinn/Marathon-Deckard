@@ -56,10 +56,13 @@ Inspected on the Hackberry Pi from `/usr/lib/waydroid/tools/actions/app_manager.
   apps while Android was starting. Intent launch can only request the handoff
   after Binder returns the resolved package.
 
-The Binder FFI uses libgbinder 1.1 APIs and loads the device's
-`libgbinder.so.1` and `libglib-2.0.so.0` at runtime. It does not invoke
-`waydroid`, Python, `am start`, or a shell. The ABI declarations were checked
-against the [upstream libgbinder headers](https://github.com/mer-hybris/libgbinder/tree/master/include).
+`src/binder.rs` is the one libgbinder binding of the host binaries: this
+`IPlatform` client (also `getAppsInfo`/`getAppInfo` for the session's launcher
+export) and the local services Android calls, `waydroidhardware` in
+`deckard-containerd` and `waydroidusermonitor` in `deckard-runtime`. It loads
+the device's `libgbinder.so.1` and `libglib-2.0.so.0` at run time and does not
+invoke `waydroid`, Python, `am start`, or a shell. The ABI declarations were
+checked against the [upstream libgbinder headers](https://github.com/mer-hybris/libgbinder/tree/master/include).
 
 On Alpine, **do not ship Rust's default static-musl output**: static musl
 cannot `dlopen` the Binder shared library. The crate deliberately rejects
@@ -87,27 +90,13 @@ and Wayland path validation. They do not prove device Binder round trips.
 
 ## Cutover gaps
 
-- The Pi now uses `deckard-session.service`; `marathon-waydroid.service` is
-  inactive. This does not replace the Python root container manager or C++
-  `deckardd`.
-- When the Python launcher starts a stopped session, its callback waits for
-  `IUserMonitor.userUnlocked` before launching. This client waits for session
-  D-Bus ownership, `waydroidplatform`, Android boot completion, and Android
-  credential-encrypted storage availability, but it does not receive that exact
-  Binder callback. Parent integration must confirm those properties are an
-  equivalent readiness barrier for the target image or expose a native
-  session-manager readiness signal before switching desktop files.
-- The first immediate cold-launch tests exposed a Shell window-lifecycle
-  regression even though Binder succeeded. A bounded Shell handoff then kept
-  Feeder visible through two stable-Shell cold session cycles on the Pi. See
-  `docs/rust-cutover-baseline.md` for the failed and passing evidence; Shell
-  restart overlap and production service activation remain unqualified.
-- Desktop/icon export is owned by the native session manager and emits `Exec=`
-  lines for this binary and the app-settings intent action. An intent relayed
-  through the nonvisual DeckardSystem bridge does not request a Shell window.
-- This crate does not replace the root container manager, Android image
-  initializer, app install/remove/list commands, or other Python Waydroid CLI
-  paths. It also does not rename the Android Binder and D-Bus contracts.
-- The Pi has been tested for warm and cold app launch, intent, visible window,
-  and session stop/restart. Root container replacement and Shell restart overlap
-  remain unqualified.
+- When the Python launcher started a stopped session, its callback waited for
+  `IUserMonitor.userUnlocked`. This client waits for session D-Bus ownership,
+  `waydroidplatform`, `sys.boot_completed=1` and
+  `sys.user.0.ce_available=true` instead; the session now serves
+  `waydroidusermonitor` but does not relay unlock to the launcher.
+- An intent relayed through the nonvisual DeckardSystem bridge does not request
+  a Shell window.
+- App install/remove/list and the other Python `waydroid` subcommands are not
+  provided, and the Android Binder and D-Bus contracts keep their Waydroid
+  names. See `docs/rust-cutover-baseline.md` for the launch evidence.
