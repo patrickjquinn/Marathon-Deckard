@@ -77,7 +77,7 @@ fn cxx_manage_request_and_reply_shapes() {
         ]})
         .as_object()
         .unwrap(),
-        true,
+        contract::Fixed::Shown,
     );
     assert_eq!(apps.len(), 1);
     assert!(apps[0].contains_key("fixed"));

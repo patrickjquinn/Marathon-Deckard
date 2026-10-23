@@ -18,12 +18,11 @@ use base64::engine::general_purpose::STANDARD;
 use deckard_core::{ids, png_guard, text, validate};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
+use zbus::interface;
 use zbus::message::Header;
 use zbus::zvariant::{Dict, Fd, OwnedValue, Value as Variant};
-use zbus::{fdo, interface};
 
 use crate::api::ApiError;
-use crate::contract;
 use crate::intents::{self, NAVIGATION, SendSystem};
 
 const MAX_RESOURCES: usize = 32;
@@ -41,11 +40,11 @@ pub type VariantMap = HashMap<String, OwnedValue>;
 type Answer = Result<Map<String, Value>, String>;
 
 fn denied() -> ApiError {
-    ApiError::Standard(fdo::Error::AccessDenied("only the shell shares".into()))
+    ApiError::AccessDenied("only the shell shares".into())
 }
 
 fn invalid(message: &str) -> ApiError {
-    ApiError::Standard(fdo::Error::InvalidArgs(message.into()))
+    ApiError::InvalidArgs(message.into())
 }
 
 /// The answer a pending request waits for.
@@ -417,7 +416,7 @@ fn targets(reply: &Map<String, Value>) -> Vec<VariantMap> {
             ("pkg", pkg.into()),
             (
                 "label",
-                contract::runtime_label(intents::field(target, "label")).into(),
+                validate::label(intents::field(target, "label")).into(),
             ),
             ("icon", icon.unwrap_or_default().into()),
             ("multiple", multiple.unwrap_or(false).into()),
