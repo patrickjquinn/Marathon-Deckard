@@ -43,7 +43,7 @@ struct LauncherPolicy {
 impl LauncherPolicy {
     fn production() -> Self {
         Self {
-            executable: PathBuf::from("/opt/deckard/bin/deckard-launch"),
+            executable: PathBuf::from("/usr/libexec/deckard-launch"),
             trust_root: PathBuf::from("/opt"),
             proc_root: PathBuf::from("/proc"),
             executable_owner: 0,

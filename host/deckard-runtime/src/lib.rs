@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;
@@ -66,6 +66,17 @@ fn wayland_socket(runtime_dir: &Path, display: &str) -> PathBuf {
     } else {
         runtime_dir.join(path)
     }
+}
+
+fn socket_identity(path: &Path) -> io::Result<(u64, u64)> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.file_type().is_socket() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Wayland display is not a socket",
+        ));
+    }
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 fn density(host_property: Option<&str>, grid_unit_px: Option<&str>) -> Result<String> {
@@ -285,6 +296,11 @@ pub fn export_current_user_apps() -> Result<()> {
 
 pub fn session_start() -> Result<()> {
     let (payload, marker) = make_payload()?;
+    let socket = wayland_socket(
+        Path::new(&payload["xdg_runtime_dir"]),
+        &payload["wayland_display"],
+    );
+    let initial_socket = socket_identity(&socket)?;
     let stop = Arc::new(AtomicBool::new(false));
     let leave_container = Arc::new(AtomicBool::new(false));
     for signal in [SIGHUP, SIGINT, SIGTERM] {
@@ -323,14 +339,24 @@ pub fn session_start() -> Result<()> {
         }
     });
 
+    let mut compositor_changed = false;
     while !stop.load(Ordering::Acquire)
         && !leave_container.load(Ordering::Acquire)
         && !session_bus.is_closed()
     {
+        if socket_identity(&socket).ok() != Some(initial_socket) {
+            compositor_changed = true;
+            break;
+        }
         thread::sleep(Duration::from_millis(100));
     }
     if !leave_container.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         stop_container(&system_bus, false)?;
+    }
+    if compositor_changed {
+        return Err(unavailable(
+            "Wayland compositor socket changed; restarting Android session",
+        ));
     }
     Ok(())
 }
@@ -528,6 +554,19 @@ mod tests {
             wayland_socket(Path::new("/run/user/1000"), "/tmp/socket"),
             PathBuf::from("/tmp/socket")
         );
+    }
+
+    #[test]
+    fn compositor_socket_identity_is_not_a_regular_file() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        let _first = std::os::unix::net::UnixListener::bind(&first)?;
+        let _second = std::os::unix::net::UnixListener::bind(&second)?;
+        assert_ne!(socket_identity(&first)?, socket_identity(&second)?);
+        fs::write(root.path().join("regular"), [])?;
+        assert!(socket_identity(&root.path().join("regular")).is_err());
+        Ok(())
     }
 
     #[test]

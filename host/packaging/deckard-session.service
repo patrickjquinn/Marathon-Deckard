@@ -7,7 +7,7 @@ After=graphical-session.target
 [Service]
 Type=simple
 Environment=WAYLAND_DISPLAY=marathon-wayland-0
-ExecStart=/opt/deckard/bin/deckard-runtime session start
+ExecStart=/usr/libexec/deckard-runtime session start
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=30

@@ -11,6 +11,9 @@ socket, owns `id.waydro.Session` without queueing, exports `/SessionManager`
 signals and D-Bus Stop request `Stop(false)`; SIGUSR1 exits without stopping
 the container, matching upstream. `session stop` requests the session method,
 falling back to `Stop(true)` on the system bus.
+The session also watches the Wayland socket inode. If Shell replaces its
+compositor socket, it stops the Android container and exits with failure so
+`deckard-session.service` can restart against the new compositor.
 
 `deckard-runtime prop get KEY` and `prop set KEY VALUE` are root-only native
 operations. They inspect the session state through D-Bus, unfreeze/refreeze

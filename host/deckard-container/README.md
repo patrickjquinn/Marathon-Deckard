@@ -35,20 +35,18 @@ never executes the Waydroid Python CLI or network script.
   and `Unfreeze` also admit the separate `deckard-launch` CLI when its D-Bus
   daemon-provided UID matches the active session, its kernel `/proc/PID/exe`
   inode matches the root-owned, non-group/world-writable
-  `/opt/deckard/bin/deckard-launch`, and both processes reside under the same
-  `user@UID.service` cgroup. Every directory from `/opt` to the binary must
+  `/usr/libexec/deckard-launch`, and both processes reside under the same
+  `user@UID.service` cgroup. Every directory from `/usr` to the binary must
   also be root-owned and non-group/world-writable, and the binary may not be
   a symlink. This is deliberately narrower than granting all
   same-UID processes control, and stricter than Python's unauthenticated
   `Stop`/freeze paths. If the launcher is installed elsewhere, this policy
   fails closed until its exact installed path is updated. It does not admit
   other CLI executables or a launcher from another user manager.
-  On the 2026-10-23 Hackberry Pi, `/usr/bin` is UID 1000-owned and writable,
-  and `/opt/deckard/bin/deckard-launch` is not installed. The policy therefore
-  fails closed on that device. Before activation, packaging must install the
-  launcher at that path beneath a genuinely root-controlled directory;
-  changing permissions or trusting UID alone would
-  weaken the authorization boundary. No packaging is changed in this slice.
+  The Pi initially had UID 1000-owned `/usr` and `/usr/libexec` directories;
+  the user-session cutover repaired these parent owners and installs the
+  launcher at the trusted path. The prototype policy still requires a live
+  root-container activation test before replacing the Python manager.
   `Stop(true)` signals the original session through a retained Linux pidfd.
   Blocking LXC/mount/network calls run outside the D-Bus executor.
 - Private-bus tests exercise the actual wire methods and credential lookup

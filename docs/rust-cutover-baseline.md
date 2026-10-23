@@ -46,9 +46,9 @@ implementations and state migration pass this gate.
 
 The prototype container authorization permits a separate launcher for
 `GetSession`/`Unfreeze` only when its executable is the root-owned
-`/opt/deckard/bin/deckard-launch` and both processes belong to the graphical
-user manager. The Pi's `/usr/bin` is owned by UID 1000, so installing the
-launcher there would not meet this trust policy. This policy passed a
+`/usr/libexec/deckard-launch` and both processes belong to the graphical
+user manager. The Pi's `/usr` hierarchy was initially UID 1000-owned; the
+session cutover corrected the parent ownership before installing it. This policy passed a
 private-bus fixture, not a live replacement of the root container service.
 
 ## Native launcher smoke test
@@ -104,10 +104,10 @@ launch, or end-to-end UI benchmark.
 ## Pi user-session cutover (2026-10-23)
 
 Installed dynamic-musl `deckard-runtime` and `deckard-launch` under root-owned
-`/opt/deckard/bin` and a new on-demand `deckard-session.service` on the Pi.
+`/usr/libexec` and a new on-demand `deckard-session.service` on the Pi.
 Stopped `marathon-waydroid.service`; the new Rust service became active and
 owned the existing `id.waydro.Session` bus name. Its catalog export rewrote all
-eight Android launchers to use `/opt/deckard/bin/deckard-launch` while retaining
+eight Android launchers to use `/usr/libexec/deckard-launch` while retaining
 their `waydroid.*` desktop IDs and icons. A warm Feeder launch returned success,
 Shell reported `waydroid.com.nononsenseapps.feeder` foreground, Android reported
 Feeder top-resumed, and a device screenshot showed the app. Stopping the Rust
@@ -116,10 +116,24 @@ container in 10.91 seconds and restored the visible app. The app-settings
 intent opened the Android Settings page; a relay-package handoff error was
 fixed and the action then exited 0.
 
+The first Shell-reset trial exposed two activation details. Shell's desktop
+parser reduces an absolute `Exec` path to its basename, so the package also
+provides `/usr/bin/deckard-launch` as a symlink to the trusted
+`/usr/libexec/deckard-launch` executable. The old session stayed alive across
+the compositor restart while Android's activity service died. The Rust session
+now watches the Wayland socket identity and exits with failure after stopping
+LXC when it changes; systemd restarts it. A repeated `marathon reset` changed
+the session PID, incremented `NRestarts` to 1, and Android returned to
+`sys.boot_completed=1` and `sys.user.0.ce_available=true`. The Pi's
+user-owned `/usr`, `/usr/bin`, `/usr/lib`, and `/usr/libexec` parent directories
+were corrected to root ownership before moving the binaries from the initial
+`/opt` staging location to their package-compliant `/usr/libexec` paths.
+
 This is a **user-session and desktop launcher cutover**, not a full Deckard
 cutover. `waydroid-container.service` still runs the Python root manager and
 `deckardd` remains C++. The Rust session does not yet implement the upstream
-user monitor, clipboard bridge, auto-ADB, or timezone propagation. Shell
-restart overlap and a full reboot under the packaged unit still require
-qualification. Rollback is to stop `deckard-session.service`, start
-`marathon-waydroid.service`, and restore desktop `Exec=` lines to `waydroid`.
+user monitor, clipboard bridge, auto-ADB, or timezone propagation. A full
+reboot under the packaged unit still requires
+qualification. Rollback is to stop `deckard-session.service`, run
+`systemctl --global unmask marathon-waydroid.service` as root, start that
+legacy user unit, and restore desktop `Exec=` lines to `waydroid`.

@@ -2,8 +2,12 @@
 
 Native Rust replacement for the generated desktop-file commands
 `waydroid app launch`, `waydroid app intent`, and the user-facing `waydroid prop`
-operations. The Deckard package installs it at `/opt/deckard/bin/deckard-launch`;
+operations. The Deckard package installs it at `/usr/libexec/deckard-launch`;
 the native session exporter writes that path into Android desktop files.
+It also installs a `/usr/bin/deckard-launch` symlink because Shell normalizes
+absolute desktop `Exec` commands to their executable name. The prototype
+container authorizer validates the `/usr/libexec` executable inode, not the
+user-writable symlink path.
 
 ```text
 deckard-launch app launch PACKAGE
