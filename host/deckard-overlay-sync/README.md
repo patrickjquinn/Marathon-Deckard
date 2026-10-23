@@ -1,11 +1,9 @@
 # deckard-overlay-sync
 
-Standalone Rust replacement for `host/packaging/deckard-overlay-sync`. This crate
-is intentionally outside the repository's root Cargo workspace and does not
-change packaging until the binary is explicitly adopted.
-
-Build and verify with `cargo test --manifest-path host/deckard-overlay-sync/Cargo.toml`
-and `cargo clippy --manifest-path host/deckard-overlay-sync/Cargo.toml --all-targets -- -D warnings`.
+Copies Deckard's Android files into Waydroid's overlay before the container
+starts (`ExecStartPre` of `deckard-container.service`), removes files an
+earlier package shipped, leaves out files built for another image, and
+reconciles the whiteouts and properties.
 
 The binary defaults to `/usr/share/deckard` and `/var/lib/waydroid`.
 `DECKARD_SHARE_DIR` and `DECKARD_WAYDROID_DIR` override these paths for staging
