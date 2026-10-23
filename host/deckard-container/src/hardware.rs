@@ -351,6 +351,10 @@ unsafe extern "C" fn on_transaction(
         unsafe { *status = BAD_VALUE };
         return ptr::null_mut();
     };
+    if matches!(message, HardwareRequest::Upgrade { .. }) {
+        unsafe { *status = UNKNOWN_TRANSACTION };
+        return ptr::null_mut();
+    }
     let reply = unsafe { (state.api.new_reply)(object) };
     if reply.is_null() {
         unsafe { *status = BAD_VALUE };

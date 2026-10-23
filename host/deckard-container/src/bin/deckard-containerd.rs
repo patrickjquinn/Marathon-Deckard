@@ -1,4 +1,5 @@
 use deckard_container::dbus::serve_system_bus;
+use deckard_container::drivers::DriverNodes;
 use deckard_container::hardware::{self, HardwareConfig};
 use deckard_container::initializer::{LocalImageInit, NodeInventory};
 use deckard_container::lxc::Lxc;
@@ -14,6 +15,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 fn audit_production() -> Result<(), Box<dyn Error>> {
@@ -30,6 +32,7 @@ fn audit_production() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no active session"))?
         .parse()?;
     let work = Path::new("/var/lib/waydroid");
+    DriverNodes::from_config(&work.join("waydroid.cfg"))?.audit(Path::new("/dev"))?;
     let rendered = session_config::render(&fields, uid, Path::new("/run/user"))?;
     let installed = fs::read_to_string(work.join("lxc/waydroid/config_session"))?;
     if rendered != installed {
@@ -45,7 +48,7 @@ fn audit_production() -> Result<(), Box<dyn Error>> {
     if rendered != installed {
         return Err("Android properties differ from the live config".into());
     }
-    println!("production session mounts and Android properties match");
+    println!("production Binder nodes, session mounts, and Android properties match");
     Ok(())
 }
 
@@ -144,12 +147,39 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         network: Network::new(bridge.into(), runtime.into())?,
     };
+    let hardware_config = if production {
+        Some(HardwareConfig {
+            binder_device: format!(
+                "/dev/{}",
+                production_setting(&manager.mounts.work, "binder")?
+            ),
+            service_manager_protocol: Some(production_setting(
+                &manager.mounts.work,
+                "service_manager_protocol",
+            )?),
+            binder_protocol: Some(production_setting(&manager.mounts.work, "binder_protocol")?),
+        })
+    } else {
+        None
+    };
+    let suspend_stops =
+        production && production_setting(&manager.mounts.work, "suspend_action")? == "stop";
+    let (hardware_sender, hardware_receiver) = mpsc::channel();
     let terminating = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, terminating.clone())?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, terminating.clone())?;
     async_io::block_on(async {
-        let (_connection, service) = serve_system_bus(manager).await?;
+        let (_connection, service) =
+            serve_system_bus(manager, hardware_config, hardware_sender, suspend_stops).await?;
         while !terminating.load(Ordering::Relaxed) {
+            for _ in 0..8 {
+                let Ok(request) = hardware_receiver.try_recv() else {
+                    break;
+                };
+                if let Err(error) = service.handle_hardware_request(request).await {
+                    eprintln!("deckard-containerd: hardware request failed: {error}");
+                }
+            }
             async_io::Timer::after(Duration::from_millis(100)).await;
         }
         service.shutdown().await?;

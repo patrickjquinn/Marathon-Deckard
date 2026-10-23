@@ -1,6 +1,8 @@
 //! Uninstalled system-bus adapter for the installed ContainerManager contract.
 
 use crate::command::ProcessRunner;
+use crate::drivers::DriverNodes;
+use crate::hardware::{self, HardwareConfig, HardwareRequest};
 use crate::initializer_dbus::{InitializerService, OBJECT_PATH as INITIALIZER_PATH};
 use crate::lxc::{State, validate_property_key, validate_property_value};
 use crate::manager::ContainerManager;
@@ -14,7 +16,11 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use zbus::connection::{Builder, Connection};
 use zbus::fdo::{self, DBusProxy};
 use zbus::message::Header;
@@ -186,49 +192,128 @@ trait Backend: Send {
     fn status(&mut self) -> Result<State>;
     fn get_property(&mut self, key: &str) -> Result<String>;
     fn set_property(&mut self, key: &str, value: &str) -> Result<()>;
+    fn hardware(&mut self, _request: HardwareRequest) -> Result<HardwareOutcome> {
+        Err(Error::Invalid("hardware service unavailable".into()))
+    }
 }
 
-struct DirectBackend(ContainerManager);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HardwareOutcome {
+    Active,
+    Stopped,
+}
+
+struct DirectBackend {
+    manager: ContainerManager,
+    hardware_config: Option<HardwareConfig>,
+    hardware_sender: Sender<HardwareRequest>,
+    hardware_stop: Option<Arc<AtomicBool>>,
+    suspend_stops: bool,
+}
 
 impl Backend for DirectBackend {
     fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
-        if self.0.lxc.status(&mut ProcessRunner)? != State::Stopped {
+        if self.manager.lxc.status(&mut ProcessRunner)? != State::Stopped {
             return Err(Error::Invalid(
                 "container must be stopped before updating session files".into(),
             ));
         }
+        if self.manager.lxc.name == "waydroid" {
+            DriverNodes::from_config(&self.manager.mounts.work.join("waydroid.cfg"))?
+                .prepare(std::path::Path::new("/dev"))?;
+        }
         session_config::write(
-            &self.0.lxc.root.join(&self.0.lxc.name),
+            &self.manager.lxc.root.join(&self.manager.lxc.name),
             fields,
             uid,
             std::path::Path::new("/run/user"),
         )?;
-        properties::write(&self.0.mounts.work, fields, uid)?;
-        self.0.start(&mut ProcessRunner)
+        properties::write(&self.manager.mounts.work, fields, uid)?;
+        self.manager.start(&mut ProcessRunner)?;
+        if let Some(config) = self.hardware_config.clone() {
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let sender = self.hardware_sender.clone();
+            thread::spawn(move || {
+                if let Err(error) = hardware::run(
+                    &config,
+                    move |request| {
+                        let _ = sender.send(request);
+                    },
+                    worker_stop,
+                ) {
+                    eprintln!("deckard-containerd: hardware service failed: {error}");
+                }
+            });
+            self.hardware_stop = Some(stop);
+        }
+        Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
-        self.0.stop(&mut ProcessRunner)
+        if let Some(stop) = self.hardware_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        self.manager.stop(&mut ProcessRunner)
     }
 
     fn freeze(&mut self) -> Result<()> {
-        self.0.lxc.freeze(&mut ProcessRunner)
+        self.manager.lxc.freeze(&mut ProcessRunner)
     }
 
     fn unfreeze(&mut self) -> Result<()> {
-        self.0.lxc.unfreeze(&mut ProcessRunner)
+        self.manager.lxc.unfreeze(&mut ProcessRunner)
     }
 
     fn status(&mut self) -> Result<State> {
-        self.0.lxc.status(&mut ProcessRunner)
+        self.manager.lxc.status(&mut ProcessRunner)
     }
 
     fn get_property(&mut self, key: &str) -> Result<String> {
-        self.0.lxc.get_property(&mut ProcessRunner, key)
+        self.manager.lxc.get_property(&mut ProcessRunner, key)
     }
 
     fn set_property(&mut self, key: &str, value: &str) -> Result<()> {
-        self.0.lxc.set_property(&mut ProcessRunner, key, value)
+        self.manager
+            .lxc
+            .set_property(&mut ProcessRunner, key, value)
+    }
+
+    fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
+        match request {
+            HardwareRequest::EnableNfc(_) | HardwareRequest::EnableBluetooth(_) => {
+                Ok(HardwareOutcome::Active)
+            }
+            HardwareRequest::Suspend if self.suspend_stops => {
+                self.stop()?;
+                Ok(HardwareOutcome::Stopped)
+            }
+            HardwareRequest::Suspend => {
+                self.freeze()?;
+                Ok(HardwareOutcome::Active)
+            }
+            HardwareRequest::Reboot => {
+                self.manager.lxc.stop(&mut ProcessRunner)?;
+                self.manager.lxc.start(&mut ProcessRunner)?;
+                Ok(HardwareOutcome::Active)
+            }
+            HardwareRequest::ShutdownRequest(reason) if reason.starts_with('1') => {
+                self.manager.lxc.wait_for(
+                    &mut ProcessRunner,
+                    State::Stopped,
+                    Duration::from_secs(30),
+                )?;
+                self.manager.lxc.start(&mut ProcessRunner)?;
+                Ok(HardwareOutcome::Active)
+            }
+            HardwareRequest::ShutdownRequest(_) => {
+                self.stop()?;
+                Ok(HardwareOutcome::Stopped)
+            }
+            HardwareRequest::Upgrade { .. } => Err(Error::Invalid(
+                "Android image upgrade is not implemented".into(),
+            )),
+        }
     }
 }
 
@@ -244,8 +329,19 @@ pub struct ContainerService {
 }
 
 impl ContainerService {
-    pub fn new(manager: ContainerManager) -> Self {
-        Self::with_backend(Box::new(DirectBackend(manager)))
+    pub fn new(
+        manager: ContainerManager,
+        hardware_config: Option<HardwareConfig>,
+        hardware_sender: Sender<HardwareRequest>,
+        suspend_stops: bool,
+    ) -> Self {
+        Self::with_backend(Box::new(DirectBackend {
+            manager,
+            hardware_config,
+            hardware_sender,
+            hardware_stop: None,
+            suspend_stops,
+        }))
     }
 
     fn with_backend(backend: Box<dyn Backend>) -> Self {
@@ -273,6 +369,25 @@ impl ContainerService {
             }
             state.backend.stop().map_err(service_error)?;
             if let Some(session) = state.session.take() {
+                let _ = pidfd_send_signal(&session.pidfd, Signal::USR1);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn handle_hardware_request(&self, request: HardwareRequest) -> fdo::Result<()> {
+        let state = self.state.clone();
+        blocking::unblock(move || {
+            let mut state = state
+                .lock()
+                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
+            if state.session.is_none() {
+                return Err(fdo::Error::Failed("no active container session".into()));
+            }
+            if state.backend.hardware(request).map_err(service_error)? == HardwareOutcome::Stopped
+                && let Some(session) = state.session.take()
+            {
                 let _ = pidfd_send_signal(&session.pidfd, Signal::USR1);
             }
             Ok(())
@@ -531,8 +646,11 @@ impl ContainerService {
 
 pub async fn serve_system_bus(
     manager: ContainerManager,
+    hardware_config: Option<HardwareConfig>,
+    hardware_sender: Sender<HardwareRequest>,
+    suspend_stops: bool,
 ) -> zbus::Result<(Connection, ContainerService)> {
-    let service = ContainerService::new(manager);
+    let service = ContainerService::new(manager, hardware_config, hardware_sender, suspend_stops);
     let connection = Builder::system()?
         .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, service.clone())?
@@ -636,6 +754,16 @@ mod tests {
                 .push("set_property");
             Ok(())
         }
+        fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
+            if request != HardwareRequest::Suspend {
+                return Err(Error::Invalid("unexpected hardware request".into()));
+            }
+            self.0
+                .lock()
+                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .push("hardware_suspend");
+            Ok(HardwareOutcome::Active)
+        }
     }
 
     #[test]
@@ -643,6 +771,22 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
         async_io::block_on(service.shutdown())?;
+        assert!(
+            calls
+                .lock()
+                .map_err(|_| fdo::Error::Failed("record lock poisoned".into()))?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hardware_request_requires_a_tracked_session() -> fdo::Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        assert!(
+            async_io::block_on(service.handle_hardware_request(HardwareRequest::Suspend)).is_err()
+        );
         assert!(
             calls
                 .lock()

@@ -1,7 +1,9 @@
-//! Experimental initializer bus contract. Production Init pathways are refused.
+//! Root-authorized local-image initializer bus contract.
 
+use crate::command::{CommandSpec, ProcessRunner, Runner};
 use crate::dbus::{Caller, caller};
-use crate::initializer::{LocalImageInit, NodeInventory};
+use crate::initializer::{LocalImageInit, NodeInventory, ProductionInit};
+use crate::lxc::{Lxc, State};
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -16,6 +18,13 @@ use zbus::message::Header;
 pub const OBJECT_PATH: &str = "/Initializer";
 const SCRATCH_ROOT: &str = "/tmp/deckard-init-scratch";
 const DEADLINE: Duration = Duration::from_secs(10);
+const PRODUCTION_WORK: &str = "/var/lib/waydroid";
+const PRODUCTION_TEMPLATES: &str = "/usr/lib/waydroid/data/configs";
+
+enum InitRequest {
+    Scratch(Box<LocalImageInit>),
+    Production,
+}
 
 struct Job {
     cancelled: Arc<AtomicBool>,
@@ -38,7 +47,7 @@ impl InitializerService {
         conn: Connection,
     ) -> fdo::Result<()> {
         require_root(who)?;
-        let init = parse_scratch_request(&params)?;
+        let init = parse_request(&params)?;
         let job = Arc::new(Job {
             cancelled: Arc::new(AtomicBool::new(false)),
         });
@@ -61,12 +70,27 @@ impl InitializerService {
             .spawn(move || {
                 let deadline = Instant::now() + DEADLINE;
                 let _ = emit(&conn, "ProgressChanged", &("Preparing local images",));
-                let result = NodeInventory::from_host().and_then(|inventory| {
-                    init.prepare_local_cancellable(
-                        &inventory,
-                        &worker_job.cancelled,
-                        Some(deadline),
-                    )
+                let result = NodeInventory::from_host().and_then(|inventory| match init {
+                    InitRequest::Scratch(init) => init
+                        .prepare_local_cancellable(
+                            &inventory,
+                            &worker_job.cancelled,
+                            Some(deadline),
+                        )
+                        .map(|_| ()),
+                    InitRequest::Production => {
+                        let init = production_request()
+                            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+                        let lxc = Lxc::new(init.work.join("lxc"), "waydroid".into())?;
+                        if lxc.root.join("waydroid/config").exists()
+                            && lxc.status(&mut ProcessRunner)? != State::Stopped
+                        {
+                            return Err(crate::Error::Invalid(
+                                "stop the Waydroid container before initialization".into(),
+                            ));
+                        }
+                        init.initialize_stopped(&inventory, &worker_job.cancelled, Some(deadline))
+                    }
                 });
                 let signal = match result {
                     Ok(_) => "Finished",
@@ -139,6 +163,92 @@ fn require_root(who: Caller) -> fdo::Result<()> {
             "initializer requires root; Polkit authorization is not implemented".into(),
         ))
     }
+}
+
+fn parse_request(params: &HashMap<String, String>) -> fdo::Result<InitRequest> {
+    if params.len() == 3
+        && params.contains_key("system_channel")
+        && params.contains_key("vendor_channel")
+        && params.contains_key("system_type")
+    {
+        for key in ["system_channel", "vendor_channel", "system_type"] {
+            let value = &params[key];
+            if value.len() > 2048 || value.chars().any(char::is_control) {
+                return Err(fdo::Error::InvalidArgs(format!("invalid {key}")));
+            }
+        }
+        return Ok(InitRequest::Production);
+    }
+    parse_scratch_request(params).map(|init| InitRequest::Scratch(Box::new(init)))
+}
+
+fn production_request() -> fdo::Result<ProductionInit> {
+    let work = PathBuf::from(PRODUCTION_WORK);
+    trusted_directory(&work)?;
+    let images = [
+        "/etc/waydroid-extra/images",
+        "/usr/share/waydroid-extra/images",
+        "/var/lib/waydroid/images",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|path| path.join("system.img").exists() && path.join("vendor.img").exists())
+    .ok_or_else(|| {
+        fdo::Error::NotSupported(
+            "local system.img and vendor.img are required; OTA is not supported".into(),
+        )
+    })?;
+    trusted_directory(&images)?;
+    let templates = PathBuf::from(PRODUCTION_TEMPLATES);
+    trusted_directory(&templates)?;
+    let arch = std::env::consts::ARCH.to_owned();
+    if !matches!(arch.as_str(), "aarch64" | "x86_64") {
+        return Err(fdo::Error::NotSupported(format!(
+            "unsupported architecture: {arch}"
+        )));
+    }
+    let version = ProcessRunner
+        .run(CommandSpec::new("lxc-info", ["--version"]).with_timeout(Duration::from_secs(3)))
+        .map_err(|error| fdo::Error::Failed(format!("LXC version unavailable: {error}")))?;
+    let lxc_major = version
+        .trim()
+        .split('.')
+        .next()
+        .and_then(|major| major.parse().ok())
+        .ok_or_else(|| fdo::Error::Failed("invalid LXC version".into()))?;
+    let binder = installed_node(&["binder", "anbox-binder", "puddlejumper", "bonder"])?;
+    let vndbinder = installed_node(&[
+        "vndbinder",
+        "anbox-vndbinder",
+        "vndpuddlejumper",
+        "vndbonder",
+    ])?;
+    let hwbinder = installed_node(&["hwbinder", "anbox-hwbinder", "hwpuddlejumper", "hwbonder"])?;
+    Ok(ProductionInit {
+        work,
+        images,
+        templates,
+        arch,
+        lxc_major,
+        binder,
+        vndbinder,
+        hwbinder,
+        ota: None,
+    })
+}
+
+fn installed_node(candidates: &[&str]) -> fdo::Result<String> {
+    candidates
+        .iter()
+        .find(|name| {
+            fs::metadata(Path::new("/dev").join(name)).is_ok_and(|metadata| {
+                std::os::unix::fs::FileTypeExt::is_char_device(&metadata.file_type())
+            })
+        })
+        .map(|name| (*name).to_owned())
+        .ok_or_else(|| {
+            fdo::Error::NotSupported(format!("missing Binder device: {}", candidates[0]))
+        })
 }
 
 fn parse_scratch_request(params: &HashMap<String, String>) -> fdo::Result<LocalImageInit> {
@@ -361,6 +471,7 @@ mod tests {
                     "https://example.invalid".to_owned(),
                 ),
                 ("system_type".to_owned(), "VANILLA".to_owned()),
+                ("unexpected".to_owned(), "rejected".to_owned()),
             ]);
             let result: zbus::Result<()> = proxy.call("Init", &(legacy,)).await;
             assert!(result.is_err());
@@ -375,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn authorization_and_unsupported_standard_init() {
+    fn authorization_and_standard_init_dispatch() {
         let service = InitializerService::new();
         assert!(
             service
@@ -389,9 +500,12 @@ mod tests {
             ("system_type".into(), "VANILLA".into()),
         ]);
         assert!(matches!(
-            parse_scratch_request(&params),
-            Err(fdo::Error::NotSupported(_))
+            parse_request(&params),
+            Ok(InitRequest::Production)
         ));
+        let mut malformed = params;
+        malformed.insert("system_type".into(), "VANILLA\nBAD".into());
+        assert!(parse_request(&malformed).is_err());
     }
 
     #[test]

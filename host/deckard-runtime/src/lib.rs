@@ -32,7 +32,7 @@ const CONTAINER_INTERFACE: &str = "id.waydro.ContainerManager";
 const SESSION_NAME: &str = "id.waydro.Session";
 const SESSION_PATH: &str = "/SessionManager";
 const SESSION_INTERFACE: &str = "id.waydro.SessionManager";
-const CONTAINER_UNIT: &str = "waydroid-container.service";
+const CONTAINER_UNIT: &str = "deckard-container.service";
 
 #[derive(Clone)]
 struct SessionManager {

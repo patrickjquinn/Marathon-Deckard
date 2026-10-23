@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=id.waydro.Container
+Exec=/usr/libexec/deckard-containerd --production-run
+User=root
+SystemdService=deckard-container.service

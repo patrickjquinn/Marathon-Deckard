@@ -61,6 +61,15 @@ impl Manage {
         inner.generation == generation && inner.outbound.is_some()
     }
 
+    pub fn send(&self, message: Map<String, Value>) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .outbound
+            .as_ref()
+            .is_some_and(|outbound| outbound.try_send(message).is_ok())
+    }
+
     pub async fn request(
         &self,
         op: &str,

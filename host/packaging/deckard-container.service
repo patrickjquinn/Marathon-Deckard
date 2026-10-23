@@ -1,0 +1,15 @@
+[Unit]
+Description=Deckard Android container
+ConditionPathExists=/run/user/1000/marathon-waydroid-requested
+
+[Service]
+Type=dbus
+BusName=id.waydro.Container
+UMask=0022
+ExecStartPre=/usr/libexec/deckard-overlay-sync
+ExecStartPre=/usr/libexec/deckard-fonts-sync
+ExecStart=/usr/libexec/deckard-containerd --production-run
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target
