@@ -21,16 +21,6 @@ pub const TEXT_INPUT_INTERFACE: &str = "org.marathonos.Shell.TextInput1";
 const MAX_TEXT: usize = 4096;
 const MAX_PANELS: usize = 256;
 const HINT_MASK: u32 = 0x3ff;
-const KEYS: [&str; 8] = [
-    "enter",
-    "backspace",
-    "left",
-    "right",
-    "up",
-    "down",
-    "tab",
-    "escape",
-];
 
 /// A TextInput1 call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,7 +126,10 @@ impl ImeState {
             }
             "Key" => {
                 let (app, key): (String, String) = body.deserialize().ok()?;
-                let known = KEYS.contains(&key.as_str());
+                let known = matches!(
+                    key.as_str(),
+                    "enter" | "backspace" | "left" | "right" | "up" | "down" | "tab" | "escape"
+                );
                 let message = json!({"t": "key", "key": key});
                 (self.focused(&app) && known).then(|| crate::object(message))
             }
