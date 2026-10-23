@@ -3,17 +3,22 @@
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use deckard_core::framing;
 use deckard_core::ids::PackageName;
 use deckard_core::transport::{BridgeListener, BridgeSession};
 use serde_json::{Map, Value};
 
 const READ_POLL: Duration = Duration::from_millis(100);
 const OUTBOUND_CAPACITY: usize = 4;
+/// One rate-limiter burst. While the consumer is behind, further messages
+/// are dropped as the limiter drops frames; past `framing::MAX_DROPPED` the
+/// peer is disconnected as a flood.
+pub const INBOUND_CAPACITY: usize = framing::BURST as usize;
 
 #[derive(Debug)]
 pub enum ChannelEvent {
@@ -83,7 +88,7 @@ impl ChannelHandle {
 pub struct AppChannel {
     listener: BridgeListener,
     active: Arc<Mutex<Option<Active>>>,
-    events: Sender<ChannelEvent>,
+    events: SyncSender<ChannelEvent>,
 }
 
 impl AppChannel {
@@ -94,7 +99,7 @@ impl AppChannel {
     ) -> io::Result<(Self, ChannelHandle, Receiver<ChannelEvent>)> {
         let listener = BridgeListener::bind(socket_path, packages_list, package)?;
         let active = Arc::new(Mutex::new(None));
-        let (events, receiver) = mpsc::channel();
+        let (events, receiver) = mpsc::sync_channel(INBOUND_CAPACITY);
         let handle = ChannelHandle {
             active: Arc::clone(&active),
         };
@@ -149,11 +154,12 @@ impl AppChannel {
 fn serve(
     mut session: BridgeSession,
     outbound: Receiver<Map<String, Value>>,
-    events: Sender<ChannelEvent>,
+    events: SyncSender<ChannelEvent>,
     active: Arc<Mutex<Option<Active>>>,
     stop: Arc<AtomicBool>,
 ) {
     let generation = session.generation();
+    let mut dropped = 0_u32;
     if session.set_read_timeout(Some(READ_POLL)).is_ok() {
         loop {
             if stop.load(Ordering::Acquire) {
@@ -171,11 +177,16 @@ fn serve(
             }
             match session.read_message() {
                 Ok(Some(message)) => {
-                    if events
-                        .send(ChannelEvent::Message(generation, message))
-                        .is_err()
-                    {
-                        break;
+                    match events.try_send(ChannelEvent::Message(generation, message)) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            dropped += 1;
+                            if dropped > framing::MAX_DROPPED {
+                                eprintln!("deckard-bridge: Android peer floods a stalled consumer");
+                                break;
+                            }
+                        }
+                        Err(TrySendError::Disconnected(_)) => break,
                     }
                 }
                 Ok(None) => break,
