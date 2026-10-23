@@ -15,10 +15,13 @@ Wired into the daemon (`main.rs`):
 - IME focus and panel replay to the Shell, packages (app and system routing,
   mutation policy) and notifications (Hub listener, persisted state, actions,
   icons, toasts).
+- Media sessions as MPRIS players (`deckard-mpris`), cleared whenever the app
+  channel connects or drops, and Marathon's audio policy (`audio.rs`) sent on
+  connect and on Shell changes.
 
-Present as modules but **not wired** into the daemon: media/MPRIS and audio
-(`mpris.rs`, `audio.rs`), intents/file chooser/capture (`intents.rs`) and
-sharing (`sharing.rs`). Their tests include the sources with `#[path]`.
+Present as modules but **not wired** into the daemon: intents/file
+chooser/capture (`intents.rs`) and sharing (`sharing.rs`). Their tests include
+the sources with `#[path]`.
 
 Not ported yet from C++ `deckardd`: Keel and Pilot app providers, permission
 prompts, location, shared storage (ACLs, media indexing), Doze, PSI/cgroup

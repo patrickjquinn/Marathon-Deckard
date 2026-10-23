@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
 use deckard_bridge::app_channel::{AppChannel, ChannelEvent, ChannelHandle};
+use deckard_bridge::audio::{self, AudioWake};
 use deckard_bridge::ime::{
     ImeController, ShellBus, ShellEvent, listen_shell, send_shell_calls, watch_shell_owner,
 };
@@ -18,6 +19,7 @@ use deckard_bridge::runtime::{Runtime, call_unit, watch_unit};
 use deckard_core::ids::PackageName;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
+use deckard_mpris::MprisAdapter;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
@@ -172,19 +174,25 @@ fn serve_app(
     packages: PackageBridge,
     notifications: NotificationBridge,
     actions: Receiver<deckard_core::notification_state::BridgeEvent>,
+    mut media: MprisAdapter,
+    audio: AudioWake,
 ) {
     let mut current = None;
     loop {
         match events.recv_timeout(Duration::from_millis(10)) {
             Ok(ChannelEvent::Connected(generation)) => {
                 current = Some(generation);
+                media.clear();
                 if let Some(hello) = json!({"t":"hello","v":1}).as_object().cloned() {
                     let _ = handle.send_to(generation, hello);
                 }
+                audio.wake();
             }
             Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
                 let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
-                let result = if matches!(
+                let result = if kind.starts_with("media") {
+                    media.handle(&message).map_err(|error| error.to_string())
+                } else if matches!(
                     kind,
                     "inspect_result"
                         | "device_result"
@@ -207,6 +215,7 @@ fn serve_app(
             }
             Ok(ChannelEvent::Disconnected(generation)) if current == Some(generation) => {
                 current = None;
+                media.clear();
                 let _ = packages.disconnected(BridgeRoute::User);
             }
             Ok(_) => {}
@@ -215,6 +224,11 @@ fn serve_app(
         }
         while let Ok(action) = actions.try_recv() {
             let _ = handle.send(bridge_event(&action));
+        }
+        if let Some(generation) = current {
+            for command in media.take_commands() {
+                let _ = handle.send_to(generation, command);
+            }
         }
     }
 }
@@ -358,11 +372,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         package_send,
         PathBuf::from("/usr/bin/marathon-store-handler"),
     )?;
+    let media = MprisAdapter::new(None, cache.with_file_name("art"))?;
     let (notifications, actions) =
         NotificationBridge::new(bus.clone(), state.join("notifications.json"), cache)?;
     let _hub_listener = notifications.listen_hub()?;
+    let audio = audio::spawn(bus.clone(), app_handle.clone())?;
     let app_packages = packages.clone();
-    thread::spawn(move || serve_app(app_events, app_handle, app_packages, notifications, actions));
+    thread::spawn(move || {
+        serve_app(
+            app_events,
+            app_handle,
+            app_packages,
+            notifications,
+            actions,
+            media,
+            audio,
+        )
+    });
     thread::spawn(move || {
         if let Err(error) = app_channel.run() {
             eprintln!("deckard-bridge: app socket failed: {error}");
