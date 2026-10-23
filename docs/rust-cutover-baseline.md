@@ -44,6 +44,13 @@ Target unit names are `deckard-session.service` and
 `deckard-container.service`. The current names remain until the native
 implementations and state migration pass this gate.
 
+The prototype container authorization permits a separate launcher for
+`GetSession`/`Unfreeze` only when its executable is the root-owned
+`/opt/deckard/bin/deckard-launch` and both processes belong to the graphical
+user manager. The Pi's `/usr/bin` is owned by UID 1000, so installing the
+launcher there would not meet this trust policy. This policy passed a
+private-bus fixture, not a live replacement of the root container service.
+
 ## Native launcher smoke test
 
 On the same Pi, an AArch64 dynamic-musl `deckard-launch` candidate ran as the
