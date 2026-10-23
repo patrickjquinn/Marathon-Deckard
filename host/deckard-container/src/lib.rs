@@ -1,6 +1,7 @@
 //! Root-side LXC, image mount, and network primitives. Not a production service.
 
 pub mod command;
+pub mod config;
 pub mod dbus;
 pub mod drivers;
 pub mod hardware;

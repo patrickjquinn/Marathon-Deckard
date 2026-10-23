@@ -1,7 +1,8 @@
 //! Uninstalled system-bus adapter for the installed ContainerManager contract.
 
 use crate::command::ProcessRunner;
-use crate::drivers::DriverNodes;
+use crate::config;
+use crate::drivers::{self, DriverNodes};
 use crate::hardware::{self, HardwareRequest};
 use crate::initializer_dbus::{InitializerService, OBJECT_PATH as INITIALIZER_PATH};
 use crate::lxc::{State, validate_property_key, validate_property_value};
@@ -16,7 +17,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
@@ -204,12 +205,83 @@ enum HardwareOutcome {
     Stopped,
 }
 
+/// Which instance the daemon runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mode {
+    /// The initialized `/var/lib/waydroid` instance, configured by its
+    /// `waydroid.cfg`, with Binder setup and the hardware service.
+    Production,
+    /// A scratch instance with none of that.
+    Experimental,
+}
+
 struct DirectBackend {
     manager: ContainerManager,
-    hardware_config: Option<BinderConfig>,
+    mode: Mode,
     hardware_sender: SyncSender<HardwareRequest>,
     hardware_stop: Option<Arc<AtomicBool>>,
     suspend_stops: bool,
+}
+
+impl DirectBackend {
+    fn config_path(&self) -> PathBuf {
+        self.manager.mounts.work.join("waydroid.cfg")
+    }
+
+    /// Reads `waydroid.cfg` and prepares the Binder and device nodes.
+    fn prepare_production(&mut self) -> Result<()> {
+        let instance = self.manager.lxc.root.join(&self.manager.lxc.name);
+        if !instance.join("config").is_file()
+            || !self
+                .manager
+                .mounts
+                .work
+                .join("waydroid_base.prop")
+                .is_file()
+        {
+            return Err(Error::Invalid("Waydroid is not initialized".into()));
+        }
+        let text = config::read(&self.config_path())?;
+        let images =
+            PathBuf::from(config::get(&text, "images_path").unwrap_or("/var/lib/waydroid/images"));
+        if !images.is_absolute() {
+            return Err(Error::Invalid("images_path must be absolute".into()));
+        }
+        self.manager.mounts.images = images;
+        self.manager.mounts.overlays = match config::get_or_default(&text, "mount_overlays") {
+            Some("True") => true,
+            Some("False") => false,
+            _ => return Err(Error::Invalid("invalid mount_overlays".into())),
+        };
+        self.suspend_stops = config::get_or_default(&text, "suspend_action") == Some("stop");
+        let dev = Path::new("/dev");
+        drivers::ensure_binder_nodes(&mut ProcessRunner)?;
+        DriverNodes::from_config(&self.config_path())?.prepare(dev)?;
+        drivers::open_device_access(dev, Path::new("/sys/kernel/debug/sync/sw_sync"))
+    }
+
+    fn start_hardware(&mut self) {
+        let config_path = self.config_path();
+        if let Err(error) = drivers::record_protocols(&config_path, &self.manager.mounts.rootfs()) {
+            eprintln!("deckard-containerd: cannot record Binder protocols: {error}");
+        }
+        let config = match BinderConfig::from_file(&config_path) {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("deckard-containerd: hardware service disabled: {error}");
+                return;
+            }
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let sender = self.hardware_sender.clone();
+        thread::spawn(move || {
+            if let Err(error) = hardware::run(&config, sender, worker_stop) {
+                eprintln!("deckard-containerd: hardware service failed: {error}");
+            }
+        });
+        self.hardware_stop = Some(stop);
+    }
 }
 
 impl Backend for DirectBackend {
@@ -219,28 +291,19 @@ impl Backend for DirectBackend {
                 "container must be stopped before updating session files".into(),
             ));
         }
-        if self.manager.lxc.name == "waydroid" {
-            DriverNodes::from_config(&self.manager.mounts.work.join("waydroid.cfg"))?
-                .prepare(std::path::Path::new("/dev"))?;
+        if self.mode == Mode::Production {
+            self.prepare_production()?;
         }
         session_config::write(
             &self.manager.lxc.root.join(&self.manager.lxc.name),
             fields,
             uid,
-            std::path::Path::new("/run/user"),
+            Path::new("/run/user"),
         )?;
         properties::write(&self.manager.mounts.work, fields, uid)?;
         self.manager.start(&mut ProcessRunner)?;
-        if let Some(config) = self.hardware_config.clone() {
-            let stop = Arc::new(AtomicBool::new(false));
-            let worker_stop = stop.clone();
-            let sender = self.hardware_sender.clone();
-            thread::spawn(move || {
-                if let Err(error) = hardware::run(&config, sender, worker_stop) {
-                    eprintln!("deckard-containerd: hardware service failed: {error}");
-                }
-            });
-            self.hardware_stop = Some(stop);
+        if self.mode == Mode::Production {
+            self.start_hardware();
         }
         Ok(())
     }
@@ -320,16 +383,15 @@ pub struct ContainerService {
 impl ContainerService {
     pub fn new(
         manager: ContainerManager,
-        hardware_config: Option<BinderConfig>,
+        mode: Mode,
         hardware_sender: SyncSender<HardwareRequest>,
-        suspend_stops: bool,
     ) -> Self {
         Self::with_backend(Box::new(DirectBackend {
             manager,
-            hardware_config,
+            mode,
             hardware_sender,
             hardware_stop: None,
-            suspend_stops,
+            suspend_stops: false,
         }))
     }
 
@@ -635,11 +697,10 @@ impl ContainerService {
 
 pub async fn serve_system_bus(
     manager: ContainerManager,
-    hardware_config: Option<BinderConfig>,
+    mode: Mode,
     hardware_sender: SyncSender<HardwareRequest>,
-    suspend_stops: bool,
 ) -> zbus::Result<(Connection, ContainerService)> {
-    let service = ContainerService::new(manager, hardware_config, hardware_sender, suspend_stops);
+    let service = ContainerService::new(manager, mode, hardware_sender);
     let connection = Builder::system()?
         .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, service.clone())?

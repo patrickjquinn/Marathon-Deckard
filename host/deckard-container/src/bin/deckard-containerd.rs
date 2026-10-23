@@ -1,4 +1,4 @@
-use deckard_container::dbus::serve_system_bus;
+use deckard_container::dbus::{Mode, serve_system_bus};
 use deckard_container::drivers::DriverNodes;
 use deckard_container::hardware;
 use deckard_container::initializer::{LocalImageInit, NodeInventory};
@@ -53,24 +53,6 @@ fn audit_production() -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
-fn production_setting(work: &Path, key: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let config = fs::read_to_string(work.join("waydroid.cfg"))?;
-    let value = config
-        .lines()
-        .filter_map(|line| line.split_once('='))
-        .find_map(|(name, value)| (name.trim() == key).then_some(value.trim()))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("missing {key}")))?;
-    Ok(value.to_owned())
-}
-
-fn production_overlays(work: &Path) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    match production_setting(work, "mount_overlays")?.as_str() {
-        "True" => Ok(true),
-        "False" => Ok(false),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid mount_overlays").into()),
-    }
-}
-
 fn audit_hardware() -> Result<(), Box<dyn Error + Send + Sync>> {
     let config = BinderConfig::from_file(Path::new("/var/lib/waydroid/waydroid.cfg"))?;
     if !binder::service_manager_present(&config)? {
@@ -120,45 +102,38 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     } else {
         "/var/lib/deckard"
     });
-    let (name, bridge, runtime, overlays) = if production {
-        let config = work.join("lxc/waydroid/config");
-        if !config.is_file() || !work.join("waydroid_base.prop").is_file() {
-            return Err("production Waydroid instance is not initialized".into());
-        }
+    // Production reads waydroid.cfg at each Start, so an uninitialized
+    // instance still serves Init.
+    let (name, bridge, runtime, mode) = if production {
         (
             "waydroid",
             "waydroid0",
             "/run/waydroid-lxc",
-            production_overlays(&work)?,
+            Mode::Production,
         )
     } else {
-        ("deckard", "deckard0", "/run/deckard-container", true)
+        (
+            "deckard",
+            "deckard0",
+            "/run/deckard-container",
+            Mode::Experimental,
+        )
     };
     let manager = ContainerManager {
         lxc: Lxc::new(work.join("lxc"), name.into())?,
         mounts: MountLayout {
             images: work.join("images"),
             work,
-            overlays,
+            overlays: true,
         },
         network: Network::new(bridge.into(), runtime.into())?,
     };
-    let hardware_config = if production {
-        Some(BinderConfig::from_file(
-            &manager.mounts.work.join("waydroid.cfg"),
-        )?)
-    } else {
-        None
-    };
-    let suspend_stops =
-        production && production_setting(&manager.mounts.work, "suspend_action")? == "stop";
     let (hardware_sender, hardware_receiver) = mpsc::sync_channel(hardware::QUEUE_DEPTH);
     let terminating = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, terminating.clone())?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, terminating.clone())?;
     async_io::block_on(async {
-        let (_connection, service) =
-            serve_system_bus(manager, hardware_config, hardware_sender, suspend_stops).await?;
+        let (_connection, service) = serve_system_bus(manager, mode, hardware_sender).await?;
         while !terminating.load(Ordering::Relaxed) {
             for _ in 0..8 {
                 let Ok(request) = hardware_receiver.try_recv() else {
