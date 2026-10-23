@@ -43,3 +43,17 @@ existing app data intact, then trace boot and app launch for Python execution.
 Target unit names are `deckard-session.service` and
 `deckard-container.service`. The current names remain until the native
 implementations and state migration pass this gate.
+
+## Native launcher smoke test
+
+On the same Pi, an AArch64 dynamic-musl `deckard-launch` candidate ran as the
+graphical user against the live `libgbinder.so.1` and session/system buses.
+`prop get sys.boot_completed` returned `1`. `app launch
+com.nononsenseapps.feeder` returned successfully and Android `dumpsys activity`
+reported Feeder's `MainActivity` as top-resumed and visible. An app-settings
+intent also completed without a Binder transport error.
+
+The Shell screenshot still showed Shortwave over Feeder after launch. Android
+activity success is therefore insufficient as a user-visible launch test; the
+Shell must raise the Android window before switching generated desktop entries
+to this binary. No live unit or desktop entry was changed for this test.
