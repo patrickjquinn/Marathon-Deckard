@@ -36,26 +36,10 @@ javac -source 1.8 -target 1.8 -Xlint:-options -bootclasspath "$jar:$bt/core-lamb
 
 unzip -q -o "$stock" classes.dex -d "$work"
 java -jar "$smali/baksmali.jar" d -a 33 "$work/classes.dex" -o "$work/smali"
-python3 -I - "$work/smali/com/android/permissioncontroller/permission/ui/GrantPermissionsActivity.smali" <<'EOF'
-import re, sys
-path = sys.argv[1]
-s = open(path).read()
-impl = 'Lcom/android/permissioncontroller/permission/ui/handheld/GrantPermissionsViewHandlerImpl;'
-block = re.compile(
-    r'    new-instance v0, ' + re.escape(impl) + r'\n'
-    r'(?P<target>\n    iget-object v1, p0, Lcom/android/permissioncontroller/permission/ui/GrantPermissionsActivity;->mTargetPackage:Ljava/lang/String;\n)'
-    r'(?:.|\n)*?'
-    r'    invoke-virtual \{v0, p0\}, ' + re.escape(impl) + r'->setResultListener\([^)]*\)' + re.escape(impl) + r'\n'
-    r'\n    move-result-object v0\n')
-found = block.findall(s)
-if len(found) != 1:
-    sys.exit('GrantPermissionsActivity: expected one handheld view handler, found %d' % len(found))
-view = 'Lorg/marathonos/deckard/permission/MarathonGrantView;'
-s = block.sub(lambda m: '    new-instance v0, ' + view + '\n' + m.group('target') +
-              '\n    invoke-direct {v0, p0, v1, p0}, ' + view + '-><init>(Landroid/app/Activity;Ljava/lang/String;'
-              'Lcom/android/permissioncontroller/permission/ui/GrantPermissionsViewHandler$ResultListener;)V\n', s)
-open(path, 'w').write(s)
-EOF
+cargo run --locked --manifest-path "$here/../../Cargo.toml" -p deckard-image-tools -- \
+    permission-view \
+    --input "$work/smali/com/android/permissioncontroller/permission/ui/GrantPermissionsActivity.smali" \
+    --out "$work/smali/com/android/permissioncontroller/permission/ui/GrantPermissionsActivity.smali"
 java -jar "$smali/smali.jar" a -a 33 "$work/smali" -o "$work/apk-classes.dex"
 
 cp "$stock" "$work/unsigned.apk"

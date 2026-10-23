@@ -1,0 +1,15 @@
+[package]
+name = "deckard-image-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "GPL-3.0-only"
+
+[dependencies]
+deckard-core = { path = "../../host/deckard-core" }
+regex.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

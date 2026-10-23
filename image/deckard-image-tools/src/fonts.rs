@@ -1,0 +1,220 @@
+use std::collections::BTreeSet;
+
+use regex::Regex;
+
+type Face<'a> = (u16, &'a str, &'a str);
+
+const SANS: &[Face<'static>] = &[
+    (100, "normal", "SourceSans3-ExtraLight.ttf"),
+    (200, "normal", "SourceSans3-ExtraLight.ttf"),
+    (300, "normal", "SourceSans3-Light.ttf"),
+    (400, "normal", "SourceSans3-Regular.ttf"),
+    (500, "normal", "SourceSans3-Semibold.ttf"),
+    (600, "normal", "SourceSans3-Semibold.ttf"),
+    (700, "normal", "SourceSans3-Bold.ttf"),
+    (800, "normal", "SourceSans3-Bold.ttf"),
+    (900, "normal", "SourceSans3-Bold.ttf"),
+    (300, "italic", "SourceSans3-LightIt.ttf"),
+    (400, "italic", "SourceSans3-It.ttf"),
+];
+const MONO: &[Face<'static>] = &[
+    (400, "normal", "JetBrainsMono-Medium.ttf"),
+    (500, "normal", "JetBrainsMono-Medium.ttf"),
+];
+const NOTO: &[Face<'static>] = &[
+    (400, "normal", "NotoSans-Regular.ttf"),
+    (700, "normal", "NotoSans-Bold.ttf"),
+    (400, "italic", "NotoSans-Italic.ttf"),
+    (700, "italic", "NotoSans-BoldItalic.ttf"),
+];
+
+pub struct Outputs {
+    pub xml: String,
+    pub host: String,
+    pub android: String,
+    pub hidden: String,
+}
+
+fn family(attributes: &str, faces: &[Face<'_>]) -> String {
+    let body: Vec<_> = faces
+        .iter()
+        .map(|(weight, style, file)| {
+            format!("        <font weight=\"{weight}\" style=\"{style}\">{file}</font>")
+        })
+        .collect();
+    format!(
+        "    <family{attributes}>\n{}\n    </family>",
+        body.join("\n")
+    )
+}
+
+fn file_names(pattern: &Regex, xml: &str) -> BTreeSet<String> {
+    pattern
+        .captures_iter(xml)
+        .map(|capture| capture[1].to_owned())
+        .collect()
+}
+
+fn list(names: impl IntoIterator<Item = String>) -> String {
+    let names: Vec<_> = names.into_iter().collect();
+    format!("{}\n", names.join("\n"))
+}
+
+pub fn generate(
+    xml: &str,
+    android_files: &str,
+    customization: &str,
+) -> Result<Outputs, Box<dyn std::error::Error>> {
+    let families = Regex::new(r"(?s)    <family( [^>]*)?>.*?</family>")?;
+    let names = Regex::new(r#"name="([^"]+)""#)?;
+    let output = families.replace_all(xml, |capture: &regex::Captures<'_>| {
+        let attributes = capture.get(1).map_or("", |matched| matched.as_str());
+        let body = &capture[0];
+        if let Some(name) = names.captures(attributes) {
+            let faces = match &name[1] {
+                "monospace" | "serif-monospace" => Some(MONO),
+                "sans-serif"
+                | "sans-serif-condensed"
+                | "casual"
+                | "cursive"
+                | "sans-serif-smallcaps"
+                | "source-sans-pro" => Some(SANS),
+                _ => None,
+            };
+            if let Some(faces) = faces {
+                return family(&format!(" name=\"{}\"", &name[1]), faces);
+            }
+        }
+        if attributes.contains("ignore=\"true\"") && body.contains("NotoColorEmojiLegacy") {
+            return String::new();
+        }
+        if body.contains("NotoSansSymbols-Regular-Subsetted.ttf") {
+            return family("", NOTO);
+        }
+        if body.contains("NotoSansSymbols-Regular-Subsetted2.ttf") {
+            return [
+                family("", &[(400, "normal", "NotoSansSymbols-Regular.ttf")]),
+                family("", &[(400, "normal", "NotoSansMath-Regular.ttf")]),
+                family(
+                    attributes,
+                    &[(400, "normal", "NotoSansSymbols2-Regular.ttf")],
+                ),
+            ]
+            .join("\n");
+        }
+        body.to_owned()
+    });
+    let aliases = [
+        ("google-sans", "sans-serif", None),
+        ("google-sans-text", "sans-serif", None),
+        ("google-sans-medium", "sans-serif", Some(500)),
+        ("google-sans-bold", "sans-serif", Some(700)),
+        ("roboto", "sans-serif", None),
+        ("roboto-medium", "sans-serif", Some(500)),
+    ]
+    .into_iter()
+    .map(|(name, target, weight)| {
+        let weight = weight.map_or_else(String::new, |value| format!(" weight=\"{value}\""));
+        format!("    <alias name=\"{name}\" to=\"{target}\"{weight} />")
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
+    let output = output.replacen(
+        "    <alias name=\"sans-serif-thin\"",
+        &format!("{aliases}\n    <alias name=\"sans-serif-thin\""),
+        1,
+    );
+    let files = Regex::new(r">\s*([\w.-]+\.(?:ttf|otf|ttc))")?;
+    let named = file_names(&files, &output);
+    let original = file_names(&files, xml);
+    let custom: BTreeSet<_> = file_names(&files, customization)
+        .into_iter()
+        .map(|name| format!("product/{name}"))
+        .collect();
+    let mut host: BTreeSet<_> = SANS
+        .iter()
+        .chain(MONO)
+        .chain(NOTO)
+        .map(|(_, _, file)| (*file).to_owned())
+        .collect();
+    host.extend(
+        [
+            "NotoSerif-Regular.ttf",
+            "NotoSerif-Bold.ttf",
+            "NotoSerif-Italic.ttf",
+            "NotoSerif-BoldItalic.ttf",
+            "NotoSansSymbols-Regular.ttf",
+            "NotoSansSymbols2-Regular.ttf",
+            "NotoSansMath-Regular.ttf",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    let android: BTreeSet<_> = android_files
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let available: BTreeSet<_> = host.union(&android).cloned().collect();
+    let missing: Vec<_> = named.difference(&available).collect();
+    if !missing.is_empty() {
+        return Err(format!("font references have no source: {missing:?}").into());
+    }
+    let kept = android
+        .intersection(&named)
+        .filter(|name| !host.contains(*name))
+        .cloned();
+    let hidden = android
+        .iter()
+        .filter(|name| {
+            !named.contains(*name) && (original.contains(*name) || custom.contains(*name))
+        })
+        .cloned();
+    Ok(Outputs {
+        xml: output,
+        host: list(host.iter().cloned()),
+        android: list(kept),
+        hidden: list(hidden),
+    })
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests compare all generated files with repository fixtures"
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_generated_font_assets_match_the_existing_generator() {
+        let output = generate(
+            include_str!("../../vendor_deckard/fonts/fonts-lineage-20.xml"),
+            include_str!("../../vendor_deckard/fonts/android-font-files.txt"),
+            include_str!("../../vendor_deckard/fonts/fonts_customization-lineage-20.xml"),
+        )
+        .unwrap();
+        assert_eq!(
+            output.xml,
+            include_str!("../../vendor_deckard/fonts/fonts.xml")
+        );
+        assert_eq!(
+            output.host,
+            include_str!("../../vendor_deckard/fonts/host-fonts.txt")
+        );
+        assert_eq!(
+            output.android,
+            include_str!("../../vendor_deckard/fonts/android-fonts.txt")
+        );
+        assert_eq!(
+            output.hidden,
+            include_str!("../../vendor_deckard/fonts/hidden-fonts.txt")
+        );
+    }
+
+    #[test]
+    fn rejects_unresolved_fonts_before_returning_outputs() {
+        assert!(generate("    <family><font>missing.ttf</font></family>", "", "").is_err());
+    }
+}

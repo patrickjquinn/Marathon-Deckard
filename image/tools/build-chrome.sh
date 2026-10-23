@@ -11,7 +11,21 @@ export FRAMEWORK_RES
 build=${BUILD:-${XDG_CACHE_HOME:-$HOME/.cache}/deckard-chrome-build}
 ov=$image/overlay/system
 
-python3 "$image/vendor_deckard/overlay/DeckardPalette/gen-palette.py" "$@"
+palette_out=default
+palette_theme=default
+for argument in "$@"; do
+    case "$argument" in
+        --out | --out=*) palette_out=explicit ;;
+        --mcolors | --mcolors=*) palette_theme=explicit ;;
+    esac
+done
+if [ "$palette_out" = default ]; then
+    set -- --out "$image/vendor_deckard/overlay/DeckardPalette/res/values/colors.xml" "$@"
+fi
+if [ "$palette_theme" = default ]; then
+    set -- --mcolors "${DECKARD_MCOLORS:-$HOME/Developer/Marathon-Shell/shell/qml/theme/MColors.qml}" "$@"
+fi
+cargo run --locked --manifest-path "$image/../Cargo.toml" -p deckard-image-tools -- palette "$@"
 for name in DeckardFrameworkRes DeckardPalette DeckardPermissionControllerRes; do
     "$image/tools/build-apk.sh" "$image/vendor_deckard/overlay/$name" "$build/$name" >/dev/null
     install -Dm644 "$build/$name/$name.apk" "$ov/product/overlay/$name/$name.apk"
