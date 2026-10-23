@@ -176,18 +176,31 @@ fn listen_system(mut listener: BridgeListener, system: System) {
     }
 }
 
-fn serve_app(
-    events: Receiver<ChannelEvent>,
+/// What the authenticated app socket (DeckardBridge) feeds.
+struct App {
     handle: ChannelHandle,
     packages: PackageBridge,
     notifications: NotificationBridge,
     actions: Receiver<deckard_core::notification_state::BridgeEvent>,
-    mut media: MprisAdapter,
+    media: MprisAdapter,
     audio: AudioWake,
     keel: KeelApps,
     intents: Intents,
     location: Option<LocationSync>,
-) {
+}
+
+fn serve_app(events: Receiver<ChannelEvent>, app: App) {
+    let App {
+        handle,
+        packages,
+        notifications,
+        actions,
+        mut media,
+        audio,
+        keel,
+        intents,
+        location,
+    } = app;
     let mut current = None;
     loop {
         match events.recv_timeout(Duration::from_millis(10)) {
@@ -448,15 +461,17 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     thread::spawn(move || {
         serve_app(
             app_events,
-            app_handle,
-            app_packages,
-            notifications,
-            actions,
-            media,
-            audio,
-            app_keel,
-            app_intents,
-            location,
+            App {
+                handle: app_handle,
+                packages: app_packages,
+                notifications,
+                actions,
+                media,
+                audio,
+                keel: app_keel,
+                intents: app_intents,
+                location,
+            },
         )
     });
     thread::spawn(move || {
