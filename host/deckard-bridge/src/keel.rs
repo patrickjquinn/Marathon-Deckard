@@ -129,6 +129,8 @@ struct State {
     apps: HashMap<String, Entry>,
     /// What the shell was told, by package.
     secure: HashMap<String, bool>,
+    /// The packages whose secure check runs.
+    checking: HashSet<String>,
     user: bool,
     system: bool,
     next: i64,
@@ -338,12 +340,17 @@ async fn follow_foreground(shared: Weak<Shared>, bus: Connection) -> zbus::Resul
             break;
         };
         let id: String = signal.body().deserialize().unwrap_or_default();
-        if let Some(pkg) = id
+        let pkg = id
             .strip_prefix(APP_ID_PREFIX)
-            .filter(|pkg| shared.known(pkg))
+            .filter(|pkg| shared.known(pkg));
+        if let Some(pkg) = pkg
+            && sync::lock(&shared.state).checking.insert(pkg.to_owned())
         {
             let (pkg, task) = (pkg.to_owned(), Arc::clone(&shared));
-            let check = async move { task.check_secure(&pkg, 2).await };
+            let check = async move {
+                task.check_secure(&pkg, 2).await;
+                sync::lock(&task.state).checking.remove(&pkg);
+            };
             shared.executor.spawn(check).detach();
         }
     }

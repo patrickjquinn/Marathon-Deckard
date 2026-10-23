@@ -68,17 +68,19 @@ pub struct Sharing {
     send: Arc<SendSystem>,
     xfer: PathBuf,
     state: Arc<Mutex<State>>,
+    tasks: Arc<intents::Tasks>,
 }
 
 impl Sharing {
     /// Shares through `xfer/<id>/`.
     pub fn new(bus: zbus::Connection, send: Arc<SendSystem>, xfer: PathBuf) -> Self {
-        let state = Arc::default();
+        let (state, tasks) = (Arc::default(), Arc::default());
         Self {
             bus,
             send,
             xfer,
             state,
+            tasks,
         }
     }
 
@@ -220,10 +222,7 @@ impl Sharing {
                 eprintln!("deckard-bridge: the share sheet refused {pkg}: {error}");
             }
         };
-        self.bus
-            .executor()
-            .spawn(task, "deckard-share-out")
-            .detach();
+        self.tasks.spawn(&self.bus, "deckard-share-out", task);
     }
 }
 

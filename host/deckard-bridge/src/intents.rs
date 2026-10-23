@@ -44,6 +44,7 @@ const REQUEST: &str = "org.freedesktop.portal.Request";
 const MAX_PENDING: usize = 4;
 const MAX_SAVED: usize = 32;
 const MAX_FILES: usize = 32;
+const MAX_TASKS: usize = 8;
 const MAX_BYTES: u64 = 1 << 30;
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(630);
@@ -572,6 +573,29 @@ struct State {
     saved: VecDeque<(String, PathBuf)>,
 }
 
+/// A bound on the tasks Android's messages start; each running task holds
+/// a clone of the `Arc`.
+#[derive(Default)]
+pub(crate) struct Tasks(Arc<()>);
+
+impl Tasks {
+    /// Runs `task` on `bus`'s executor, or drops it while `MAX_TASKS` run.
+    pub(crate) fn spawn<F>(&self, bus: &zbus::Connection, name: &str, task: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        if Arc::strong_count(&self.0) > MAX_TASKS {
+            return eprintln!("deckard-bridge: too many {name} tasks; one dropped");
+        }
+        let running = Arc::clone(&self.0);
+        let task = async move {
+            task.await;
+            drop(running);
+        };
+        bus.executor().spawn(task, name).detach();
+    }
+}
+
 /// Opens, picks and captures for DeckardSystem.
 #[derive(Clone)]
 pub struct Intents {
@@ -580,6 +604,7 @@ pub struct Intents {
     xfer: PathBuf,
     camera: PathBuf,
     state: Arc<Mutex<State>>,
+    tasks: Arc<Tasks>,
 }
 
 impl Intents {
@@ -595,13 +620,14 @@ impl Intents {
             eprintln!("deckard-bridge: cannot make {}: {error}", xfer.display());
         }
         sweep(&xfer);
-        let state = Arc::default();
+        let (state, tasks) = (Arc::default(), Arc::default());
         let intents = Self {
             bus,
             send,
             xfer,
             camera,
             state,
+            tasks,
         };
         let follower = intents.clone();
         intents.spawn("deckard-foreground", async move {
@@ -687,7 +713,7 @@ impl Intents {
             Err(error) => return eprintln!("deckard-bridge: open refused: {error}"),
         };
         let bus = self.bus.clone();
-        self.spawn("deckard-open", async move {
+        self.tasks.spawn(&self.bus, "deckard-open", async move {
             if let Err(error) = launch(&bus, &target).await {
                 eprintln!("deckard-bridge: open failed: {error}");
             }
@@ -857,7 +883,7 @@ impl Intents {
             return;
         };
         let xfer = self.xfer.clone();
-        self.spawn("deckard-save", async move {
+        self.tasks.spawn(&self.bus, "deckard-save", async move {
             let shown = target.display().to_string();
             match blocking::unblock(move || save(&xfer, &id, &target)).await {
                 Ok(()) => eprintln!("deckard-bridge: saved {shown}"),
