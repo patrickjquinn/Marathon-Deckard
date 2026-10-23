@@ -340,16 +340,19 @@ impl Init<'_> {
         };
         let file = "bind,create=file,optional";
         let dir = "bind,create=dir,optional";
-        let present = |path: &&&str| devices.contains(path);
         entry("tmpfs", "dev", "tmpfs", "nosuid");
-        for path in FIXED_NODES[..7].iter().filter(present) {
-            entry(path, &path[1..], "none", file);
+        for path in &FIXED_NODES[..7] {
+            if devices.contains(path) {
+                entry(path, &path[1..], "none", file);
+            }
         }
         if devices.contains("/dev/char") {
             entry("/dev/char", "dev/char", "none", dir);
         }
-        for path in FIXED_NODES[8..13].iter().filter(present) {
-            entry(path, &path[1..], "none", file);
+        for path in &FIXED_NODES[8..13] {
+            if devices.contains(path) {
+                entry(path, &path[1..], "none", file);
+            }
         }
         if let Some(render) = &self.host.render_node {
             entry(render, &render[1..], "none", file);
@@ -411,11 +414,15 @@ impl Init<'_> {
                 "rbind,create=dir,optional",
             );
         }
-        for path in FIXED_NODES[18..20].iter().filter(present) {
-            entry(path, &path[1..], "none", dir);
+        for path in &FIXED_NODES[18..20] {
+            if devices.contains(path) {
+                entry(path, &path[1..], "none", dir);
+            }
         }
-        for path in FIXED_NODES[20..24].iter().filter(present) {
-            entry(path, &path[1..], "none", file);
+        for path in &FIXED_NODES[20..24] {
+            if devices.contains(path) {
+                entry(path, &path[1..], "none", file);
+            }
         }
         entry("tmpfs", "mnt_extra", "tmpfs", "nodev");
         if devices.contains("/mnt/wslg") {

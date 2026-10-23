@@ -373,7 +373,8 @@ mod tests {
             "fb0",
             "video19",
         ];
-        for path in opened.iter().chain(&["dri/card0", "null"]) {
+        let created = [opened.as_slice(), &["dri/card0", "null"]].concat();
+        for path in created {
             fs::write(dev.path().join(path), "")?;
             fs::set_permissions(dev.path().join(path), fs::Permissions::from_mode(0o600))?;
         }

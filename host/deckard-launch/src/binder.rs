@@ -76,8 +76,8 @@ impl BinderConfig {
             return Err("invalid Binder device name".into());
         }
         let protocols = [manager.as_deref(), protocol.as_deref()];
-        for value in protocols.into_iter().flatten() {
-            if !safe_name(value) {
+        for value in protocols {
+            if value.is_some_and(|value| !safe_name(value)) {
                 return Err("invalid Binder protocol name".into());
             }
         }
