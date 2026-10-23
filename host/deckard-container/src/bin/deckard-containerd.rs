@@ -7,8 +7,7 @@ use std::time::Duration;
 
 use deckard_container::dbus;
 use deckard_container::drivers::DriverNodes;
-use deckard_container::lxc::Lxc;
-use deckard_container::manager::ContainerManager;
+use deckard_container::lxc::{ContainerManager, Lxc};
 use deckard_container::mounts::MountLayout;
 use deckard_container::network::Network;
 use deckard_container::session_config::{self, Stage};

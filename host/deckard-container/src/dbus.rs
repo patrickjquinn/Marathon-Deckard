@@ -25,8 +25,7 @@ use crate::command::ProcessRunner;
 use crate::drivers::{self, DriverNodes};
 use crate::hardware::{self, HardwareRequest};
 use crate::initializer_dbus::{self, InitializerService};
-use crate::lxc::{self, State};
-use crate::manager::ContainerManager;
+use crate::lxc::{self, ContainerManager, State};
 use crate::session_config::{self, Stage};
 use crate::{Result, config, ensure, properties};
 
@@ -524,66 +523,6 @@ impl ContainerService {
         .await
     }
 
-    async fn start_authorized(
-        &self,
-        fields: HashMap<String, String>,
-        caller: Caller,
-    ) -> fdo::Result<()> {
-        let owner = session_owner(&fields)?;
-        if !caller.controls(owner) {
-            return Err(fdo::Error::AccessDenied(
-                "session UID/PID does not match D-Bus caller".into(),
-            ));
-        }
-        let pid = Pid::from_raw(owner.pid as i32)
-            .ok_or_else(|| fdo::Error::InvalidArgs("invalid session pid".into()))?;
-        let pidfd = rustix::process::pidfd_open(pid, PidfdFlags::empty()).map_err(|error| {
-            fdo::Error::InvalidArgs(format!("session process unavailable: {error}"))
-        })?;
-        self.locked(move |state| {
-            if state.session.is_some() {
-                return Err(fdo::Error::Failed("already tracking a session".into()));
-            }
-            state.backend.start(&fields, owner.uid).map_err(failed)?;
-            state.session = Some(Session {
-                fields,
-                owner,
-                pidfd,
-            });
-            Ok(())
-        })
-        .await
-    }
-
-    async fn stop_authorized(&self, quit_session: bool, caller: Caller) -> fdo::Result<()> {
-        self.locked(move |state| {
-            state.authorize_control(caller)?;
-            state.backend.stop().map_err(failed)?;
-            if let Some(session) = state.session.take()
-                && quit_session
-            {
-                session.quit();
-            }
-            Ok(())
-        })
-        .await
-    }
-
-    async fn get_session_authorized(&self, caller: Caller) -> fdo::Result<HashMap<String, String>> {
-        let launcher = self.launcher.clone();
-        self.locked(move |state| {
-            let Some(session) = state.session.as_ref() else {
-                return Ok(HashMap::new());
-            };
-            state.authorize_read(caller, &launcher)?;
-            let mut fields = session.fields.clone();
-            let status = state.backend.status().map_err(failed)?;
-            fields.insert("state".into(), format!("{status:?}").to_uppercase());
-            Ok(fields)
-        })
-        .await
-    }
-
     async fn get_property_authorized(&self, key: String, caller: Caller) -> fdo::Result<String> {
         authorize_root(caller)?;
         lxc::validate_property_key(&key)
@@ -617,8 +556,30 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        self.start_authorized(session, Caller::of(conn, &header).await?)
-            .await
+        let caller = Caller::of(conn, &header).await?;
+        let owner = session_owner(&session)?;
+        if !caller.controls(owner) {
+            let reason = "session UID/PID does not match D-Bus caller";
+            return Err(fdo::Error::AccessDenied(reason.into()));
+        }
+        let invalid = |message: String| fdo::Error::InvalidArgs(message);
+        let pid =
+            Pid::from_raw(owner.pid as i32).ok_or_else(|| invalid("invalid session pid".into()))?;
+        let pidfd = rustix::process::pidfd_open(pid, PidfdFlags::empty())
+            .map_err(|error| invalid(format!("session process unavailable: {error}")))?;
+        self.locked(move |state| {
+            if state.session.is_some() {
+                return Err(fdo::Error::Failed("already tracking a session".into()));
+            }
+            state.backend.start(&session, owner.uid).map_err(failed)?;
+            state.session = Some(Session {
+                fields: session,
+                owner,
+                pidfd,
+            });
+            Ok(())
+        })
+        .await
     }
 
     async fn stop(
@@ -627,8 +588,18 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        self.stop_authorized(quit_session, Caller::of(conn, &header).await?)
-            .await
+        let caller = Caller::of(conn, &header).await?;
+        self.locked(move |state| {
+            state.authorize_control(caller)?;
+            state.backend.stop().map_err(failed)?;
+            if let Some(session) = state.session.take()
+                && quit_session
+            {
+                session.quit();
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn freeze(
@@ -663,8 +634,19 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<HashMap<String, String>> {
-        self.get_session_authorized(Caller::of(conn, &header).await?)
-            .await
+        let caller = Caller::of(conn, &header).await?;
+        let launcher = self.launcher.clone();
+        self.locked(move |state| {
+            let Some(session) = state.session.as_ref() else {
+                return Ok(HashMap::new());
+            };
+            state.authorize_read(caller, &launcher)?;
+            let mut fields = session.fields.clone();
+            let status = state.backend.status().map_err(failed)?;
+            fields.insert("state".into(), format!("{status:?}").to_uppercase());
+            Ok(fields)
+        })
+        .await
     }
 
     async fn get_property(

@@ -10,7 +10,6 @@ pub mod hardware;
 pub mod initializer;
 pub mod initializer_dbus;
 pub mod lxc;
-pub mod manager;
 pub mod mounts;
 pub mod network;
 pub mod properties;
