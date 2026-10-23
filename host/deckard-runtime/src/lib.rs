@@ -51,20 +51,8 @@ trait Session {
     fn stop(&self) -> zbus::Result<()>;
 }
 
-fn invalid(message: impl Into<String>) -> deckard_launch::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, message.into()).into()
-}
-
-fn unavailable(message: impl Into<String>) -> deckard_launch::Error {
-    io::Error::new(io::ErrorKind::NotConnected, message.into()).into()
-}
-
 fn env_nonempty(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.is_empty())
-}
-
-fn wayland_socket(runtime_dir: &Path, display: &str) -> PathBuf {
-    runtime_dir.join(display)
 }
 
 fn socket_identity(path: &Path) -> io::Result<(u64, u64)> {
@@ -88,7 +76,7 @@ fn density(host_property: Option<&str>, grid_unit_px: Option<&str>) -> Result<St
     let pixels: u32 = value.parse()?;
     let density = pixels
         .checked_mul(20)
-        .ok_or_else(|| invalid("GRID_UNIT_PX overflows LCD density"))?;
+        .ok_or("GRID_UNIT_PX overflows LCD density")?;
     Ok(density.to_string())
 }
 
@@ -113,17 +101,15 @@ pub struct SessionSpec<'a> {
 /// cannot be created.
 pub fn session_payload(spec: &SessionSpec<'_>) -> Result<HashMap<String, String>> {
     if spec.display.is_empty() || spec.display == "None" {
-        return Err(invalid("WAYLAND_DISPLAY is not set"));
+        return Err("WAYLAND_DISPLAY is not set".into());
     }
-    let socket = wayland_socket(spec.runtime_dir, spec.display);
+    let socket = spec.runtime_dir.join(spec.display);
     if !socket
         .metadata()
         .is_ok_and(|metadata| metadata.file_type().is_socket())
     {
         let socket = socket.display();
-        return Err(unavailable(format!(
-            "Wayland socket {socket} is missing or is not a socket"
-        )));
+        return Err(format!("Wayland socket {socket} is missing or is not a socket").into());
     }
     let user_state = spec.data_home.join("waydroid");
     let data = user_state.join("data");
@@ -166,14 +152,11 @@ fn host_density() -> Result<String> {
 fn make_payload() -> Result<HashMap<String, String>> {
     let uid = nix::unistd::geteuid();
     if uid.is_root() {
-        return Err(invalid(
-            "session start must run as the graphical user, not root",
-        ));
+        return Err("session start must run as the graphical user, not root".into());
     }
-    let user = User::from_uid(uid)?.ok_or_else(|| invalid("current user has no passwd entry"))?;
-    let runtime_dir = PathBuf::from(
-        env_nonempty("XDG_RUNTIME_DIR").ok_or_else(|| invalid("XDG_RUNTIME_DIR is not set"))?,
-    );
+    let user = User::from_uid(uid)?.ok_or("current user has no passwd entry")?;
+    let runtime_dir =
+        PathBuf::from(env_nonempty("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR is not set")?);
     let display = env_nonempty("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".to_owned());
     let data_home =
         env_nonempty("XDG_DATA_HOME").map_or_else(|| user.dir.join(".local/share"), PathBuf::from);
@@ -202,9 +185,7 @@ fn start_system_container() -> Result<()> {
         .args(["start", CONTAINER_UNIT])
         .status()?;
     if !status.success() {
-        return Err(unavailable(format!(
-            "systemctl start {CONTAINER_UNIT} failed: {status}"
-        )));
+        return Err(format!("systemctl start {CONTAINER_UNIT} failed: {status}").into());
     }
     Ok(())
 }
@@ -234,7 +215,7 @@ fn export_installed_apps(config: &BinderConfig, data_home: &Path, stop: &AtomicB
     if stop.load(Ordering::Acquire) {
         return Ok(());
     }
-    Err(unavailable("Android app catalog did not become ready"))
+    Err("Android app catalog did not become ready".into())
 }
 
 fn apply(data_home: &Path, config: &BinderConfig, event: Option<monitor::Event>) -> Result<()> {
@@ -283,7 +264,7 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) if stop.load(Ordering::Acquire) => break,
             Err(RecvTimeoutError::Disconnected) => {
-                return Err(unavailable("Android package callbacks stopped"));
+                return Err("Android package callbacks stopped".into());
             }
         };
         if let Err(error) = apply(data_home, &config, event) {
@@ -301,7 +282,7 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
 pub fn session_start() -> Result<()> {
     let payload = make_payload()?;
     let runtime_dir = Path::new(&payload["xdg_runtime_dir"]);
-    let socket = wayland_socket(runtime_dir, &payload["wayland_display"]);
+    let socket = runtime_dir.join(&payload["wayland_display"]);
     let initial_socket = socket_identity(&socket)?;
     let marker = runtime_dir.join("marathon-waydroid-requested");
     let stop = Arc::new(AtomicBool::new(false));
@@ -318,9 +299,7 @@ pub fn session_start() -> Result<()> {
     let name_reply =
         session_bus.request_name_with_flags(SESSION_NAME, RequestNameFlags::DoNotQueue.into())?;
     if name_reply != RequestNameReply::PrimaryOwner {
-        return Err(unavailable(
-            "another Waydroid session already owns the bus name",
-        ));
+        return Err("another Waydroid session already owns the bus name".into());
     }
 
     fs::write(&marker, [])?;
@@ -355,9 +334,7 @@ pub fn session_start() -> Result<()> {
         ContainerManagerProxyBlocking::new(&system_bus)?.stop(false)?;
     }
     if compositor_changed {
-        return Err(unavailable(
-            "Wayland compositor socket changed; restarting Android session",
-        ));
+        return Err("Wayland compositor socket changed; restarting Android session".into());
     }
     Ok(())
 }
@@ -466,14 +443,6 @@ mod tests {
     }
 
     #[test]
-    fn absolute_wayland_display_is_preserved() {
-        assert_eq!(
-            wayland_socket(Path::new("/run/user/1000"), "/tmp/socket"),
-            PathBuf::from("/tmp/socket")
-        );
-    }
-
-    #[test]
     fn compositor_socket_identity_is_not_a_regular_file() -> Result<()> {
         let root = tempfile::tempdir()?;
         let first = root.path().join("first");
@@ -540,7 +509,7 @@ mod tests {
         payload.insert("user_id".to_owned(), "1000".to_owned());
         let caller = Connection::session()?;
         start_container(&caller, &payload)?;
-        let actual = captured.lock().map_err(|_| invalid("poisoned mock"))?;
+        let actual = captured.lock().map_err(|_| "poisoned mock")?;
         assert_eq!(*actual, Some(payload));
         Ok(())
     }

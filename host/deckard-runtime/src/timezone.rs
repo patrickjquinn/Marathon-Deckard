@@ -8,7 +8,7 @@ use std::thread;
 use deckard_launch::binder::{BinderConfig, Platform};
 use zbus::blocking::Connection;
 
-use crate::{Result, invalid};
+use crate::Result;
 
 const PROPERTY: &str = "persist.sys.timezone";
 const MAX_VALUE_BYTES: usize = 91;
@@ -37,7 +37,7 @@ fn valid(zone: &str) -> bool {
 
 fn apply(config: &BinderConfig, zone: &str) -> Result<()> {
     if !valid(zone) {
-        return Err(invalid(format!("unusable host time zone {zone:?}")));
+        return Err(format!("unusable host time zone {zone:?}").into());
     }
     Platform::connect(config)?.setprop(PROPERTY, zone)
 }

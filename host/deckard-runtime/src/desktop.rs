@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use deckard_host_tools::files;
 use deckard_launch::binder::AppInfo;
 
-use crate::{Result, invalid};
+use crate::Result;
 
 const LAUNCHER: &str = "android.intent.category.LAUNCHER";
 const DECKARD_LAUNCH: &str = "/usr/libexec/deckard-launch";
@@ -181,15 +181,15 @@ fn write_app(applications: &Path, data_home: &Path, app: &AppInfo) -> Result<()>
 pub fn export(data_home: &Path, apps: &[AppInfo]) -> Result<usize> {
     // An empty or malformed Binder snapshot must never delete existing launchers.
     if apps.is_empty() {
-        return Err(invalid("empty Android app snapshot"));
+        return Err("empty Android app snapshot".into());
     }
     let mut packages = HashSet::new();
     for app in apps {
         if !valid_app(app) {
-            return Err(invalid("invalid Android app identity"));
+            return Err("invalid Android app identity".into());
         }
         if !packages.insert(app.package.as_str()) {
-            return Err(invalid("duplicate Android app identity"));
+            return Err("duplicate Android app identity".into());
         }
     }
     let applications = applications_dir(data_home)?;
@@ -224,7 +224,7 @@ pub fn export(data_home: &Path, apps: &[AppInfo]) -> Result<usize> {
 /// The package name or entry is invalid, or a write fails.
 pub fn update(data_home: &Path, package: &str, app: Option<&AppInfo>) -> Result<()> {
     if !valid_package(package) || app.is_some_and(|app| app.package != package || !valid_app(app)) {
-        return Err(invalid("invalid Android package change"));
+        return Err("invalid Android package change".into());
     }
     let applications = applications_dir(data_home)?;
     match app.filter(|app| is_launcher(app)) {
