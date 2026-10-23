@@ -4,6 +4,7 @@ members = [
     "host/deckard-core",
     "host/deckard-fonts-sync",
     "host/deckard-host-tools",
+    "host/deckard-notifications",
     "host/deckard-overlay-sync",
     "host/deckard-runtime",
     "image/deckard-image-tools",

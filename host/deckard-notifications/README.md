@@ -14,9 +14,9 @@ The state path should be the existing
 existing `~/.cache/deckard/icons`. Never run this adapter in parallel with the
 C++ notification handler against the same Hub and state file.
 
-This crate is independent of the root Cargo workspace to keep the migration
-slice isolated. Run `cargo test --manifest-path host/deckard-notifications/Cargo.toml`
-and `cargo clippy --manifest-path host/deckard-notifications/Cargo.toml --all-targets -- -D warnings`.
+The adapter is covered by the root Cargo workspace tests. Run
+`cargo test -p deckard-notifications --locked` and
+`cargo clippy -p deckard-notifications --all-targets --locked -- -D warnings`.
 
 Not covered here: icon ingestion, transient toast banners, the bridge socket,
 daemon lifecycle, service packaging, and the remaining C++ notification

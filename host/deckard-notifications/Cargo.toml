@@ -1,28 +1,18 @@
 [package]
 name = "deckard-notifications"
-version = "0.4.0"
-edition = "2024"
-rust-version = "1.88"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 license = "Apache-2.0"
-
-[workspace]
-resolver = "3"
 
 [dependencies]
 deckard-core = { path = "../deckard-core" }
-image = { version = "=0.25.10", default-features = false, features = ["png"] }
-serde_json = "=1.0.154"
+image.workspace = true
+serde_json.workspace = true
 sha2 = "=0.10.9"
-tempfile = "=3.27.0"
-zbus = { version = "=5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+tempfile.workspace = true
+zbus = { workspace = true, features = ["blocking-api"] }
 
-[lints.rust]
-unsafe_code = "deny"
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
-unwrap_used = "warn"
-expect_used = "warn"
-todo = "deny"
-unimplemented = "deny"
+[lints]
+workspace = true
