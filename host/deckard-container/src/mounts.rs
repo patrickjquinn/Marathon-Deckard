@@ -4,32 +4,46 @@
 //! the mount, and root already owns the host. Session-owned paths are bound
 //! from descriptors instead (`session_config`).
 
-use crate::command::{CommandSpec, Runner};
-use crate::{Error, Result};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
+
+use crate::Result;
+use crate::command::{Command, Runner};
 
 #[derive(Clone, Debug)]
 pub struct MountLayout {
     pub work: PathBuf,
     pub images: PathBuf,
+    /// Whether `overlay/` is mounted over the images (`mount_overlays`).
     pub overlays: bool,
 }
 
+fn display(path: &Path) -> String {
+    path.display().to_string()
+}
+
 impl MountLayout {
+    #[must_use]
     pub fn rootfs(&self) -> PathBuf {
         self.work.join("rootfs")
     }
 
+    /// # Errors
+    /// A directory or image is missing or not controlled by root.
     pub fn preflight(&self) -> Result<()> {
         safe_dir(&self.work)?;
         safe_dir(&self.images)?;
-        for name in ["system.img", "vendor.img"] {
-            let path = self.images.join(name);
-            safe_regular_file(&path)?;
+        for path in [
+            self.images.join("system.img"),
+            self.images.join("vendor.img"),
+            self.work.join("waydroid.prop"),
+        ] {
+            owner_controlled(&path)?;
+            if !path.metadata()?.is_file() {
+                return Err(format!("image is not a regular file: {}", path.display()).into());
+            }
         }
-        safe_regular_file(&self.work.join("waydroid.prop"))?;
         if self.overlays {
             safe_dir(&self.work.join("overlay"))?;
             safe_dir(&self.work.join("overlay/vendor"))?;
@@ -37,7 +51,73 @@ impl MountLayout {
         Ok(())
     }
 
-    fn prepare_directories(&self) -> Result<()> {
+    /// The mounts, in order, each with its target last.
+    ///
+    /// # Errors
+    /// As for [`preflight`](Self::preflight), or a path is unusable in mount options.
+    pub fn commands(&self) -> Result<Vec<Command>> {
+        self.preflight()?;
+        let root = self.rootfs();
+        let mut commands = Vec::new();
+        for (image, target, lower, overlay) in [
+            (
+                "system.img",
+                root.clone(),
+                self.work.join("overlay"),
+                "system",
+            ),
+            (
+                "vendor.img",
+                root.join("vendor"),
+                self.work.join("overlay/vendor"),
+                "vendor",
+            ),
+        ] {
+            let image = display(&self.images.join(image));
+            commands.push(Command::new([
+                "mount",
+                "-o",
+                "ro,loop",
+                &image,
+                &display(&target),
+            ]));
+            if self.overlays {
+                let upper = self.work.join("overlay_rw").join(overlay);
+                let work = self.work.join("overlay_work").join(overlay);
+                for path in [&lower, &upper, &work, &target] {
+                    validate_path_syntax(path)?;
+                }
+                let options = format!(
+                    "lowerdir={}:{},upperdir={},workdir={},xino=off",
+                    display(&lower),
+                    display(&target),
+                    display(&upper),
+                    display(&work)
+                );
+                let args = [
+                    "mount",
+                    "-t",
+                    "overlay",
+                    "-o",
+                    &options,
+                    "overlay",
+                    &display(&target),
+                ];
+                commands.push(Command::new(args));
+            }
+        }
+        let prop = display(&self.work.join("waydroid.prop"));
+        let target = display(&root.join("vendor/waydroid.prop"));
+        commands.push(Command::new(["mount", "--bind", &prop, &target]));
+        Ok(commands)
+    }
+
+    /// Mounts everything, unmounting what was mounted on failure.
+    ///
+    /// # Errors
+    /// The layout is unsafe, the rootfs already holds mounts or a mount fails.
+    pub fn mount(&self, runner: &mut impl Runner) -> Result<()> {
+        let commands = self.commands()?;
         for path in [
             self.rootfs(),
             self.rootfs().join("vendor"),
@@ -46,61 +126,20 @@ impl MountLayout {
             self.work.join("overlay_rw/vendor"),
             self.work.join("overlay_work/vendor"),
         ] {
-            if path.starts_with(&self.work) {
-                safe_create_dir(&path)?;
-            }
+            owner_controlled(&path)?;
+            fs::create_dir_all(&path)?;
+            safe_dir(&path)?;
         }
-        Ok(())
-    }
-
-    pub fn commands(&self) -> Result<Vec<CommandSpec>> {
-        self.preflight()?;
-        let root = self.rootfs();
-        let vendor = root.join("vendor");
-        let mut commands = vec![loop_mount(&self.images.join("system.img"), &root)];
-        if self.overlays {
-            commands.push(overlay_mount(
-                &[self.work.join("overlay"), root.clone()],
-                &self.work.join("overlay_rw/system"),
-                &self.work.join("overlay_work/system"),
-                &root,
-            )?);
-        }
-        commands.push(loop_mount(&self.images.join("vendor.img"), &vendor));
-        if self.overlays {
-            commands.push(overlay_mount(
-                &[self.work.join("overlay/vendor"), vendor.clone()],
-                &self.work.join("overlay_rw/vendor"),
-                &self.work.join("overlay_work/vendor"),
-                &vendor,
-            )?);
-        }
-        commands.push(CommandSpec::new(
-            "mount",
-            [
-                "--bind".into(),
-                self.work.join("waydroid.prop").display().to_string(),
-                vendor.join("waydroid.prop").display().to_string(),
-            ],
-        ));
-        Ok(commands)
-    }
-
-    pub fn mount(&self, runner: &mut impl Runner) -> Result<()> {
-        let commands = self.commands()?;
-        self.prepare_directories()?;
-        let root = self.rootfs();
-        if !mountpoints_beneath(&root, &fs::read_to_string("/proc/self/mountinfo")?).is_empty() {
-            return Err(Error::Invalid("rootfs already contains mounts".into()));
+        let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+        if !mountpoints_beneath(&self.rootfs(), &mountinfo).is_empty() {
+            return Err("rootfs already contains mounts".into());
         }
         let mut completed = Vec::new();
         for command in commands {
-            let Some(target) = command.args.last().cloned() else {
-                return Err(Error::Invalid("mount target missing".into()));
-            };
+            let target = command.args.last().cloned().ok_or("mount target missing")?;
             if let Err(error) = runner.run(command) {
                 for target in completed.into_iter().rev() {
-                    let _ = runner.run(CommandSpec::new("umount", [target]));
+                    let _ = runner.run(Command::new(["umount".into(), target]));
                 }
                 return Err(error);
             }
@@ -109,78 +148,28 @@ impl MountLayout {
         Ok(())
     }
 
+    /// # Errors
+    /// The work directory is unsafe or an unmount fails.
     pub fn unmount(&self, runner: &mut impl Runner) -> Result<()> {
         safe_dir(&self.work)?;
-        let root = self.rootfs();
-        for mountpoint in mountpoints_beneath(&root, &fs::read_to_string("/proc/self/mountinfo")?) {
-            runner.run(CommandSpec::new(
-                "umount",
-                [mountpoint.display().to_string()],
-            ))?;
+        let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+        for mountpoint in mountpoints_beneath(&self.rootfs(), &mountinfo) {
+            runner.run(Command::new(["umount".into(), display(&mountpoint)]))?;
         }
         Ok(())
     }
 }
 
-fn loop_mount(image: &Path, target: &Path) -> CommandSpec {
-    CommandSpec::new(
-        "mount",
-        [
-            "-o".into(),
-            "ro,loop".into(),
-            image.display().to_string(),
-            target.display().to_string(),
-        ],
-    )
-}
-
-fn overlay_mount(
-    lower: &[PathBuf],
-    upper: &Path,
-    work: &Path,
-    target: &Path,
-) -> Result<CommandSpec> {
-    for path in lower
-        .iter()
-        .map(PathBuf::as_path)
-        .chain([upper, work, target])
-    {
-        validate_path_syntax(path)?;
-    }
-    let options = format!(
-        "lowerdir={},upperdir={},workdir={},xino=off",
-        lower
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(":"),
-        upper.display(),
-        work.display()
-    );
-    Ok(CommandSpec::new(
-        "mount",
-        [
-            "-t".into(),
-            "overlay".into(),
-            "-o".into(),
-            options,
-            "overlay".into(),
-            target.display().to_string(),
-        ],
-    ))
-}
-
 fn validate_path_syntax(path: &Path) -> Result<()> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
-    {
-        return Err(Error::Invalid(format!("unsafe path: {}", path.display())));
+    let plain = path
+        .components()
+        .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+    if !path.is_absolute() || !plain {
+        return Err(format!("unsafe path: {}", path.display()).into());
     }
     let value = path.to_string_lossy();
     if value.contains([':', ',', '\n', '\r', '\0', '\\']) {
-        return Err(Error::Invalid(format!("unsafe mount option path: {value}")));
+        return Err(format!("unsafe mount option path: {value}").into());
     }
     Ok(())
 }
@@ -199,20 +188,17 @@ pub(crate) fn owner_controlled(path: &Path) -> Result<()> {
     let mut components = path.components().skip(1).peekable();
     loop {
         let metadata = match current.symlink_metadata() {
-            Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.into()),
+            metadata => metadata?,
         };
         let shared = metadata.mode() & 0o022 != 0;
         let sticky_dir = metadata.is_dir() && metadata.mode() & 0o1000 != 0;
-        if metadata.file_type().is_symlink()
+        if metadata.is_symlink()
             || !owners.contains(&metadata.uid())
             || (shared && !(sticky_dir && components.peek().is_some()))
         {
-            return Err(Error::Invalid(format!(
-                "mount path is not controlled by root: {}",
-                current.display()
-            )));
+            let current = current.display();
+            return Err(format!("mount path is not controlled by root: {current}").into());
         }
         let Some(part) = components.next() else {
             return Ok(());
@@ -224,73 +210,44 @@ pub(crate) fn owner_controlled(path: &Path) -> Result<()> {
 fn safe_dir(path: &Path) -> Result<()> {
     owner_controlled(path)?;
     if !path.is_dir() {
-        return Err(Error::Invalid(format!(
-            "directory missing: {}",
-            path.display()
-        )));
+        return Err(format!("directory missing: {}", path.display()).into());
     }
     Ok(())
 }
 
-fn safe_regular_file(path: &Path) -> Result<()> {
-    owner_controlled(path)?;
-    let metadata = path.metadata()?;
-    if !metadata.is_file() {
-        return Err(Error::Invalid(format!(
-            "image is not a regular file: {}",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn safe_create_dir(path: &Path) -> Result<()> {
-    owner_controlled(path)?;
-    fs::create_dir_all(path)?;
-    safe_dir(path)
-}
-
+/// The mount points at or below `root`, deepest and newest first.
+#[must_use]
 pub fn mountpoints_beneath(root: &Path, mountinfo: &str) -> Vec<PathBuf> {
-    let mut entries: Vec<(u64, PathBuf)> = mountinfo
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            let id = fields.first()?.parse().ok()?;
-            let mountpoint = PathBuf::from(fields.get(4)?.replace("\\040", " "));
-            (mountpoint == root || mountpoint.starts_with(root)).then_some((id, mountpoint))
-        })
-        .collect();
-    entries.sort_by(|(id_a, path_a), (id_b, path_b)| {
-        path_b
-            .components()
-            .count()
-            .cmp(&path_a.components().count())
-            .then(id_b.cmp(id_a))
-    });
-    entries.into_iter().map(|(_, path)| path).collect()
+    let mut entries = Vec::new();
+    for line in mountinfo.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (Some(id), Some(point)) = (fields.first(), fields.get(4)) else {
+            continue;
+        };
+        let point = PathBuf::from(point.replace("\\040", " "));
+        if let Ok(id) = id.parse::<u64>()
+            && point.starts_with(root)
+        {
+            entries.push((point.components().count(), id, point));
+        }
+    }
+    entries.sort_by(|a, b| b.cmp(a));
+    entries.into_iter().map(|(_, _, path)| path).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn rejects_overlay_metacharacters_and_symlinks() -> Result<()> {
         assert!(validate_path_syntax(Path::new("/var/lib/foo:bar")).is_err());
         assert!(validate_path_syntax(Path::new("/var/lib/foo,bar")).is_err());
         assert!(validate_path_syntax(Path::new("/var/../lib/waydroid")).is_err());
-        let id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::Invalid(e.to_string()))?
-            .as_nanos();
-        let base = std::env::temp_dir().join(format!("deckard-container-{id}"));
-        fs::create_dir(&base)?;
-        let link = base.join("link");
+        let base = tempfile::tempdir()?;
+        let link = base.path().join("link");
         std::os::unix::fs::symlink("/tmp", &link)?;
         assert!(owner_controlled(&link.join("image.img")).is_err());
-        fs::remove_file(link)?;
-        fs::remove_dir(base)?;
         Ok(())
     }
 
@@ -298,73 +255,8 @@ mod tests {
     fn nested_and_stacked_mounts_unmount_in_safe_order() {
         let table = "1 0 0:1 / /var/lib/deckard/rootfs rw - ext4 x y\n2 1 0:2 / /var/lib/deckard/rootfs rw - overlay x y\n3 2 0:3 / /var/lib/deckard/rootfs/vendor rw - ext4 x y\n4 3 0:4 / /var/lib/deckard/rootfs/vendor rw - overlay x y\n5 0 0:5 / /var/lib/deckard/rootfs-extra rw - ext4 x y";
         let mounts = mountpoints_beneath(Path::new("/var/lib/deckard/rootfs"), table);
-        assert_eq!(
-            mounts,
-            [
-                PathBuf::from("/var/lib/deckard/rootfs/vendor"),
-                PathBuf::from("/var/lib/deckard/rootfs/vendor"),
-                PathBuf::from("/var/lib/deckard/rootfs"),
-                PathBuf::from("/var/lib/deckard/rootfs"),
-            ]
-        );
-    }
-
-    #[test]
-    fn system_vendor_mounts_are_read_only() {
-        let command = loop_mount(Path::new("/images/system.img"), Path::new("/rootfs"));
-        assert_eq!(command.args[1], "ro,loop");
-        assert_eq!(command.program, "mount");
-    }
-
-    #[test]
-    fn image_and_overlay_mount_order_matches_installed_runtime() -> Result<()> {
-        let id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::Invalid(e.to_string()))?
-            .as_nanos();
-        let base = std::env::temp_dir().join(format!("deckard-mount-plan-{id}"));
-        let work = base.join("work");
-        let images = base.join("images");
-        fs::create_dir_all(work.join("overlay/vendor"))?;
-        fs::create_dir(&images)?;
-        fs::write(images.join("system.img"), b"system")?;
-        fs::write(images.join("vendor.img"), b"vendor")?;
-        fs::write(work.join("waydroid.prop"), b"ro.adb.secure=1\n")?;
-        let layout = MountLayout {
-            work,
-            images,
-            overlays: true,
-        };
-        let commands = layout.commands()?;
-        assert_eq!(commands.len(), 5);
-        assert!(
-            commands[0]
-                .args
-                .iter()
-                .any(|arg| arg.ends_with("system.img"))
-        );
-        assert!(
-            commands[1]
-                .args
-                .iter()
-                .any(|arg| arg.starts_with("lowerdir="))
-        );
-        assert!(
-            commands[2]
-                .args
-                .iter()
-                .any(|arg| arg.ends_with("vendor.img"))
-        );
-        assert!(
-            commands[3]
-                .args
-                .iter()
-                .any(|arg| arg.contains("overlay/vendor"))
-        );
-        assert_eq!(commands[4].program, "mount");
-        assert_eq!(commands[4].args[0], "--bind");
-        assert!(commands[4].args[2].ends_with("rootfs/vendor/waydroid.prop"));
-        fs::remove_dir_all(base)?;
-        Ok(())
+        let vendor = PathBuf::from("/var/lib/deckard/rootfs/vendor");
+        let root = PathBuf::from("/var/lib/deckard/rootfs");
+        assert_eq!(mounts, [vendor.clone(), vendor, root.clone(), root]);
     }
 }

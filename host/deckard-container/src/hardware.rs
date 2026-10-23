@@ -16,7 +16,7 @@ use std::sync::mpsc::SyncSender;
 use deckard_launch::binder::{self, BinderConfig, Reply, Service};
 use rsbinder::{Parcel, StatusCode};
 
-use crate::{Error, Result};
+use crate::Result;
 
 /// Requests waiting for the daemon; Android gets `WOULD_BLOCK` beyond this.
 pub const QUEUE_DEPTH: usize = 16;
@@ -46,7 +46,7 @@ enum Admission {
 
 /// `(system_zip, system_time, vendor_zip, vendor_time)`; the times are int32
 /// for `upgrade` and int64 for `upgrade2`.
-fn read_upgrade(parcel: &mut Parcel, code: u32) -> deckard_launch::Result<()> {
+fn read_upgrade(parcel: &mut Parcel, code: u32) -> Result<()> {
     for _ in 0..2 {
         binder::string(parcel)?;
         if code == UPGRADE2 {
@@ -111,7 +111,6 @@ pub fn run(
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     binder::serve(config, Hardware(requests), stop)
-        .map_err(|error| Error::Invalid(error.to_string()))
 }
 
 #[cfg(test)]

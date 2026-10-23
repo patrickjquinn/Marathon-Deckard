@@ -1,18 +1,6 @@
-//! Uninstalled system-bus adapter for the installed ContainerManager contract.
+//! The system-bus `id.waydro.ContainerManager` contract (upstream
+//! `tools/services/container_manager.py`) and its `/Initializer`.
 
-use crate::command::ProcessRunner;
-use crate::config;
-use crate::drivers::{self, DriverNodes};
-use crate::hardware::{self, HardwareRequest};
-use crate::initializer_dbus::{InitializerService, OBJECT_PATH as INITIALIZER_PATH};
-use crate::lxc::{State, validate_property_key, validate_property_value};
-use crate::manager::ContainerManager;
-use crate::properties;
-use crate::session_config::{self, Stage};
-use crate::{Error, Result};
-use deckard_launch::binder::BinderConfig;
-use rustix::fd::OwnedFd;
-use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
@@ -23,25 +11,88 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use deckard_host_tools::cfg;
+use deckard_launch::binder::BinderConfig;
+use rustix::fd::OwnedFd;
+use rustix::process::{Pid, PidfdFlags, Signal};
 use zbus::connection::{Builder, Connection};
 use zbus::fdo::{self, DBusProxy};
 use zbus::message::Header;
+use zbus::names::BusName;
+
+use crate::command::ProcessRunner;
+use crate::drivers::{self, DriverNodes};
+use crate::hardware::{self, HardwareRequest};
+use crate::initializer_dbus::{self, InitializerService};
+use crate::lxc::{self, State};
+use crate::manager::ContainerManager;
+use crate::session_config::{self, Stage};
+use crate::{Result, config, ensure, properties};
 
 pub const BUS_NAME: &str = "id.waydro.Container";
 pub const OBJECT_PATH: &str = "/ContainerManager";
 
+/// A process on the bus: a D-Bus caller or the session's owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Caller {
     pub uid: u32,
     pub pid: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SessionIdentity {
-    uid: u32,
-    pid: u32,
+impl Caller {
+    /// The sender's credentials, from the bus daemon.
+    ///
+    /// # Errors
+    /// The sender is missing or the bus cannot name its credentials.
+    pub async fn of(conn: &Connection, header: &Header<'_>) -> fdo::Result<Self> {
+        fn denied(error: impl std::fmt::Display) -> fdo::Error {
+            fdo::Error::AccessDenied(error.to_string())
+        }
+        let sender = header
+            .sender()
+            .ok_or_else(|| denied("missing D-Bus sender"))?;
+        let name = BusName::try_from(sender.as_str()).map_err(denied)?;
+        let proxy = DBusProxy::new(conn).await.map_err(denied)?;
+        let uid = proxy
+            .get_connection_unix_user(name.clone())
+            .await
+            .map_err(denied)?;
+        let pid = proxy
+            .get_connection_unix_process_id(name)
+            .await
+            .map_err(denied)?;
+        Ok(Self { uid, pid })
+    }
+
+    /// Root, or this very session owner.
+    fn controls(self, owner: Self) -> bool {
+        self.uid == 0 || self == owner
+    }
 }
 
+/// The session owner named by `Start`'s `user_id` and `pid`.
+fn session_owner(fields: &HashMap<String, String>) -> fdo::Result<Caller> {
+    let decimal = |key: &str| -> fdo::Result<u32> {
+        let value = fields
+            .get(key)
+            .ok_or_else(|| fdo::Error::InvalidArgs(format!("missing {key}")))?;
+        value
+            .parse()
+            .map_err(|_| fdo::Error::InvalidArgs(format!("invalid {key}")))
+    };
+    let owner = Caller {
+        uid: decimal("user_id")?,
+        pid: decimal("pid")?,
+    };
+    if owner.pid <= 1 || owner.pid > i32::MAX as u32 {
+        return Err(fdo::Error::InvalidArgs("invalid session pid".into()));
+    }
+    Ok(owner)
+}
+
+/// Which same-user process, besides the owner, may read the session and
+/// thaw it: the root-owned launcher, running in the user's manager.
 #[derive(Clone)]
 struct LauncherPolicy {
     executable: PathBuf,
@@ -60,130 +111,92 @@ impl LauncherPolicy {
         }
     }
 
-    fn permits(&self, caller: Caller, session: SessionIdentity) -> bool {
-        if caller.uid != session.uid || caller.pid == session.pid {
+    /// Owned by the executable's owner and not writable by others.
+    fn guarded(&self, metadata: &fs::Metadata) -> bool {
+        metadata.uid() == self.executable_owner && metadata.mode() & 0o022 == 0
+    }
+
+    fn in_user_manager(&self, pid: u32, owner: Caller) -> bool {
+        let root = format!("/user.slice/user-{0}.slice/user@{0}.service/", owner.uid);
+        let mut cgroup = String::new();
+        let path = self.proc_root.join(pid.to_string()).join("cgroup");
+        let read =
+            File::open(path).and_then(|file| file.take(16 * 1024 + 1).read_to_string(&mut cgroup));
+        read.is_ok()
+            && cgroup.len() <= 16 * 1024
+            && cgroup.lines().any(|line| {
+                line.strip_prefix("0::")
+                    .is_some_and(|path| path.starts_with(&root))
+            })
+    }
+
+    fn permits(&self, caller: Caller, owner: Caller) -> bool {
+        if caller.uid != owner.uid || caller.pid == owner.pid {
             return false;
         }
-        let Ok(executable) = fs::metadata(&self.executable) else {
+        let plain = !self
+            .executable
+            .components()
+            .any(|part| part == Component::ParentDir);
+        let (Ok(executable), Ok(entry)) = (
+            fs::metadata(&self.executable),
+            fs::symlink_metadata(&self.executable),
+        ) else {
             return false;
         };
-        let Ok(executable_entry) = fs::symlink_metadata(&self.executable) else {
-            return false;
-        };
-        if executable_entry.file_type().is_symlink()
-            || !self.executable.starts_with(&self.trust_root)
-            || self
-                .executable
-                .components()
-                .any(|component| component == Component::ParentDir)
-        {
+        if entry.is_symlink() || !self.executable.starts_with(&self.trust_root) || !plain {
             return false;
         }
         let mut directory = self.executable.parent();
-        let mut trusted_directories = false;
-        while let Some(path) = directory {
+        loop {
+            let Some(path) = directory else {
+                return false;
+            };
             let Ok(metadata) = fs::symlink_metadata(path) else {
                 return false;
             };
-            if !metadata.is_dir()
-                || metadata.file_type().is_symlink()
-                || metadata.uid() != self.executable_owner
-                || metadata.mode() & 0o022 != 0
-            {
+            if !metadata.is_dir() || !self.guarded(&metadata) {
                 return false;
             }
             if path == self.trust_root {
-                trusted_directories = true;
                 break;
             }
             directory = path.parent();
         }
-        if !trusted_directories
-            || !executable.is_file()
-            || executable.uid() != self.executable_owner
-            || executable.mode() & 0o022 != 0
-            || executable.mode() & 0o111 == 0
-        {
+        if !executable.is_file() || !self.guarded(&executable) || executable.mode() & 0o111 == 0 {
             return false;
         }
         let process = self.proc_root.join(caller.pid.to_string());
         if !fs::metadata(&process).is_ok_and(|metadata| metadata.uid() == caller.uid) {
             return false;
         }
-        let Ok(running_executable) = fs::metadata(process.join("exe")) else {
+        let Ok(running) = fs::metadata(process.join("exe")) else {
             return false;
         };
-        if executable.dev() != running_executable.dev()
-            || executable.ino() != running_executable.ino()
-        {
-            return false;
-        }
-        let root = format!(
-            "/user.slice/user-{}.slice/user@{}.service/",
-            session.uid, session.uid
-        );
-        let in_user_manager = |pid: u32| -> bool {
-            let path = self.proc_root.join(pid.to_string()).join("cgroup");
-            let Ok(mut file) = File::open(path) else {
-                return false;
-            };
-            let mut cgroup = String::new();
-            if file
-                .by_ref()
-                .take(16 * 1024 + 1)
-                .read_to_string(&mut cgroup)
-                .is_err()
-                || cgroup.len() > 16 * 1024
-            {
-                return false;
-            }
-            cgroup.lines().any(|line| {
-                line.strip_prefix("0::")
-                    .is_some_and(|path| path.starts_with(&root))
-            })
-        };
-        in_user_manager(session.pid) && in_user_manager(caller.pid)
-    }
-}
-
-impl SessionIdentity {
-    fn parse(fields: &HashMap<String, String>) -> fdo::Result<Self> {
-        fn decimal(fields: &HashMap<String, String>, key: &str) -> fdo::Result<u32> {
-            fields
-                .get(key)
-                .ok_or_else(|| fdo::Error::InvalidArgs(format!("missing {key}")))?
-                .parse()
-                .map_err(|_| fdo::Error::InvalidArgs(format!("invalid {key}")))
-        }
-        let identity = Self {
-            uid: decimal(fields, "user_id")?,
-            pid: decimal(fields, "pid")?,
-        };
-        if identity.pid <= 1 || identity.pid > i32::MAX as u32 {
-            return Err(fdo::Error::InvalidArgs("invalid session pid".into()));
-        }
-        Ok(identity)
-    }
-
-    fn authorize_start(self, caller: Caller) -> fdo::Result<()> {
-        if caller.uid == 0 || (caller.uid == self.uid && caller.pid == self.pid) {
-            Ok(())
-        } else {
-            Err(fdo::Error::AccessDenied(
-                "session UID/PID does not match D-Bus caller".into(),
-            ))
-        }
-    }
-
-    fn authorize_control(self, caller: Caller) -> fdo::Result<()> {
-        self.authorize_start(caller)
+        (executable.dev(), executable.ino()) == (running.dev(), running.ino())
+            && self.in_user_manager(owner.pid, owner)
+            && self.in_user_manager(caller.pid, owner)
     }
 }
 
 struct Session {
     fields: HashMap<String, String>,
-    identity: SessionIdentity,
+    owner: Caller,
     pidfd: OwnedFd,
+}
+
+impl Session {
+    /// Tells the session process to exit. A pidfd cannot signal an
+    /// unrelated process after PID reuse.
+    fn quit(self) {
+        let _ = rustix::process::pidfd_send_signal(&self.pidfd, Signal::USR1);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HardwareOutcome {
+    Active,
+    Stopped,
 }
 
 trait Backend: Send {
@@ -195,18 +208,12 @@ trait Backend: Send {
     fn get_property(&mut self, key: &str) -> Result<String>;
     fn set_property(&mut self, key: &str, value: &str) -> Result<()>;
     fn hardware(&mut self, _request: HardwareRequest) -> Result<HardwareOutcome> {
-        Err(Error::Invalid("hardware service unavailable".into()))
+        Err("hardware service unavailable".into())
     }
     /// Whether the LXC instance exists, so that its status can be asked.
     fn initialized(&mut self) -> bool {
         true
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HardwareOutcome {
-    Active,
-    Stopped,
 }
 
 /// Which instance the daemon runs.
@@ -234,34 +241,29 @@ impl DirectBackend {
 
     /// Reads `waydroid.cfg` and prepares the Binder and device nodes.
     fn prepare_production(&mut self) -> Result<()> {
-        let instance = self.manager.lxc.root.join(&self.manager.lxc.name);
-        if !instance.join("config").is_file()
-            || !self
-                .manager
-                .mounts
-                .work
-                .join("waydroid_base.prop")
-                .is_file()
-        {
-            return Err(Error::Invalid("Waydroid is not initialized".into()));
-        }
+        let base = self.manager.mounts.work.join("waydroid_base.prop");
+        let initialized = self.initialized_instance() && base.is_file();
+        ensure(initialized, "Waydroid is not initialized")?;
         let text = config::read(&self.config_path())?;
         let images =
-            PathBuf::from(config::get(&text, "images_path").unwrap_or("/var/lib/waydroid/images"));
-        if !images.is_absolute() {
-            return Err(Error::Invalid("images_path must be absolute".into()));
-        }
+            PathBuf::from(cfg::get(&text, "images_path").unwrap_or("/var/lib/waydroid/images"));
+        ensure(images.is_absolute(), "images_path must be absolute")?;
         self.manager.mounts.images = images;
         self.manager.mounts.overlays = match config::get_or_default(&text, "mount_overlays") {
             Some("True") => true,
             Some("False") => false,
-            _ => return Err(Error::Invalid("invalid mount_overlays".into())),
+            _ => return Err("invalid mount_overlays".into()),
         };
         self.suspend_stops = config::get_or_default(&text, "suspend_action") == Some("stop");
         let dev = Path::new("/dev");
         drivers::ensure_binder_nodes(&mut ProcessRunner)?;
         DriverNodes::from_config(&self.config_path())?.prepare(dev)?;
         drivers::open_device_access(dev, Path::new("/sys/kernel/debug/sync/sw_sync"))
+    }
+
+    fn initialized_instance(&self) -> bool {
+        let lxc = &self.manager.lxc;
+        lxc.root.join(&lxc.name).join("config").is_file()
     }
 
     fn start_hardware(&mut self) {
@@ -277,7 +279,7 @@ impl DirectBackend {
             }
         };
         let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = stop.clone();
+        let worker_stop = Arc::clone(&stop);
         let sender = self.hardware_sender.clone();
         thread::spawn(move || {
             if let Err(error) = hardware::run(&config, sender, worker_stop) {
@@ -290,27 +292,21 @@ impl DirectBackend {
 
 impl Backend for DirectBackend {
     fn initialized(&mut self) -> bool {
-        let instance = self.manager.lxc.root.join(&self.manager.lxc.name);
-        instance.join("config").is_file()
+        self.initialized_instance()
     }
 
     fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
-        if self.manager.lxc.status(&mut ProcessRunner)? != State::Stopped {
-            return Err(Error::Invalid(
-                "container must be stopped before updating session files".into(),
-            ));
-        }
+        let stopped = self.manager.lxc.status(&mut ProcessRunner)? == State::Stopped;
+        ensure(
+            stopped,
+            "container must be stopped before updating session files",
+        )?;
         if self.mode == Mode::Production {
             self.prepare_production()?;
         }
         let stage = Stage::new(&self.manager.network.runtime);
-        session_config::write(
-            &self.manager.lxc.root.join(&self.manager.lxc.name),
-            fields,
-            uid,
-            Path::new("/run/user"),
-            &stage,
-        )?;
+        let instance = self.manager.lxc.root.join(&self.manager.lxc.name);
+        session_config::write(&instance, fields, uid, Path::new("/run/user"), &stage)?;
         let started = properties::write(&self.manager.mounts.work, fields, uid)
             .and_then(|()| self.manager.start(&mut ProcessRunner));
         if let Err(error) = started {
@@ -356,6 +352,7 @@ impl Backend for DirectBackend {
     }
 
     fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
+        let lxc = &self.manager.lxc;
         match request {
             HardwareRequest::Suspend if self.suspend_stops => {
                 self.stop()?;
@@ -366,18 +363,14 @@ impl Backend for DirectBackend {
                 Ok(HardwareOutcome::Active)
             }
             HardwareRequest::Reboot => {
-                self.manager.lxc.stop(&mut ProcessRunner)?;
-                self.manager.lxc.start(&mut ProcessRunner)?;
+                lxc.stop(&mut ProcessRunner)?;
+                lxc.start(&mut ProcessRunner)?;
                 Ok(HardwareOutcome::Active)
             }
             HardwareRequest::ShutdownRequest(reason) => {
-                self.manager.lxc.wait_for(
-                    &mut ProcessRunner,
-                    State::Stopped,
-                    Duration::from_secs(30),
-                )?;
+                lxc.wait_for(&mut ProcessRunner, State::Stopped, Duration::from_secs(30))?;
                 if reason.starts_with('1') {
-                    self.manager.lxc.start(&mut ProcessRunner)?;
+                    lxc.start(&mut ProcessRunner)?;
                     return Ok(HardwareOutcome::Active);
                 }
                 self.stop()?;
@@ -392,53 +385,107 @@ struct ServiceState {
     session: Option<Session>,
 }
 
+impl ServiceState {
+    /// Root or the session owner.
+    fn authorize_control(&self, caller: Caller) -> fdo::Result<()> {
+        let owner = self.session.as_ref().map(|session| session.owner);
+        if caller.uid == 0 || owner.is_some_and(|owner| caller.controls(owner)) {
+            return Ok(());
+        }
+        let reason = if owner.is_some() {
+            "session UID/PID does not match D-Bus caller"
+        } else {
+            "no session owner"
+        };
+        Err(fdo::Error::AccessDenied(reason.into()))
+    }
+
+    /// Root, the session owner or the trusted launcher.
+    fn authorize_read(&self, caller: Caller, launcher: &LauncherPolicy) -> fdo::Result<()> {
+        let owner = self.session.as_ref().map(|session| session.owner);
+        let launcher_ok = owner.is_some_and(|owner| launcher.permits(caller, owner));
+        if self.authorize_control(caller).is_ok() || launcher_ok {
+            return Ok(());
+        }
+        if owner.is_none() {
+            return Err(fdo::Error::AccessDenied("no session owner".into()));
+        }
+        let reason = "caller is neither session owner nor trusted session launcher";
+        Err(fdo::Error::AccessDenied(reason.into()))
+    }
+}
+
+fn failed(error: Box<dyn std::error::Error + Send + Sync>) -> fdo::Error {
+    fdo::Error::Failed(error.to_string())
+}
+
+fn poisoned<T>(_: T) -> fdo::Error {
+    fdo::Error::Failed("state lock poisoned".into())
+}
+
+fn authorize_root(caller: Caller) -> fdo::Result<()> {
+    if caller.uid != 0 {
+        return Err(fdo::Error::AccessDenied(
+            "property access requires root".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct ContainerService {
     state: Arc<Mutex<ServiceState>>,
-    launcher_policy: LauncherPolicy,
+    launcher: LauncherPolicy,
 }
 
 impl ContainerService {
+    #[must_use]
     pub fn new(
         manager: ContainerManager,
         mode: Mode,
         hardware_sender: SyncSender<HardwareRequest>,
     ) -> Self {
-        Self::with_backend(Box::new(DirectBackend {
+        let backend = DirectBackend {
             manager,
             mode,
             hardware_sender,
             hardware_stop: None,
             suspend_stops: false,
-        }))
+        };
+        Self::with_backend(Box::new(backend), LauncherPolicy::production())
     }
 
-    fn with_backend(backend: Box<dyn Backend>) -> Self {
-        Self::with_backend_and_policy(backend, LauncherPolicy::production())
-    }
-
-    fn with_backend_and_policy(backend: Box<dyn Backend>, launcher_policy: LauncherPolicy) -> Self {
+    fn with_backend(backend: Box<dyn Backend>, launcher: LauncherPolicy) -> Self {
+        let state = ServiceState {
+            backend,
+            session: None,
+        };
         Self {
-            state: Arc::new(Mutex::new(ServiceState {
-                backend,
-                session: None,
-            })),
-            launcher_policy,
+            state: Arc::new(Mutex::new(state)),
+            launcher,
         }
     }
 
+    /// Runs `work` on the state off the bus's executor.
+    async fn locked<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut ServiceState) -> fdo::Result<T> + Send + 'static,
+    ) -> fdo::Result<T> {
+        let state = Arc::clone(&self.state);
+        blocking::unblock(move || work(&mut *state.lock().map_err(poisoned)?)).await
+    }
+
+    /// Stops a tracked session's container and tells its process to exit.
+    ///
+    /// # Errors
+    /// The container cannot be stopped.
     pub async fn shutdown(&self) -> fdo::Result<()> {
-        let state = self.state.clone();
-        blocking::unblock(move || {
-            let mut state = state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
-            if state.session.is_none() {
-                return Ok(());
+        self.locked(|state| {
+            if state.session.is_some() {
+                state.backend.stop().map_err(failed)?;
             }
-            state.backend.stop().map_err(service_error)?;
             if let Some(session) = state.session.take() {
-                let _ = pidfd_send_signal(&session.pidfd, Signal::USR1);
+                session.quit();
             }
             Ok(())
         })
@@ -454,51 +501,46 @@ impl ContainerService {
     /// The container is running untracked, stopping or restarting fails, or
     /// `work` fails.
     pub fn with_stopped<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Invalid("state lock poisoned".into()))?;
+        let mut state = self.state.lock().map_err(|_| "state lock poisoned")?;
         let resume = state
             .session
             .as_ref()
-            .map(|session| (session.fields.clone(), session.identity.uid));
+            .map(|session| (session.fields.clone(), session.owner.uid));
         if resume.is_some() {
             state.backend.stop()?;
         } else if state.backend.initialized() && state.backend.status()? != State::Stopped {
-            return Err(Error::Invalid(
-                "the container is running without a session; stop it first".into(),
-            ));
+            return Err("the container is running without a session; stop it first".into());
         }
         let result = work();
         if let Some((fields, uid)) = resume
             && let Err(error) = state.backend.start(&fields, uid)
         {
             if let Some(session) = state.session.take() {
-                let _ = pidfd_send_signal(&session.pidfd, Signal::USR1);
+                session.quit();
             }
             return Err(match result {
                 Ok(_) => error,
-                Err(failure) => Error::Invalid(format!(
-                    "{failure}; restarting the session also failed: {error}"
-                )),
+                Err(failure) => {
+                    format!("{failure}; restarting the session also failed: {error}").into()
+                }
             });
         }
         result
     }
 
+    /// Acts on one admitted `waydroidhardware` request.
+    ///
+    /// # Errors
+    /// No session is tracked or the request fails.
     pub async fn handle_hardware_request(&self, request: HardwareRequest) -> fdo::Result<()> {
-        let state = self.state.clone();
-        blocking::unblock(move || {
-            let mut state = state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
+        self.locked(move |state| {
             if state.session.is_none() {
                 return Err(fdo::Error::Failed("no active container session".into()));
             }
-            if state.backend.hardware(request).map_err(service_error)? == HardwareOutcome::Stopped
+            if state.backend.hardware(request).map_err(failed)? == HardwareOutcome::Stopped
                 && let Some(session) = state.session.take()
             {
-                let _ = pidfd_send_signal(&session.pidfd, Signal::USR1);
+                session.quit();
             }
             Ok(())
         })
@@ -510,28 +552,25 @@ impl ContainerService {
         fields: HashMap<String, String>,
         caller: Caller,
     ) -> fdo::Result<()> {
-        let identity = SessionIdentity::parse(&fields)?;
-        identity.authorize_start(caller)?;
-        let pid = Pid::from_raw(identity.pid as i32)
+        let owner = session_owner(&fields)?;
+        if !caller.controls(owner) {
+            return Err(fdo::Error::AccessDenied(
+                "session UID/PID does not match D-Bus caller".into(),
+            ));
+        }
+        let pid = Pid::from_raw(owner.pid as i32)
             .ok_or_else(|| fdo::Error::InvalidArgs("invalid session pid".into()))?;
-        let pidfd = pidfd_open(pid, PidfdFlags::empty()).map_err(|error| {
+        let pidfd = rustix::process::pidfd_open(pid, PidfdFlags::empty()).map_err(|error| {
             fdo::Error::InvalidArgs(format!("session process unavailable: {error}"))
         })?;
-        let state = self.state.clone();
-        blocking::unblock(move || {
-            let mut state = state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
+        self.locked(move |state| {
             if state.session.is_some() {
                 return Err(fdo::Error::Failed("already tracking a session".into()));
             }
-            state
-                .backend
-                .start(&fields, identity.uid)
-                .map_err(service_error)?;
+            state.backend.start(&fields, owner.uid).map_err(failed)?;
             state.session = Some(Session {
                 fields,
-                identity,
+                owner,
                 pidfd,
             });
             Ok(())
@@ -540,59 +579,28 @@ impl ContainerService {
     }
 
     async fn stop_authorized(&self, quit_session: bool, caller: Caller) -> fdo::Result<()> {
-        let state = self.state.clone();
-        blocking::unblock(move || {
-            let mut state = state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
-            authorize_control(state.session.as_ref(), caller)?;
-            state.backend.stop().map_err(service_error)?;
+        self.locked(move |state| {
+            state.authorize_control(caller)?;
+            state.backend.stop().map_err(failed)?;
             if let Some(session) = state.session.take()
                 && quit_session
             {
-                // A pidfd cannot signal an unrelated process after PID reuse.
-                let _ = pidfd_send_signal(&session.pidfd, Signal::USR1);
+                session.quit();
             }
             Ok(())
         })
         .await
     }
 
-    async fn change_freeze(&self, freeze: bool, caller: Caller) -> fdo::Result<()> {
-        let state = self.state.clone();
-        let launcher_policy = self.launcher_policy.clone();
-        blocking::unblock(move || {
-            let mut state = state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
-            if freeze {
-                authorize_control(state.session.as_ref(), caller)?;
-            } else {
-                authorize_session_read(state.session.as_ref(), caller, &launcher_policy)?;
-            }
-            if freeze {
-                state.backend.freeze()
-            } else {
-                state.backend.unfreeze()
-            }
-            .map_err(service_error)
-        })
-        .await
-    }
-
     async fn get_session_authorized(&self, caller: Caller) -> fdo::Result<HashMap<String, String>> {
-        let state = self.state.clone();
-        let launcher_policy = self.launcher_policy.clone();
-        blocking::unblock(move || {
-            let mut state = state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
+        let launcher = self.launcher.clone();
+        self.locked(move |state| {
             let Some(session) = state.session.as_ref() else {
                 return Ok(HashMap::new());
             };
-            authorize_session_read(Some(session), caller, &launcher_policy)?;
+            state.authorize_read(caller, &launcher)?;
             let mut fields = session.fields.clone();
-            let status = state.backend.status().map_err(service_error)?;
+            let status = state.backend.status().map_err(failed)?;
             fields.insert("state".into(), format!("{status:?}").to_uppercase());
             Ok(fields)
         })
@@ -601,15 +609,10 @@ impl ContainerService {
 
     async fn get_property_authorized(&self, key: String, caller: Caller) -> fdo::Result<String> {
         authorize_root(caller)?;
-        validate_property_key(&key).map_err(invalid_argument)?;
-        let state = self.state.clone();
-        blocking::unblock(move || {
-            let mut state = state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
-            state.backend.get_property(&key).map_err(service_error)
-        })
-        .await
+        lxc::validate_property_key(&key)
+            .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        self.locked(move |state| state.backend.get_property(&key).map_err(failed))
+            .await
     }
 
     async fn set_property_authorized(
@@ -619,68 +622,14 @@ impl ContainerService {
         caller: Caller,
     ) -> fdo::Result<()> {
         authorize_root(caller)?;
-        validate_property_key(&key).map_err(invalid_argument)?;
-        validate_property_value(&value).map_err(invalid_argument)?;
-        let state = self.state.clone();
-        blocking::unblock(move || {
-            let mut state = state
-                .lock()
-                .map_err(|_| fdo::Error::Failed("state lock poisoned".into()))?;
-            state
-                .backend
-                .set_property(&key, &value)
-                .map_err(service_error)
-        })
-        .await
+        let invalid = |error: Box<dyn std::error::Error + Send + Sync>| {
+            fdo::Error::InvalidArgs(error.to_string())
+        };
+        lxc::validate_property_key(&key).map_err(invalid)?;
+        lxc::validate_property_value(&value).map_err(invalid)?;
+        self.locked(move |state| state.backend.set_property(&key, &value).map_err(failed))
+            .await
     }
-}
-
-fn authorize_session_read(
-    session: Option<&Session>,
-    caller: Caller,
-    launcher_policy: &LauncherPolicy,
-) -> fdo::Result<()> {
-    if caller.uid == 0 {
-        return Ok(());
-    }
-    let session = session.ok_or_else(|| fdo::Error::AccessDenied("no session owner".into()))?;
-    if session.identity.authorize_control(caller).is_ok()
-        || launcher_policy.permits(caller, session.identity)
-    {
-        Ok(())
-    } else {
-        Err(fdo::Error::AccessDenied(
-            "caller is neither session owner nor trusted session launcher".into(),
-        ))
-    }
-}
-
-fn authorize_root(caller: Caller) -> fdo::Result<()> {
-    if caller.uid == 0 {
-        Ok(())
-    } else {
-        Err(fdo::Error::AccessDenied(
-            "property access requires root".into(),
-        ))
-    }
-}
-
-fn invalid_argument(error: Error) -> fdo::Error {
-    fdo::Error::InvalidArgs(error.to_string())
-}
-
-fn authorize_control(session: Option<&Session>, caller: Caller) -> fdo::Result<()> {
-    if caller.uid == 0 {
-        return Ok(());
-    }
-    session
-        .ok_or_else(|| fdo::Error::AccessDenied("no session owner".into()))?
-        .identity
-        .authorize_control(caller)
-}
-
-fn service_error(error: Error) -> fdo::Error {
-    fdo::Error::Failed(error.to_string())
 }
 
 #[zbus::interface(name = "id.waydro.ContainerManager")]
@@ -691,8 +640,8 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = caller(conn, &header).await?;
-        self.start_authorized(session, caller).await
+        self.start_authorized(session, Caller::of(conn, &header).await?)
+            .await
     }
 
     async fn stop(
@@ -701,8 +650,8 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = caller(conn, &header).await?;
-        self.stop_authorized(quit_session, caller).await
+        self.stop_authorized(quit_session, Caller::of(conn, &header).await?)
+            .await
     }
 
     async fn freeze(
@@ -710,8 +659,12 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = caller(conn, &header).await?;
-        self.change_freeze(true, caller).await
+        let caller = Caller::of(conn, &header).await?;
+        self.locked(move |state| {
+            state.authorize_control(caller)?;
+            state.backend.freeze().map_err(failed)
+        })
+        .await
     }
 
     async fn unfreeze(
@@ -719,8 +672,13 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = caller(conn, &header).await?;
-        self.change_freeze(false, caller).await
+        let caller = Caller::of(conn, &header).await?;
+        let launcher = self.launcher.clone();
+        self.locked(move |state| {
+            state.authorize_read(caller, &launcher)?;
+            state.backend.unfreeze().map_err(failed)
+        })
+        .await
     }
 
     async fn get_session(
@@ -728,8 +686,8 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<HashMap<String, String>> {
-        let caller = caller(conn, &header).await?;
-        self.get_session_authorized(caller).await
+        self.get_session_authorized(Caller::of(conn, &header).await?)
+            .await
     }
 
     async fn get_property(
@@ -738,8 +696,8 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<String> {
-        let caller = caller(conn, &header).await?;
-        self.get_property_authorized(key, caller).await
+        self.get_property_authorized(key, Caller::of(conn, &header).await?)
+            .await
     }
 
     async fn set_property(
@@ -749,47 +707,29 @@ impl ContainerService {
         #[zbus(connection)] conn: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = caller(conn, &header).await?;
-        self.set_property_authorized(key, value, caller).await
+        self.set_property_authorized(key, value, Caller::of(conn, &header).await?)
+            .await
     }
 }
 
+/// Owns `id.waydro.Container` and serves the manager and the initializer.
+///
+/// # Errors
+/// The system bus or the name is unavailable.
 pub async fn serve_system_bus(
     manager: ContainerManager,
     mode: Mode,
     hardware_sender: SyncSender<HardwareRequest>,
 ) -> zbus::Result<(Connection, ContainerService)> {
     let service = ContainerService::new(manager, mode, hardware_sender);
+    let initializer = InitializerService::production(service.clone());
     let connection = Builder::system()?
         .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, service.clone())?
-        .serve_at(
-            INITIALIZER_PATH,
-            InitializerService::production(service.clone()),
-        )?
+        .serve_at(initializer_dbus::OBJECT_PATH, initializer)?
         .build()
         .await?;
     Ok((connection, service))
-}
-
-pub(crate) async fn caller(conn: &Connection, header: &Header<'_>) -> fdo::Result<Caller> {
-    let sender = header
-        .sender()
-        .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".into()))?;
-    let name = zbus::names::BusName::try_from(sender.as_str())
-        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
-    let proxy = DBusProxy::new(conn)
-        .await
-        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
-    let uid = proxy
-        .get_connection_unix_user(name.clone())
-        .await
-        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
-    let pid = proxy
-        .get_connection_unix_process_id(name)
-        .await
-        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
-    Ok(Caller { uid, pid })
 }
 
 #[cfg(test)]
@@ -818,28 +758,28 @@ mod tests {
         fn start(&mut self, _fields: &HashMap<String, String>, _uid: u32) -> Result<()> {
             self.0
                 .lock()
-                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .map_err(|_| "record lock poisoned")?
                 .push("start");
             Ok(())
         }
         fn stop(&mut self) -> Result<()> {
             self.0
                 .lock()
-                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .map_err(|_| "record lock poisoned")?
                 .push("stop");
             Ok(())
         }
         fn freeze(&mut self) -> Result<()> {
             self.0
                 .lock()
-                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .map_err(|_| "record lock poisoned")?
                 .push("freeze");
             Ok(())
         }
         fn unfreeze(&mut self) -> Result<()> {
             self.0
                 .lock()
-                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .map_err(|_| "record lock poisoned")?
                 .push("unfreeze");
             Ok(())
         }
@@ -848,40 +788,40 @@ mod tests {
         }
         fn get_property(&mut self, key: &str) -> Result<String> {
             if key != "sys.boot_completed" {
-                return Err(Error::Invalid("unexpected test property".into()));
+                return Err("unexpected test property".into());
             }
             self.0
                 .lock()
-                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .map_err(|_| "record lock poisoned")?
                 .push("get_property");
             Ok("1".into())
         }
         fn set_property(&mut self, key: &str, value: &str) -> Result<()> {
             if key != "persist.deckard.test" || value != "ready" {
-                return Err(Error::Invalid("unexpected test property".into()));
+                return Err("unexpected test property".into());
             }
             self.0
                 .lock()
-                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .map_err(|_| "record lock poisoned")?
                 .push("set_property");
             Ok(())
         }
         fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
             if request != HardwareRequest::Suspend {
-                return Err(Error::Invalid("unexpected hardware request".into()));
+                return Err("unexpected hardware request".into());
             }
             self.0
                 .lock()
-                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .map_err(|_| "record lock poisoned")?
                 .push("hardware_suspend");
             Ok(HardwareOutcome::Active)
         }
     }
 
-    fn tracked(service: &ContainerService) -> std::result::Result<Child, Box<dyn StdError>> {
+    fn tracked(service: &ContainerService) -> Result<Child> {
         let process = Command::new("sleep").arg("30").spawn()?;
         let pid = process.id();
-        let pidfd = pidfd_open(
+        let pidfd = rustix::process::pidfd_open(
             Pid::from_raw(i32::try_from(pid)?).ok_or("invalid test PID")?,
             PidfdFlags::empty(),
         )?;
@@ -894,7 +834,7 @@ mod tests {
             .lock()
             .map_err(|_| "state lock poisoned")?
             .session = Some(Session {
-            identity: SessionIdentity::parse(&fields)?,
+            owner: session_owner(&fields)?,
             fields,
             pidfd,
         });
@@ -902,23 +842,25 @@ mod tests {
     }
 
     #[test]
-    fn init_coordination_restarts_the_tracked_session() -> std::result::Result<(), Box<dyn StdError>>
-    {
+    fn init_coordination_restarts_the_tracked_session() -> Result<()> {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        let service = ContainerService::with_backend(
+            Box::new(RecordingBackend(calls.clone())),
+            LauncherPolicy::production(),
+        );
         assert!(service.with_stopped(|| Ok(())).is_err());
         let mut session = tracked(&service)?;
         let record = calls.clone();
         service.with_stopped(|| {
             record
                 .lock()
-                .map_err(|_| Error::Invalid("record lock poisoned".into()))?
+                .map_err(|_| "record lock poisoned")?
                 .push("init");
             Ok(())
         })?;
         assert!(
             service
-                .with_stopped(|| Err::<(), _>(Error::Invalid("failed init".into())))
+                .with_stopped(|| Err::<(), _>("failed init".into()))
                 .is_err()
         );
         assert_eq!(
@@ -941,7 +883,10 @@ mod tests {
     #[test]
     fn shutdown_does_not_stop_an_unowned_container() -> fdo::Result<()> {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        let service = ContainerService::with_backend(
+            Box::new(RecordingBackend(calls.clone())),
+            LauncherPolicy::production(),
+        );
         async_io::block_on(service.shutdown())?;
         assert!(
             calls
@@ -955,7 +900,10 @@ mod tests {
     #[test]
     fn hardware_request_requires_a_tracked_session() -> fdo::Result<()> {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        let service = ContainerService::with_backend(
+            Box::new(RecordingBackend(calls.clone())),
+            LauncherPolicy::production(),
+        );
         assert!(
             async_io::block_on(service.handle_hardware_request(HardwareRequest::Suspend)).is_err()
         );
@@ -969,8 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn private_bus_exercises_sender_credentials_and_methods()
-    -> std::result::Result<(), Box<dyn StdError>> {
+    fn private_bus_exercises_sender_credentials_and_methods() -> Result<()> {
         let mut child = Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
             .stdin(Stdio::null())
@@ -990,7 +937,10 @@ mod tests {
         }
         let address = address.trim();
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        let service = ContainerService::with_backend(
+            Box::new(RecordingBackend(calls.clone())),
+            LauncherPolicy::production(),
+        );
         async_io::block_on(async {
             let server = Builder::address(address)?
                 .name(BUS_NAME)?
@@ -1047,8 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn private_bus_allows_trusted_launcher_but_not_another_same_uid_process()
-    -> std::result::Result<(), Box<dyn StdError>> {
+    fn private_bus_allows_trusted_launcher_but_not_another_same_uid_process() -> Result<()> {
         let uid = rustix::process::geteuid().as_raw();
         if uid == 0 {
             return Ok(());
@@ -1093,21 +1042,19 @@ mod tests {
                 uid,
                 pid: launcher_pid
             },
-            SessionIdentity {
+            Caller {
                 uid,
                 pid: session_pid
             }
         ));
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend_and_policy(
-            Box::new(RecordingBackend(calls.clone())),
-            policy,
-        );
-        let session_identity = SessionIdentity {
+        let service =
+            ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())), policy);
+        let owner = Caller {
             uid,
             pid: session_pid,
         };
-        let pidfd = pidfd_open(
+        let pidfd = rustix::process::pidfd_open(
             Pid::from_raw(session_pid as i32).ok_or("invalid test session PID")?,
             PidfdFlags::empty(),
         )?;
@@ -1120,7 +1067,7 @@ mod tests {
                 ("user_id".into(), uid.to_string()),
                 ("pid".into(), session_pid.to_string()),
             ]),
-            identity: session_identity,
+            owner,
             pidfd,
         });
 
@@ -1180,7 +1127,7 @@ mod tests {
             );
             drop(client);
             drop(server);
-            Ok::<(), Box<dyn StdError>>(())
+            Ok::<(), Box<dyn StdError + Send + Sync>>(())
         })?;
         assert_eq!(
             *calls.lock().map_err(|_| "record lock poisoned")?,
@@ -1198,43 +1145,39 @@ mod tests {
             ("user_id".into(), "1000".into()),
             ("pid".into(), "2345".into()),
         ]);
-        let identity = SessionIdentity::parse(&fields)?;
+        let owner = session_owner(&fields)?;
         assert!(
-            identity
-                .authorize_start(Caller {
-                    uid: 1000,
-                    pid: 2345
-                })
-                .is_ok()
+            Caller {
+                uid: 1000,
+                pid: 2345
+            }
+            .controls(owner)
         );
         assert!(
-            identity
-                .authorize_start(Caller {
-                    uid: 1000,
-                    pid: 2346
-                })
-                .is_err()
+            !Caller {
+                uid: 1000,
+                pid: 2346
+            }
+            .controls(owner)
         );
         assert!(
-            identity
-                .authorize_start(Caller {
-                    uid: 1001,
-                    pid: 2345
-                })
-                .is_err()
+            !Caller {
+                uid: 1001,
+                pid: 2345
+            }
+            .controls(owner)
         );
-        assert!(
-            identity
-                .authorize_start(Caller { uid: 0, pid: 9999 })
-                .is_ok()
-        );
+        assert!(Caller { uid: 0, pid: 9999 }.controls(owner));
         Ok(())
     }
 
     #[test]
     fn native_property_path_requires_root_and_validates_inputs() -> fdo::Result<()> {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())));
+        let service = ContainerService::with_backend(
+            Box::new(RecordingBackend(calls.clone())),
+            LauncherPolicy::production(),
+        );
         let non_root = Caller {
             uid: 1000,
             pid: 123,
@@ -1303,7 +1246,7 @@ mod tests {
             ]),
             HashMap::from([("user_id".into(), "x".into()), ("pid".into(), "42".into())]),
         ] {
-            assert!(SessionIdentity::parse(&fields).is_err());
+            assert!(session_owner(&fields).is_err());
         }
     }
 
@@ -1333,7 +1276,8 @@ mod tests {
                 Ok(())
             }
         }
-        let service = ContainerService::with_backend(Box::new(InertBackend));
+        let service =
+            ContainerService::with_backend(Box::new(InertBackend), LauncherPolicy::production());
         let mut xml = String::new();
         service.introspect_to_writer(&mut xml, 0);
         for method in [

@@ -1,0 +1,98 @@
+//! File helpers the Deckard host crates share.
+
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File, Permissions};
+use std::io::{self, Write};
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path};
+
+use rustix::fs::{CWD, Mode, OFlags, ResolveFlags};
+
+/// Opens a directory without following a final link.
+pub const DIRECTORY: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
+fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+/// Opens the absolute directory `path` without following any link on the way.
+///
+/// # Errors
+/// The path is relative or has `..`, a component is a link, or it is missing.
+pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
+    let plain = path
+        .components()
+        .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+    if !path.is_absolute() || !plain {
+        return Err(invalid("expected a plain absolute path"));
+    }
+    let resolve = ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+    Ok(rustix::fs::openat2(
+        CWD,
+        path,
+        DIRECTORY,
+        Mode::empty(),
+        resolve,
+    )?)
+}
+
+/// The names in `directory` but `.` and `..`, sorted.
+///
+/// # Errors
+/// The directory cannot be read.
+pub fn children(directory: &OwnedFd) -> io::Result<Vec<OsString>> {
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(directory)? {
+        let entry = entry?;
+        let name = entry.file_name().to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsStr::from_bytes(name).to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Whether `name` is one plain path component.
+#[must_use]
+pub fn is_component(name: &OsStr) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes != b"."
+        && bytes != b".."
+        && !bytes.contains(&b'/')
+        && !bytes.contains(&0)
+}
+
+/// The file's text, or empty when it does not exist.
+///
+/// # Errors
+/// The file exists but cannot be read as UTF-8.
+pub fn read_optional(path: &Path) -> io::Result<String> {
+    match fs::read_to_string(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        result => result,
+    }
+}
+
+/// Replaces `path` atomically with `content` in mode `mode`, then syncs its
+/// directory.
+///
+/// # Errors
+/// The temporary file cannot be written, renamed or synced.
+pub fn replace(path: &Path, content: &[u8], mode: u32) -> io::Result<()> {
+    let directory = path.parent().ok_or_else(|| invalid("path has no parent"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.write_all(content)?;
+    temporary
+        .as_file()
+        .set_permissions(Permissions::from_mode(mode))?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    File::open(directory)?.sync_all()
+}

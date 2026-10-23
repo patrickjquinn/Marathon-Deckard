@@ -2,5 +2,6 @@
 
 pub mod apk;
 pub mod cfg;
+pub mod files;
 pub mod reset;
 pub mod shared_folders;

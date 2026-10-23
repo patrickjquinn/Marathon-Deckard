@@ -1,132 +1,105 @@
-use crate::{Error, Result};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
-use std::thread;
+//! External commands with bounded output and an optional time limit.
+
+use std::io::Read;
+use std::process::{Child, ExitStatus, Stdio};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+use crate::Result;
 
-fn drain_output(mut pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
-    let mut output = Vec::new();
-    let mut buffer = [0; 8192];
-    let mut truncated = false;
-    loop {
-        let size = pipe.read(&mut buffer)?;
-        if size == 0 {
-            break;
-        }
-        let retained = size.min(MAX_OUTPUT_BYTES.saturating_sub(output.len()));
-        output.extend_from_slice(&buffer[..retained]);
-        truncated |= retained != size;
-    }
-    Ok((output, truncated))
-}
+const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 
+/// A program and its arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommandSpec {
-    pub program: String,
+pub struct Command {
     pub args: Vec<String>,
-    pub stdin: Option<String>,
     pub timeout: Option<Duration>,
 }
 
-impl CommandSpec {
-    pub fn new(program: &str, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+impl Command {
+    pub fn new(args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
-            program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
-            stdin: None,
             timeout: None,
         }
     }
 
-    pub fn with_stdin(mut self, stdin: String) -> Self {
-        self.stdin = Some(stdin);
+    /// `line` split on whitespace; only for words that hold none.
+    #[must_use]
+    pub fn line(line: &str) -> Self {
+        Self::new(line.split_whitespace())
+    }
+
+    #[must_use]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
+    #[must_use]
+    pub fn program(&self) -> &str {
+        self.args.first().map_or("", String::as_str)
     }
 }
 
 pub trait Runner {
-    fn run(&mut self, command: CommandSpec) -> Result<String>;
+    /// Runs `command` to completion and returns its standard output.
+    ///
+    /// # Errors
+    /// The command cannot start, fails, times out or prints more than 8 MiB.
+    fn run(&mut self, command: Command) -> Result<String>;
 }
 
 pub struct ProcessRunner;
 
+fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<std::io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        if let Some(pipe) = pipe {
+            pipe.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut output)?;
+        }
+        Ok(output)
+    })
+}
+
+fn wait(child: &mut Child, timeout: Duration, program: &str) -> Result<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{program} timed out").into());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 impl Runner for ProcessRunner {
-    fn run(&mut self, command: CommandSpec) -> Result<String> {
-        let mut child = Command::new(&command.program)
-            .args(&command.args)
-            .stdin(if command.stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
+    fn run(&mut self, command: Command) -> Result<String> {
+        let (program, args) = command.args.split_first().ok_or("empty command")?;
+        let mut child = std::process::Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Command("child stdout unavailable".into()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| Error::Command("child stderr unavailable".into()))?;
-        let stdout_reader = thread::spawn(move || drain_output(stdout));
-        let stderr_reader = thread::spawn(move || drain_output(stderr));
-        let stdin_writer = if let Some(input) = command.stdin {
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| Error::Command("child stdin unavailable".into()))?;
-            Some(thread::spawn(move || stdin.write_all(input.as_bytes())))
-        } else {
-            None
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+        let status = match command.timeout {
+            Some(timeout) => wait(&mut child, timeout, program)?,
+            None => child.wait()?,
         };
-        if let Some(timeout) = command.timeout {
-            let deadline = Instant::now() + timeout;
-            loop {
-                if child.try_wait()?.is_some() {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(Error::Timeout(format!("{} timed out", command.program)));
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-        }
-        let status = child.wait()?;
-        let (stdout, stdout_truncated) = stdout_reader
-            .join()
-            .map_err(|_| Error::Command("stdout reader panicked".into()))??;
-        let (stderr, stderr_truncated) = stderr_reader
-            .join()
-            .map_err(|_| Error::Command("stderr reader panicked".into()))??;
-        if let Some(writer) = stdin_writer {
-            writer
-                .join()
-                .map_err(|_| Error::Command("stdin writer panicked".into()))??;
-        }
-        if stdout_truncated || stderr_truncated {
-            return Err(Error::Command(format!(
-                "{} output exceeded {} bytes",
-                command.program, MAX_OUTPUT_BYTES
-            )));
+        let stdout = stdout.join().map_err(|_| "stdout reader panicked")??;
+        let stderr = stderr.join().map_err(|_| "stderr reader panicked")??;
+        if stdout.len().max(stderr.len()) as u64 > MAX_OUTPUT_BYTES {
+            return Err(format!("{program} output exceeded {MAX_OUTPUT_BYTES} bytes").into());
         }
         if !status.success() {
-            return Err(Error::Command(format!(
-                "{} failed ({}): {}",
-                command.program,
-                status,
-                String::from_utf8_lossy(&stderr).trim()
-            )));
+            let stderr = String::from_utf8_lossy(&stderr);
+            return Err(format!("{program} failed ({status}): {}", stderr.trim()).into());
         }
         Ok(String::from_utf8_lossy(&stdout).into_owned())
     }
@@ -138,25 +111,16 @@ mod tests {
 
     #[test]
     fn bounded_command_is_killed_on_timeout() {
-        let mut runner = ProcessRunner;
-        let result =
-            runner.run(CommandSpec::new("sleep", ["1"]).with_timeout(Duration::from_millis(40)));
-        assert!(matches!(result, Err(Error::Timeout(_))));
+        let command = Command::line("sleep 1").timeout(Duration::from_millis(40));
+        let result = ProcessRunner.run(command);
+        assert!(result.is_err_and(|error| error.to_string().contains("timed out")));
     }
 
     #[test]
     fn command_output_does_not_block_exit() {
-        let mut runner = ProcessRunner;
-        let result = runner.run(
-            CommandSpec::new(
-                "sh",
-                [
-                    "-c",
-                    "head -c 1048576 /dev/zero >&2; head -c 1048576 /dev/zero",
-                ],
-            )
-            .with_timeout(Duration::from_millis(500)),
-        );
+        let script = "head -c 1048576 /dev/zero >&2; head -c 1048576 /dev/zero";
+        let command = Command::new(["sh", "-c", script]).timeout(Duration::from_millis(500));
+        let result = ProcessRunner.run(command);
         assert_eq!(result.map(|output| output.len()).ok(), Some(1_048_576));
     }
 }
