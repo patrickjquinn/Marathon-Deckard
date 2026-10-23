@@ -9,20 +9,17 @@
 //! following symlinks, so a link swapped in while the reset runs cannot send
 //! it outside the user's data.
 
-use std::ffi::{CStr, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+use rustix::fs::{AtFlags, FileType, Mode};
 
-const DIRECTORY: OFlags = OFlags::RDONLY
-    .union(OFlags::DIRECTORY)
-    .union(OFlags::NOFOLLOW)
-    .union(OFlags::CLOEXEC);
+use crate::files;
 
 /// The container units, the current one first. Whichever is active owns the
 /// container.
@@ -62,11 +59,8 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Usage(message) | Self::NoData(message) | Self::Failed(message) => {
-                f.write_str(message)
-            }
-        }
+        let (Self::Usage(message) | Self::NoData(message) | Self::Failed(message)) = self;
+        f.write_str(message)
     }
 }
 
@@ -94,35 +88,42 @@ pub struct Environment {
 impl Environment {
     #[must_use]
     pub fn from_process() -> Self {
-        let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+        let var = |name: &str| {
+            std::env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
         Self {
             uid: std::env::var("PKEXEC_UID")
                 .or_else(|_| std::env::var("DECKARD_RESET_UID"))
                 .ok(),
-            passwd: var("DECKARD_RESET_PASSWD").map(PathBuf::from),
-            systemctl: var("DECKARD_RESET_SYSTEMCTL").map(PathBuf::from),
-            lxc_info: var("DECKARD_RESET_LXC_INFO").map(PathBuf::from),
-            data: var("DECKARD_RESET_DATA").map(PathBuf::from),
-            applications: var("DECKARD_RESET_APPS").map(PathBuf::from),
+            passwd: var("DECKARD_RESET_PASSWD"),
+            systemctl: var("DECKARD_RESET_SYSTEMCTL"),
+            lxc_info: var("DECKARD_RESET_LXC_INFO"),
+            data: var("DECKARD_RESET_DATA"),
+            applications: var("DECKARD_RESET_APPS"),
         }
     }
 
-    fn systemctl(&self) -> Command {
-        Command::new(self.systemctl.as_deref().unwrap_or(Path::new("systemctl")))
+    fn systemctl(&self, args: &[&str]) -> bool {
+        let program = self.systemctl.as_deref().unwrap_or(Path::new("systemctl"));
+        Command::new(program)
+            .args(args)
+            .status()
+            .is_ok_and(|status| status.success())
     }
 }
 
 fn caller(environment: &Environment) -> Result<u32, Error> {
-    let Some(uid) = environment.uid.as_deref().filter(|uid| !uid.is_empty()) else {
-        return Err(Error::Usage("run through pkexec".into()));
-    };
-    let uid: u32 = uid
-        .parse()
-        .map_err(|_| Error::Usage("run through pkexec".into()))?;
-    if uid == 0 {
-        return Err(Error::Usage("not for root's data".into()));
+    let uid = environment
+        .uid
+        .as_deref()
+        .and_then(|uid| uid.parse::<u32>().ok());
+    match uid {
+        None => Err(Error::Usage("run through pkexec".into())),
+        Some(0) => Err(Error::Usage("not for root's data".into())),
+        Some(uid) => Ok(uid),
     }
-    Ok(uid)
 }
 
 fn home_of(uid: u32, passwd: Option<&Path>) -> Result<PathBuf, Error> {
@@ -136,7 +137,7 @@ fn home_of(uid: u32, passwd: Option<&Path>) -> Result<PathBuf, Error> {
                     .then(|| PathBuf::from(fields[5]))
             })
         }
-        None => nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        None => nix::unistd::User::from_uid(uid.into())
             .ok()
             .flatten()
             .map(|user| user.dir),
@@ -149,55 +150,30 @@ fn home_of(uid: u32, passwd: Option<&Path>) -> Result<PathBuf, Error> {
     std::fs::canonicalize(&home).map_err(|e| failed(&format!("no home at {}", home.display()), &e))
 }
 
-/// Opens `path` one component at a time from `/`, never following a link.
-fn open_absolute(path: &Path) -> io::Result<OwnedFd> {
-    let mut current = rustix::fs::open("/", DIRECTORY, Mode::empty())?;
-    for part in path.components() {
-        match part {
-            Component::RootDir => {}
-            Component::Normal(name) => {
-                current = rustix::fs::openat(&current, name, DIRECTORY, Mode::empty())?;
-            }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "not a plain path",
-                ));
-            }
-        }
-    }
-    Ok(current)
-}
-
 /// The data directory, opened below the home without following links, and
 /// the user's own.
 fn open_data(uid: u32, home: &Path, data: Option<&Path>) -> Result<(PathBuf, OwnedFd), Error> {
-    let candidates: Vec<PathBuf> = match data {
+    let candidates = match data {
         Some(data) => vec![data.to_path_buf()],
         None => DATA.iter().map(|relative| home.join(relative)).collect(),
     };
-    let Some(path) = candidates
+    let no_data = |path: &Path| Error::NoData(format!("no Android data at {}", path.display()));
+    let path = candidates
         .into_iter()
         .find(|path| path.symlink_metadata().is_ok())
-    else {
-        return Err(Error::NoData(format!(
-            "no Android data at {}",
-            home.join(DATA[1]).display()
-        )));
-    };
-    let inside = path
+        .ok_or_else(|| no_data(&home.join(DATA[1])))?;
+    if !path
         .strip_prefix(home)
-        .ok()
-        .filter(|relative| relative.components().next().is_some());
-    if inside.is_none() {
+        .is_ok_and(|relative| relative.components().next().is_some())
+    {
         return Err(Error::Failed(format!(
             "{} is outside {}",
             path.display(),
             home.display()
         )));
     }
-    let directory = open_absolute(&path).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => Error::NoData(format!("no Android data at {}", path.display())),
+    let directory = files::open_dir(&path).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => no_data(&path),
         _ => failed(
             &format!(
                 "{} is not a plain directory in {}",
@@ -208,7 +184,7 @@ fn open_data(uid: u32, home: &Path, data: Option<&Path>) -> Result<(PathBuf, Own
         ),
     })?;
     let owner = rustix::fs::fstat(&directory)
-        .map_err(|e| failed("cannot inspect the data", &io::Error::from(e)))?
+        .map_err(|e| failed("cannot inspect the data", &e.into()))?
         .st_uid;
     if owner != uid {
         return Err(Error::Failed(format!(
@@ -219,30 +195,16 @@ fn open_data(uid: u32, home: &Path, data: Option<&Path>) -> Result<(PathBuf, Own
     Ok((path, directory))
 }
 
-fn unit_active(environment: &Environment, unit: &str) -> bool {
-    environment
-        .systemctl()
-        .args(["is-active", "--quiet", unit])
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 /// Stops whichever unit runs the container; the ones that were running.
 fn stop_container(environment: &Environment) -> Result<Vec<&'static str>, Error> {
-    let running: Vec<&'static str> = UNITS
-        .into_iter()
-        .filter(|unit| unit_active(environment, unit))
-        .collect();
+    let active = |unit: &&str| environment.systemctl(&["is-active", "--quiet", unit]);
+    let running: Vec<&'static str> = UNITS.into_iter().filter(active).collect();
     for unit in &running {
-        let stopped = environment.systemctl().args(["stop", unit]).status();
-        if !stopped.is_ok_and(|status| status.success()) {
+        if !environment.systemctl(&["stop", unit]) {
             return Err(Error::Failed(format!("cannot stop {unit}")));
         }
     }
-    if let Some(unit) = UNITS
-        .into_iter()
-        .find(|unit| unit_active(environment, unit))
-    {
+    if let Some(unit) = UNITS.into_iter().find(active) {
         return Err(Error::Failed(format!("{unit} is still active")));
     }
     for (name, path) in CONTAINERS {
@@ -262,82 +224,63 @@ fn container_running(environment: &Environment, name: &str, path: &str) -> bool 
         .lxc_info
         .as_deref()
         .unwrap_or(Path::new("lxc-info"));
-    let output = Command::new(program)
+    let Ok(output) = Command::new(program)
         .args(["-n", name, "-P", path, "-s"])
-        .output();
-    let Ok(output) = output else { return true };
-    if !output.status.success() {
-        return false;
-    }
+        .output()
+    else {
+        return true;
+    };
     let text = String::from_utf8_lossy(&output.stdout);
-    let stopped = text
-        .lines()
-        .filter_map(|line| line.strip_prefix("State:"))
-        .any(|state| state.trim() == "STOPPED");
-    !stopped
+    let stopped = text.lines().any(|line| {
+        line.strip_prefix("State:")
+            .is_some_and(|state| state.trim() == "STOPPED")
+    });
+    output.status.success() && !stopped
 }
 
-fn children(directory: &OwnedFd) -> io::Result<Vec<OsString>> {
-    let mut names = Vec::new();
-    for entry in rustix::fs::Dir::read_from(directory)? {
-        let entry = entry?;
-        let name: &CStr = entry.file_name();
-        if name.to_bytes() != b"." && name.to_bytes() != b".." {
-            names.push(OsStr::from_bytes(name.to_bytes()).to_os_string());
-        }
-    }
-    Ok(names)
-}
-
-/// Removes `name` below `parent`: a directory's contents first, nothing
-/// through a link.
-fn remove(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
+fn file_type(parent: &OwnedFd, name: &OsStr) -> io::Result<FileType> {
     let stat = rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+    Ok(FileType::from_raw_mode(stat.st_mode))
+}
+
+/// Removes `name` below `parent`: a directory's contents first, carrying on
+/// past failures (the first is returned), nothing through a link.
+fn remove(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
+    if file_type(parent, name)? != FileType::Directory {
         return Ok(rustix::fs::unlinkat(parent, name, AtFlags::empty())?);
     }
-    let directory = rustix::fs::openat(parent, name, DIRECTORY, Mode::empty())?;
-    clear(&directory)?;
-    Ok(rustix::fs::unlinkat(parent, name, AtFlags::REMOVEDIR)?)
-}
-
-/// Removes everything in `directory`, carrying on past failures; the first.
-fn clear(directory: &OwnedFd) -> io::Result<()> {
+    let directory = rustix::fs::openat(parent, name, files::DIRECTORY, Mode::empty())?;
     let mut first_error = None;
-    for name in children(directory)? {
-        if let Err(error) = remove(directory, &name) {
+    for child in files::children(&directory)? {
+        if let Err(error) = remove(&directory, &child) {
             first_error.get_or_insert(error);
         }
     }
-    first_error.map_or(Ok(()), Err)
-}
-
-fn is_plain_directory(parent: &OwnedFd, name: &str) -> bool {
-    rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
-        .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::Directory)
+    first_error.map_or(Ok(()), Err)?;
+    Ok(rustix::fs::unlinkat(parent, name, AtFlags::REMOVEDIR)?)
 }
 
 /// Android's data goes; `deckard/` stays without the files that crossed.
 fn clear_data(data: &OwnedFd) -> bool {
-    let Ok(names) = children(data) else {
+    let Ok(names) = files::children(data) else {
         return false;
     };
+    let deckard = OsStr::new("deckard");
+    let kept = file_type(data, deckard).is_ok_and(|kind| kind == FileType::Directory);
     let mut complete = true;
     for name in names {
-        if name == "deckard" && is_plain_directory(data, "deckard") {
-            continue;
+        if !(kept && name == deckard) {
+            complete &= remove(data, &name).is_ok();
         }
-        complete &= remove(data, &name).is_ok();
     }
-    if is_plain_directory(data, "deckard") {
-        let Ok(deckard) = rustix::fs::openat(data, "deckard", DIRECTORY, Mode::empty()) else {
+    if kept {
+        let Ok(deckard) = rustix::fs::openat(data, deckard, files::DIRECTORY, Mode::empty()) else {
             return false;
         };
         for crossed in ["xfer", "install"] {
-            match remove(&deckard, OsStr::new(crossed)) {
-                Err(error) if error.kind() != io::ErrorKind::NotFound => complete = false,
-                _ => {}
-            }
+            let removed = remove(&deckard, OsStr::new(crossed));
+            complete &= removed.is_ok()
+                || removed.is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
         }
     }
     complete
@@ -347,19 +290,14 @@ fn clear_data(data: &OwnedFd) -> bool {
 fn clear_entries(home: &Path, applications: Option<&Path>) {
     let path =
         applications.map_or_else(|| home.join(".local/share/applications"), Path::to_path_buf);
-    let Ok(directory) = open_absolute(&path) else {
+    let Ok(directory) = files::open_dir(&path) else {
         return;
     };
-    let Ok(names) = children(&directory) else {
-        return;
-    };
-    for name in names {
+    for name in files::children(&directory).unwrap_or_default() {
         let bytes = name.as_bytes();
         let android = (bytes.starts_with(b"deckard.") || bytes.starts_with(b"waydroid."))
             && bytes.ends_with(b".desktop");
-        let regular = rustix::fs::statat(&directory, &name, AtFlags::SYMLINK_NOFOLLOW)
-            .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile);
-        if android && regular {
+        if android && file_type(&directory, &name).is_ok_and(|kind| kind == FileType::RegularFile) {
             let _ = rustix::fs::unlinkat(&directory, &name, AtFlags::empty());
         }
     }
@@ -384,8 +322,7 @@ pub fn run(arguments: &[OsString], environment: &Environment) -> Result<(), Erro
     let complete = clear_data(&data);
     clear_entries(&home, environment.applications.as_deref());
     for unit in running {
-        let started = environment.systemctl().args(["start", unit]).status();
-        if !started.is_ok_and(|status| status.success()) {
+        if !environment.systemctl(&["start", unit]) {
             return Err(Error::Failed(format!("cannot start {unit} again")));
         }
     }

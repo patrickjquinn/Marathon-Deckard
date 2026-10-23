@@ -3,7 +3,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, Permissions};
 use std::io::{self, Write};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path};
@@ -20,20 +20,21 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-/// Opens the absolute directory `path` without following any link on the way.
+/// Opens the directory `path` below `base` without following any link on
+/// the way; `path` has only plain components.
 ///
 /// # Errors
-/// The path is relative or has `..`, a component is a link, or it is missing.
-pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
+/// The path has `..` or `.`, a component is a link, or it is missing.
+pub fn open_dir_at(base: impl AsFd, path: &Path) -> io::Result<OwnedFd> {
     let plain = path
         .components()
         .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
-    if !path.is_absolute() || !plain {
-        return Err(invalid("expected a plain absolute path"));
+    if !plain {
+        return Err(invalid("expected a plain path"));
     }
     let resolve = ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
     Ok(rustix::fs::openat2(
-        CWD,
+        base,
         path,
         DIRECTORY,
         Mode::empty(),
@@ -41,11 +42,22 @@ pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     )?)
 }
 
+/// [`open_dir_at`] for an absolute path.
+///
+/// # Errors
+/// As for [`open_dir_at`], or the path is relative.
+pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
+    if !path.is_absolute() {
+        return Err(invalid("expected an absolute path"));
+    }
+    open_dir_at(CWD, path)
+}
+
 /// The names in `directory` but `.` and `..`, sorted.
 ///
 /// # Errors
 /// The directory cannot be read.
-pub fn children(directory: &OwnedFd) -> io::Result<Vec<OsString>> {
+pub fn children(directory: impl AsFd) -> io::Result<Vec<OsString>> {
     let mut names = Vec::new();
     for entry in rustix::fs::Dir::read_from(directory)? {
         let entry = entry?;
