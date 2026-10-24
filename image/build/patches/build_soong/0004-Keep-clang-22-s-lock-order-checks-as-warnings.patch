@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sat, 24 Oct 2026 15:19:40 +0100
+Subject: [PATCH] Keep clang 22's lock-order checks as warnings
+
+clang 22 enforces ACQUIRED_BEFORE/ACQUIRED_AFTER under -Wthread-safety
+(earlier releases left that to -Wthread-safety-beta), and 23.2's ART
+runtime fails it, e.g. "mutex 'mutator_lock_' must be acquired before
+'monitor_lock_'" in monitor.cc. Report it without failing the build when
+the clang is r596125 or newer.
+
+Change-Id: I20de0db9e01fb411bb634a3ca3ac34d6266cb13f
+---
+ cc/config/global.go | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/cc/config/global.go b/cc/config/global.go
+index 57096b8..41b05ee 100644
+--- a/cc/config/global.go
++++ b/cc/config/global.go
+@@ -515,6 +515,9 @@ func init() {
+ 		if ClangVersionAtLeast(ctx, 596125) {
+ 			flags = append(flags, "-Wno-incompatible-pointer-types")
+ 			flags = append(flags, "-Wno-c2y-extensions")
++			// clang 22 checks acquired_before/after ordering under plain
++			// -Wthread-safety; 23.2's ART is not annotated for it.
++			flags = append(flags, "-Wno-error=thread-safety-analysis")
+ 		}
+ 		if ctx.Config().IsEnvTrue("LLVM_NEXT") {
+ 			flags = append(noOverrideGlobalCflags, llvmNextExtraCommonGlobalCflags...)
