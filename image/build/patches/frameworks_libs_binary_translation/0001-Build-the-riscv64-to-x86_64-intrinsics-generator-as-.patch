@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sat, 24 Oct 2026 09:56:47 +0100
+Subject: [PATCH] Build the riscv64-to-x86_64 intrinsics generator as a stub on
+ arm64 hosts
+
+gen_riscv64_to_x86_64_intrinsics runs on the build host, and its genrule
+exists on every build, but berberis disables arm64, so an arm64 host
+stopped at analysis with a dependency on a disabled module. Give arm64
+Linux hosts the dummy generator that darwin already uses, and keep the
+real one on x86_64. Its header only feeds the x86_64 translator.
+
+Change-Id: I0dcc5f178b0b5ee520e8d052a686215cc8eabe05
+---
+ intrinsics/Android.bp | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/intrinsics/Android.bp b/intrinsics/Android.bp
+index 2b1f4df..e1f78b8 100644
+--- a/intrinsics/Android.bp
++++ b/intrinsics/Android.bp
+@@ -248,7 +248,7 @@ cc_binary_host {
+     defaults: ["gen_text_asm_intrinsics_defaults"],
+     local_include_dirs: ["riscv64_to_x86_64"],
+     target: {
+-        linux: {
++        linux_x86_64: {
+             generated_headers: [
+                 "libberberis_intrinsics_gen_public_headers_riscv64_to_x86_64",
+                 "libberberis_macro_assembler_gen_intrinsics_headers_riscv64_to_x86_64",
+@@ -285,7 +285,13 @@ cc_defaults {
+             enabled: true,
+             srcs: [":dummy_gen_text_asm_intrinsics_srcs"],
+         },
+-        linux: {
++        // An arm64 build host never builds the x86_64 translator these
++        // headers are for.
++        linux_arm64: {
++            enabled: true,
++            srcs: [":dummy_gen_text_asm_intrinsics_srcs"],
++        },
++        linux_x86_64: {
+             // We are only ever executing that binary once, it's faster to build it without
+             // optimizations and spend half-second more running it, than spend tens of seconds
+             // optimizing the code to save that half-second.

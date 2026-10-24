@@ -15,6 +15,7 @@ ln_ clang-r596125 "$c/clang-stable"
 ln_ "$P/clang/clang-r596125" "$T/prebuilts/clang/host/linux-x86/clang-r596125"
 ln_ "$P/go" "$T/prebuilts/go/linux-arm64"
 ln_ "$P/jdk21" "$T/prebuilts/jdk/jdk21/linux-arm64"
+ln_ linux-x86 "$T/prebuilts/jdk/jdk8/linux-arm64"   # only its jars are used
 ln_ "$P/rust-1.88.0-musl" "$T/prebuilts/rust/linux-arm64/1.88.0"
 # ninja from build-ninja.sh replaces the 4K-page jemalloc prebuilt.
 b=$T/prebuilts/build-tools/linux-arm64/bin

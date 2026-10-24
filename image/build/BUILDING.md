@@ -45,4 +45,44 @@ Google publishes no arm64 clang 21, so clang 22 builds everything;
 
 ## Failures and fixes
 
+In the order they appeared.
+
+1. **repo sync left prebuilts/clang/host/linux-x86 half checked out.** Its
+   index listed every file as deleted, and clang-r574158, clang-stable,
+   embedded-sysroots and soong/ were missing or partial. Check every
+   project with `git diff-index --cached --quiet HEAD`; repair one with
+   `git read-tree HEAD; git checkout-index -a; git update-index --refresh`,
+   then `git checkout --` whatever `git diff-files` still lists (one
+   truncated .so here).
+2. **Waydroid system/core 0020 (ashmem EPERM fallback) conflicts.** 23.2
+   added a memfd seals check (b/498720726) after the readlink. Refreshed in
+   `patches/system_core`: on EPERM fall back to `has_memfd_support()`, then
+   still check the seals.
+3. **`grep` is a shell function** (ugrep honouring ignore files) in the
+   login shell. `build.sh` runs `m` under `env -i`.
+4. **jemalloc aborts on 16K pages.** `prebuilts/build-tools/linux-arm64/bin`
+   `ninja`, `n2` and `rkati` are static with a 4K-page jemalloc:
+   `<jemalloc>: Unsupported system page size`, then
+   `soong bootstrap failed with: signal: aborted`. `build-ninja.sh` builds
+   AOSP's ninja fork with g++ and glibc malloc; `place-arm64-prebuilts.sh`
+   links it in place of the prebuilt (kept as `ninja.jemalloc4k`). n2 and
+   rkati are not used by default.
+5. **`libpulse` depends on undefined `libsndfile12`.** WayDroid-ATV
+   rewrote libsndfile lineage-20 on 2026-09-22 and renamed the library
+   `libsndfile_linux`; pulseaudio still names the old module. Patched in
+   `patches/external_pulseaudio`. Not arm64-specific.
+6. **jdk8/linux-arm64 missing** (`jre/lib/rt.jar` for host Java modules):
+   linked to linux-x86, whose jars are all that is used.
+7. **`clippy-driver` missing** from the Rust toolchain: the prebuilt module
+   needs the file even with `SOONG_DISABLE_CLIPPY=true`; the toolchain now
+   installs clippy.
+8. **berberis: `libberberis_intrinsics_gen_inline_headers_riscv64_to_x86_64`
+   depends on disabled module `gen_riscv64_to_x86_64_intrinsics`.** The
+   generator is a host tool and berberis disables arm64. 23.2 has no
+   `berberis_enable_arm64_host_defaults` (the DGX patch's base), so arm64
+   hosts get the dummy generator darwin already uses
+   (`patches/frameworks_libs_binary_translation`). `host_linux_arm64` does
+   not work there: Soong's arch merge reads `linux_<arch>`, not
+   `host_linux_<arch>`.
+
 ## Timings

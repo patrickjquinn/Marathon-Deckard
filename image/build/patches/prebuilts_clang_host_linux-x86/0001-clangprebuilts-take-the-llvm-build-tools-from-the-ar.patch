@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jetbee <7734987+jetbee@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 10:12:05 +0100
+Subject: [PATCH] clangprebuilts: take the llvm build tools from the arm64
+ clang
+
+On an arm64 host the llvm build tools (llvm-objcopy, llvm-strip, ...) are
+musl binaries that load libc_musl.so from ../lib, not x86_64 glibc ones
+needing x86 libc++. Depend on that instead.
+
+From jetbee/hk-lineageos-build-on-dgx-spark (lineage-24.0), where the arm64
+clang sits beside the x86 one as clang-*-arm64; on lineage-23.2 the
+selected clang directory itself is the arm64 package.
+
+Change-Id: Idf23dcfd9611a54a4458f0b576285b40ed34902d
+---
+ soong/clangprebuilts.go | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/soong/clangprebuilts.go b/soong/clangprebuilts.go
+index 761873a8..b5661c7b 100644
+--- a/soong/clangprebuilts.go
++++ b/soong/clangprebuilts.go
+@@ -378,6 +378,10 @@ func llvmPrebuiltBuildTool(ctx android.LoadHookContext) {
+ 		path.Join(clangDir, "lib", "libc++.so"),
+ 		path.Join(clangDir, "lib", "x86_64-unknown-linux-gnu", "libc++.so"),
+ 	}
++	if ctx.Config().BuildArch == android.Arm64 {
++		// The arm64 tools are musl binaries that load libc_musl.so from ../lib.
++		deps = []string{path.Join(clangDir, "lib", "libc_musl.so")}
++	}
+ 
+ 	type props struct {
+ 		Enabled *bool
+@@ -727,7 +731,11 @@ func llvmToolsFileGroup(ctx android.LoadHookContext) {
+ 
+ 	p := &props{}
+ 	prebuiltDir := path.Join(getClangPrebuiltDir(ctx))
+-	for _, src := range llvmToolsFiles {
++	files := llvmToolsFiles
++	if ctx.Config().BuildArch == android.Arm64 {
++		files = append(files[:len(files)-2:len(files)-2], "lib/libc_musl.so")
++	}
++	for _, src := range files {
+ 		p.Srcs = append(p.Srcs, path.Join(prebuiltDir, src))
+ 	}
+ 	ctx.AppendProperties(p)

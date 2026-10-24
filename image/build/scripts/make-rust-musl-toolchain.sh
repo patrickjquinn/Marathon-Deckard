@@ -15,12 +15,12 @@ rm -rf "$OUT"
 work=$(mktemp -d -p "$P"); trap 'rm -rf "$work"' EXIT
 tar -C "$work" -xf "$P/dl/rust-$V-aarch64-unknown-linux-musl.tar.xz"
 "$work/rust-$V-aarch64-unknown-linux-musl/install.sh" --prefix="$OUT" \
-	--components=rustc,rustfmt-preview,rust-std-aarch64-unknown-linux-musl --disable-ldconfig >/dev/null
+	--components=rustc,rustfmt-preview,clippy-preview,rust-std-aarch64-unknown-linux-musl --disable-ldconfig >/dev/null
 cp "$T/prebuilts/build-tools/linux-arm64/lib64/libc_musl.so" "$OUT/lib/libc.so"
 cp "$P/clang/clang-r596125/lib/aarch64-unknown-linux-musl/libunwind.so" "$OUT/lib/libgcc_s.so.1"
 # The std sources are the same for every host: use the x86 toolchain's.
 ln -sfn "$T/prebuilts/rust/linux-x86/$V/lib/rustlib/src" "$OUT/lib/rustlib/src"
-for b in rustc rustdoc rustfmt; do
+for b in rustc rustdoc rustfmt clippy-driver; do
 	mv "$OUT/bin/$b" "$OUT/bin/$b.bin"
 	cat > "$OUT/bin/$b" <<'EOS'
 #!/bin/sh
@@ -35,3 +35,4 @@ EOS
 done
 "$OUT/bin/rustc" --version
 "$OUT/bin/rustfmt" --version
+"$OUT/bin/clippy-driver" --version
