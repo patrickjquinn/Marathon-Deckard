@@ -10,6 +10,7 @@ use crate::Error;
 
 const SHADES: [u16; 13] = [0, 10, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
 
+/// An sRGB colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color(pub [u8; 3]);
 
@@ -35,6 +36,7 @@ impl Color {
     }
 }
 
+/// The Shell's theme colours that stand in for some generated shades.
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub elevation1: Color,

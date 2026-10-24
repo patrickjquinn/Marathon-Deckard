@@ -6,6 +6,7 @@ use crate::ids::PackageName;
 use crate::json;
 use crate::validate;
 
+/// The field that made a message unusable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageError {
     Key,
@@ -13,6 +14,7 @@ pub enum MessageError {
     Session,
 }
 
+/// A validated notification `post`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Post {
     pub key: String,
@@ -34,6 +36,7 @@ pub struct Post {
     pub progress: Option<i32>,
 }
 
+/// A validated `media` session update.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Media {
     pub session_id: i32,
