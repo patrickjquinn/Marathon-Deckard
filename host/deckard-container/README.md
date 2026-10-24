@@ -73,15 +73,15 @@ directories excepted), so only root could race them.
 ## Initializer
 
 `Init` takes upstream's `system_channel`, `vendor_channel` and `system_type`.
-Images reach the device by hand (one `waydroid init -s VANILLA` download into
-`/var/lib/waydroid/images`), and Marathon, not Android's updater, replaces
-them, so Init never downloads: custom channels are `NotSupported`, other
-request shapes `InvalidArgs`, and the default channels select nothing.
+Images reach the device in Marathon's `deckard-images` package, and Marathon,
+not Android's updater, replaces them, so Init never downloads: custom channels
+are `NotSupported`, other request shapes `InvalidArgs`, and the default
+channels select nothing.
 
-- Preinstalled directories (`/etc/waydroid-extra/images`,
-  `/usr/share/waydroid-extra/images`) win, clear the OTA keys and disable the
-  updater; otherwise `/var/lib/waydroid/images` is used and the configured OTA
-  keys are kept. No images: an explicit error.
+- The packaged directory, `/usr/share/deckard/images`, wins: the OTA keys are
+  cleared, the updater disabled, and `system_datetime`/`vendor_datetime` come
+  from its `images.cfg` (`0` without one). Otherwise `/var/lib/waydroid/images`
+  is used and the configured OTA keys are kept. No images: an explicit error.
 - The LXC `config` comes from the templates in `lxc/` (upstream's
   `config_base`/`config_3`/`config_4` with Marathon's `cgroup:rw` and its two
   hooks, and `waydroid.seccomp`), compiled in. `config_nodes` is rendered from

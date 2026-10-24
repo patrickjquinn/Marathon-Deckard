@@ -26,10 +26,7 @@ const CONFIG_4: &str = include_str!("../lxc/config_4");
 const SECCOMP: &str = include_str!("../lxc/waydroid.seccomp");
 
 /// Image directories that take precedence over `images_path`.
-pub const PREINSTALLED: [&str; 2] = [
-    "/etc/waydroid-extra/images",
-    "/usr/share/waydroid-extra/images",
-];
+pub const PREINSTALLED: [&str; 1] = ["/usr/share/deckard/images"];
 /// The Waydroid tools version the image is told it runs under.
 const TOOLS_VERSION: &str = "1.6.3";
 const PRODUCTS: [&str; 5] = ["brand", "device", "manufacturer", "model", "name"];
@@ -59,7 +56,8 @@ impl Instance {
 /// Where `system.img` and `vendor.img` are.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Images {
-    /// A preinstalled directory: OTA settings are cleared, the updater off.
+    /// A preinstalled directory: OTA settings are cleared, the updater off,
+    /// and the image dates are taken from its `images.cfg`.
     Preinstalled(PathBuf),
     /// The instance's `images` directory: configured OTA settings are kept.
     Installed(PathBuf),
@@ -327,6 +325,10 @@ impl Init<'_> {
             .path()
             .to_str()
             .ok_or("images path is not UTF-8")?;
+        let shipped = match &self.images {
+            Images::Preinstalled(dir) => config::read(&dir.join("images.cfg"))?,
+            Images::Installed(_) => String::new(),
+        };
         let nodes = &self.host.nodes;
         let mut updates = vec![
             ("arch", self.host.arch),
@@ -337,13 +339,10 @@ impl Init<'_> {
             ("images_path", images),
         ];
         if matches!(self.images, Images::Preinstalled(_)) {
-            let cleared = [
-                ("system_ota", "None"),
-                ("vendor_ota", "None"),
-                ("system_datetime", "0"),
-                ("vendor_datetime", "0"),
-            ];
-            updates.extend(cleared);
+            updates.extend([("system_ota", "None"), ("vendor_ota", "None")]);
+            for key in ["system_datetime", "vendor_datetime"] {
+                updates.push((key, cfg::get(&shipped, key).unwrap_or("0")));
+            }
         }
         for (key, value) in config::DEFAULTS {
             if cfg::get(existing, key).is_none() {
