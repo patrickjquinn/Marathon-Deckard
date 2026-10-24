@@ -16,9 +16,9 @@ env -i HOME="$HOME" USER="$USER" TERM=dumb PATH=/usr/local/bin:/usr/bin:/bin \
 	bash --noprofile --norc -c '
 cd "$0"
 export OUT_DIR=out
-export CCACHE_DISABLE=1           # meson (Mesa) would pick up /usr/bin/ccache
+export CCACHE_DISABLE=1            # meson (Mesa) would pick up /usr/bin/ccache
 export SKIP_ABI_CHECKS=true         # no arm64 header-abi-dumper
-export SOONG_DISABLE_CLIPPY=true    # clippy is not in the arm64 Rust toolchain
+export SOONG_DISABLE_CLIPPY=true    # skip clippy lint runs
 export THINLTO_USE_MLGO=false       # clang-r596125 for arm64 has no MLGO model
 export LLVM_PREBUILTS_VERSION=clang-r596125
 export LLVM_RELEASE_VERSION=22
