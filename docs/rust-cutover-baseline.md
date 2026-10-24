@@ -200,3 +200,91 @@ must still show that the Shell admits the new exec for `Register`,
 `ExpectAppWindow`, `SetAppWindowSecure` and `PromptAndroid`, and that each
 area's round trip works with Android's prebuilt APKs. Rollback is the r11
 package, which brings back `deckardd.service`.
+
+## Size and rulebook after the shrink merge (2026-10-24)
+
+### How lines are counted
+
+Every line of `host/<crate>/src/**/*.rs`, blank and comment lines included,
+minus each `#[cfg(test)]` item: the attribute, any attributes after it, and
+the item through its matching brace, with strings, characters and comments
+stripped before matching. `tests/` is not counted. The C++ baseline is every
+`.cpp` and `.h` under `host/deckardd/src` at `24063f1^` (7,444 lines, tests and
+CMake excluded). The Python baseline is `/usr/lib/waydroid` on the phone
+(5,055 lines), as given in the migration plan.
+
+### Bridge side, against the C++ `deckardd` (7,444)
+
+| Crate | ba17a64 | after merge |
+|---|---:|---:|
+| deckard-bridge | 6,596 | 6,529 |
+| deckard-core | 3,067 | 2,127 |
+| deckard-packages | 857 | 592 |
+| deckard-mpris | 521 | 499 |
+| deckard-notifications | 586 | folded into the bridge |
+| deckard-ime | 465 | deleted (the bridge's IME channel) |
+| **Total** | **12,092** | **9,747** |
+
+### Host side, against Python Waydroid (5,055)
+
+| Crate | ba17a64 | after merge |
+|---|---:|---:|
+| deckard-container | 4,110 | 3,443 |
+| deckard-runtime | 943 | 746 |
+| deckard-launch | 1,033 | 695 |
+| deckard-host-tools | 872 | 861 |
+| deckard-fonts-sync | 460 | 380 |
+| deckard-overlay-sync | 452 | 342 |
+| **Total** | **7,870** | **6,467** |
+
+`deckard-image-tools` (499) runs at image build time and has no Python
+counterpart, so it is left out.
+
+### Both sides are still above what they replaced
+
+The bridge side is 2,303 lines (31%) over `deckardd`; the host side is 1,412
+lines (28%) over Python Waydroid. What blocks closing the gap:
+
+- **Required docs.** The bridge side carries 754 `///` and `//!` lines that
+  the style guide requires (`# Errors`, `# Panics`, public items). The C++
+  carried 278 comment lines. Its 7,444 also include about 1,100 lines of
+  headers that Rust has no equivalent for, so the code-only gap is wider than
+  the totals show: about 7,800 Rust code lines against 5,965 C++ code lines.
+- **Hardening the C++ and Python never had.** By module, the largest
+  overages are the framed, rate-limited transport and session pump
+  (`transport` + `app_channel` 608 against `bridge` 216), `openat`/`O_NOFOLLOW`
+  file transfers in `intents` (957 against 670), the bounded package staging
+  and reads in `deckard-packages` (661 against 403), and on the host side the
+  descriptor-pinned binds, the trusted-launcher policy, initializer rollback
+  and symlink-safe fd walks. Each one exists because a review found the
+  unhardened form exploitable or unbounded. Removing any of them is a
+  behaviour change for you to decide on, not a shrink.
+- **Rust-only seams.** `main` + `lib` (587 against 269) wire 20 adapters with
+  explicit bounded queues and restart paths that Qt's event loop hid.
+  `runtime` + `runtime_state` (544 against 359) and `reclaim` + `pressure`
+  (319 against 187) keep the policy pure and the D-Bus side thin, which costs
+  lines at the seam.
+
+The next cuts that do not change behaviour are small: fold `deckard-mpris`
+and `deckard-packages` into the bridge, the only crate that uses them (about
+20 lines of crate boilerplate each), and fold `Runtime`'s pass-through
+methods into `RuntimeState` (about 40 lines). None of these closes the gap.
+`use_small_heuristics = "Max"` in rustfmt would save about 2% by formatting
+alone; it is not applied, because it shortens lines without removing code.
+
+### Rulebook compliance
+
+| Rule | Evidence (run from the repo root) | Holds |
+|---|---|---|
+| No `unsafe` | `grep -rnw unsafe host image --include=*.rs` finds only prose and identifiers; `unsafe_code = "deny"` in `[workspace.lints.rust]` | yes |
+| Unsafe blocks documented | `undocumented_unsafe_blocks = "deny"` in `[workspace.lints.clippy]`; there are no blocks | yes |
+| Every crate uses the workspace lints | `for f in host/*/Cargo.toml image/*/Cargo.toml; do sed -n '/^\[lints\]/,/^\[/p' $f \| grep -q '^workspace = true' \|\| echo $f; done` prints nothing (`deckard-launch` included, now on rsbinder) | yes |
+| No `unwrap`/`expect` in production | `unwrap_used` and `expect_used` warn, and the gate runs clippy with `-D warnings`; tests opt out per module with `#[allow(..., reason)]` | yes |
+| No glob imports except `use super::*` in tests | `grep -rnE '^\s*use [A-Za-z0-9_:]+::\*;' host image --include=*.rs \| grep -v 'super::\*'` prints nothing | yes |
+| No nested use trees | `grep -rnE '^use [^;]*\{[^;]*\{' host image --include=*.rs` prints nothing | yes |
+| Never recover a poisoned mutex | `grep -rnE 'PoisonError\|lock\(\)\.ok\(\)\|lock\(\)\.unwrap_or' host image --include=*.rs` prints nothing; every lock goes through `deckard_core::sync::lock`, which panics on poison | yes |
+| Bounded queues and reads from Android and D-Bus | `grep -rnE 'mpsc::channel\(\|async_channel::unbounded' host image --include=*.rs \| grep -v /tests/` prints nothing; `grep -rn 'for_match_rule(.*None' host` prints nothing; frames are capped at 1 MiB | yes |
+| Shared helpers in one place | caller lookups in `deckard-bridge::auth`; JSON field access in `deckard_core::json` (the five private `flag`/`ok` copies are gone); one `object` helper in the bridge | yes |
+| Dead code deleted | `deckard-ime` and `deckard-notifications` are gone; `grep -rn 'deckard-ime\|deckard-notifications\|notification_state' --include=*.rs --include=*.toml .` prints nothing | yes |
+| Enums, not unclear bools | `Runtime::set_connected(bool)`, `SharedStorage::set_connected(bool)` and `KeelApps::set_connected(route, bool)` still take bools | no |
+| No long iterator chains | short `iter().map().collect()` idioms remain; no chain sits in a `for` header | mostly |
