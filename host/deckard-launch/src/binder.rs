@@ -6,8 +6,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -315,12 +315,11 @@ impl<S: Service> Remotable for Local<S> {
     }
 }
 
-#[derive(Default)]
-struct Died(AtomicBool);
+struct Died(mpsc::Sender<()>);
 
 impl DeathRecipient for Died {
     fn binder_died(&self, _who: &WIBinder) {
-        self.0.store(true, Ordering::Release);
+        let _ = self.0.send(());
     }
 }
 
@@ -335,8 +334,8 @@ fn add_service(manager: &SIBinder, name: &str, service: &SIBinder) -> Result<()>
 }
 
 /// Registers `service`, re-registering whenever the service manager comes
-/// back, and serves it on a Binder thread until `stop` is set (checked every
-/// 100 ms). Once stopped it answers `WOULD_BLOCK`.
+/// back, and serves it on a Binder thread. Once `stop` is set it answers
+/// `WOULD_BLOCK`, and returns at the manager's next death.
 ///
 /// # Errors
 /// The Binder device cannot be opened.
@@ -348,24 +347,20 @@ pub fn serve<S: Service>(config: &BinderConfig, service: S, stop: Arc<AtomicBool
         stop: Arc::clone(&stop),
     };
     let binder = Binder::new(local).as_binder();
-    let died = Arc::new(Died::default());
-    let mut watched = None;
+    let (sender, deaths) = mpsc::channel();
+    let died = Arc::new(Died(sender));
     while !stop.load(Ordering::Acquire) {
-        if died.0.swap(false, Ordering::AcqRel) {
-            watched = None;
+        let Ok(manager) = manager() else {
+            thread::sleep(TICK);
+            continue;
+        };
+        if let Err(error) = manager.link_to_death_arc(&died) {
+            eprintln!("{}: cannot watch the service manager: {error}", S::NAME);
         }
-        if watched.is_none()
-            && let Ok(manager) = manager()
-        {
-            if let Err(error) = manager.link_to_death_arc(&died) {
-                eprintln!("{}: cannot watch the service manager: {error}", S::NAME);
-            }
-            if let Err(error) = add_service(&manager, S::NAME, &binder) {
-                eprintln!("{}: registration failed: {error}", S::NAME);
-            }
-            watched = Some(manager);
+        if let Err(error) = add_service(&manager, S::NAME, &binder) {
+            eprintln!("{}: registration failed: {error}", S::NAME);
         }
-        thread::sleep(TICK);
+        let _ = deaths.recv();
     }
     Ok(())
 }
