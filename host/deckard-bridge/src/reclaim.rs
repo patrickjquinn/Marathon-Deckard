@@ -190,10 +190,10 @@ impl Reclaimer {
                     }
                     Source::Events => {
                         drain(&fd);
-                        if let Some(now) = read_over(&events) {
-                            if now > over {
-                                self.request(Reason::ContainerHigh);
-                            }
+                        if let Some(now) = read_over(&events)
+                            && now > over
+                        {
+                            self.request(Reason::ContainerHigh);
                             over = now;
                         }
                     }
