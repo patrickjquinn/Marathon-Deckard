@@ -301,8 +301,14 @@ impl Packages {
         answer.recv().await.unwrap_or_else(interrupted)
     }
 
-    /// Copies the APK at `path` into the install directory; its path in Android.
-    fn stage(&self, path: &str) -> fdo::Result<(String, Staged)> {
+    /// Copies the APK at `path` into the install directory, off the bus's
+    /// executor; its path in Android.
+    async fn stage(&self, path: &str) -> fdo::Result<(String, Staged)> {
+        let (service, path) = (self.clone(), path.to_owned());
+        blocking::unblock(move || service.copy(&path)).await
+    }
+
+    fn copy(&self, path: &str) -> fdo::Result<(String, Staged)> {
         let mut input = File::open(path).map_err(|_| failed("not a file"))?;
         let metadata = input.metadata().ok().filter(fs::Metadata::is_file);
         let bytes = metadata.map_or(0, |metadata| metadata.len());
@@ -386,7 +392,7 @@ impl PackagesInterface {
     async fn inspect_package(&self, path: &str) -> fdo::Result<VariantMap> {
         let service = self.service()?;
         let asked = async {
-            let (path, staged) = service.stage(path)?;
+            let (path, staged) = service.stage(path).await?;
             let message = json!({"t": "inspect", "path": path});
             service.query(Kind::Inspect, message, Some(staged)).await
         };
@@ -404,7 +410,7 @@ impl PackagesInterface {
     ) -> fdo::Result<String> {
         let service = self.service()?;
         service.allowed(&header).await?;
-        let (path, staged) = service.stage(path)?;
+        let (path, staged) = service.stage(path).await?;
         let message = json!({"t": "install", "path": path});
         service.start(
             Kind::Install,
