@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -27,6 +28,7 @@ const MAX_ICON_BYTES: usize = 256 * 1024;
 const MAX_SYNC_KEYS: usize = 4096;
 const TOAST_INTERVAL: Duration = Duration::from_millis(500);
 const TOAST_LIFETIME: Duration = Duration::from_secs(4);
+const MAX_EXPIRING: usize = 64;
 static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:waydroid|lineageos|lineage os)\b")
         .unwrap_or_else(|error| panic!("invalid fixed runtime-name pattern: {error}"))
@@ -39,6 +41,8 @@ pub struct NotificationBridge {
     bus: Connection,
     icon_dir: PathBuf,
     last_toast: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Toasts to close and when, in the order they were shown.
+    expiring: SyncSender<(Instant, u32)>,
 }
 
 impl NotificationBridge {
@@ -46,7 +50,7 @@ impl NotificationBridge {
     /// must not block.
     ///
     /// # Errors
-    /// As [`NotificationAdapter::new`].
+    /// As [`NotificationAdapter::new`], or the toast thread could not start.
     pub fn new(
         bus: Connection,
         state_path: impl Into<PathBuf>,
@@ -56,11 +60,17 @@ impl NotificationBridge {
         let icon_dir = icon_dir.into();
         let adapter =
             NotificationAdapter::new(bus.clone(), state_path, icon_dir.clone(), to_android)?;
+        let (expiring, due) = mpsc::sync_channel(MAX_EXPIRING);
+        let hub = bus.clone();
+        thread::Builder::new()
+            .name("deckard-toast-expiry".to_owned())
+            .spawn(move || close_toasts(&hub, &due))?;
         Ok(Self {
             adapter,
             bus,
             icon_dir,
             last_toast: Arc::new(Mutex::new(HashMap::new())),
+            expiring,
         })
     }
 
@@ -169,15 +179,18 @@ impl NotificationBridge {
             ),
         )?;
         let id: u32 = reply.body().deserialize()?;
-        let bus = self.bus.clone();
-        thread::Builder::new()
-            .name("deckard-toast-expiry".to_owned())
-            .spawn(move || {
-                thread::sleep(TOAST_LIFETIME);
-                let _ =
-                    bus.call_method(Some(HUB), HUB_PATH, Some(HUB), "CloseNotification", &(id,));
-            })?;
+        let expiry = (Instant::now() + TOAST_LIFETIME, id);
+        // Full: the Hub's own expiry closes it.
+        let _ = self.expiring.try_send(expiry);
         Ok(())
+    }
+}
+
+/// Every toast lives `TOAST_LIFETIME`, so they come due in queue order.
+fn close_toasts(bus: &Connection, due: &Receiver<(Instant, u32)>) {
+    for (deadline, id) in due {
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let _ = bus.call_method(Some(HUB), HUB_PATH, Some(HUB), "CloseNotification", &(id,));
     }
 }
 
