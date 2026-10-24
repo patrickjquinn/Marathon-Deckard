@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use deckard_core::keel;
 use deckard_core::messages::Post;
 use deckard_core::notification_state::{BridgeEvent, Command, NotificationState};
 use deckard_core::sync;
@@ -194,7 +195,7 @@ impl NotificationAdapter {
     }
 
     fn notify(&self, post: &Post, replaces_id: u32) -> Result<u32> {
-        let desktop_entry = format!("waydroid.{}", post.package.as_str());
+        let desktop_entry = keel::app_id(post.package.as_str());
         let mut hints = HashMap::from([
             ("desktop-entry", Variant::from(&desktop_entry)),
             ("urgency", Variant::from(post.urgency)),

@@ -1,5 +1,6 @@
 //! Qt 6 QDataStream layout used by the previous C++ notification handler.
 
+use deckard_core::keel;
 use deckard_core::messages::Post;
 use sha2::{Digest, Sha256};
 
@@ -69,7 +70,7 @@ pub(crate) fn display_digest(post: &Post) -> [u8; 32] {
 
     // QVariantMap uses sorted QString keys; suppress-sound is deliberately
     // excluded so a silent-only update does not create another banner.
-    let desktop_entry = format!("waydroid.{}", post.package.as_str());
+    let desktop_entry = keel::app_id(post.package.as_str());
     let conversation = post.conversation.as_ref().map(serde_json::Value::to_string);
     let mut hints = vec![
         ("desktop-entry", Hint::Text(&desktop_entry)),

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use deckard_core::keel;
 use deckard_core::messages::{self, Media};
 use deckard_core::png_guard;
 use serde_json::{Map, Value};
@@ -35,7 +36,7 @@ impl Root {
     fn new(media: &Media) -> Self {
         Self {
             identity: media.label.clone(),
-            desktop_entry: format!("waydroid.{}", media.package.as_str()),
+            desktop_entry: keel::app_id(media.package.as_str()),
         }
     }
 }
