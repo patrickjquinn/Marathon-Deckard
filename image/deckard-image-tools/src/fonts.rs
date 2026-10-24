@@ -154,16 +154,14 @@ pub fn generate(
     if !missing.is_empty() {
         return Err(format!("font references have no source: {missing:?}").into());
     }
-    let kept = android
-        .intersection(&named)
-        .filter(|name| !host.contains(*name))
-        .cloned();
-    let hidden = android
-        .iter()
-        .filter(|name| {
-            !named.contains(*name) && (original.contains(*name) || custom.contains(*name))
-        })
-        .cloned();
+    let (mut kept, mut hidden) = (Vec::new(), Vec::new());
+    for name in &android {
+        if named.contains(name) && !host.contains(name) {
+            kept.push(name.clone());
+        } else if !named.contains(name) && (original.contains(name) || custom.contains(name)) {
+            hidden.push(name.clone());
+        }
+    }
     Ok(Outputs {
         xml: output,
         host: list(host.iter().cloned()),

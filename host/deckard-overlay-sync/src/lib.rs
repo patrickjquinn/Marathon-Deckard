@@ -289,11 +289,12 @@ fn reconcile_properties(paths: &Paths) -> io::Result<()> {
             continue;
         }
         let content = fs::read_to_string(path)?;
-        let mut lines: Vec<String> = content
-            .lines()
-            .filter(|line| !shipped(line))
-            .map(str::to_owned)
-            .collect();
+        let mut lines = Vec::new();
+        for line in content.lines() {
+            if !shipped(&line) {
+                lines.push(line.to_owned());
+            }
+        }
         for (key, value) in &pairs {
             if path != &cfg {
                 lines.push(format!("{key}={value}"));

@@ -234,10 +234,9 @@ fn plan(
 ) -> io::Result<Vec<String>> {
     let mut entries = Vec::new();
     let mut unique = BTreeSet::new();
-    let copied = optional.iter().filter(|name| found.contains_key(*name));
-    for font in required.iter().chain(copied) {
+    for font in [required, optional].concat() {
         let entry = format!("fonts/{font}");
-        if unique.insert(entry.clone()) {
+        if found.contains_key(&font) && unique.insert(entry.clone()) {
             entries.push(entry);
         }
     }
@@ -295,11 +294,12 @@ pub fn sync(paths: &Paths) -> io::Result<Outcome> {
     let required = list(&share, "host-fonts.txt", None)?;
     let mut found = BTreeMap::new();
     scan_fonts(&paths.host_fonts, &required, &mut found)?;
-    let missing: Vec<String> = required
-        .iter()
-        .filter(|name| !found.contains_key(*name))
-        .cloned()
-        .collect();
+    let mut missing = Vec::new();
+    for name in &required {
+        if !found.contains_key(name) {
+            missing.push(name.clone());
+        }
+    }
     if !missing.is_empty() {
         return uninstall(Outcome::MissingRequiredFonts(missing));
     }
