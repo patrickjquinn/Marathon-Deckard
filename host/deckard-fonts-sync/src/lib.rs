@@ -46,17 +46,13 @@ pub enum Outcome {
     MissingRequiredFonts(Vec<String>),
 }
 
-fn invalid(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
 fn open_regular(directory: &OwnedFd, name: &OsStr) -> io::Result<OwnedFd> {
     if !files::is_component(name) {
-        return Err(invalid("invalid path component"));
+        return Err(files::invalid("invalid path component"));
     }
     let file = rustix::fs::openat(directory, name, INPUT, Mode::empty())?;
     if FileType::from_raw_mode(rustix::fs::fstat(&file)?.st_mode) != FileType::RegularFile {
-        return Err(invalid("expected a regular file"));
+        return Err(files::invalid("expected a regular file"));
     }
     Ok(file)
 }
@@ -67,14 +63,14 @@ fn read_limited(file: OwnedFd) -> io::Result<String> {
         .take(MAX_LIST + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_LIST {
-        return Err(invalid("input exceeds size limit"));
+        return Err(files::invalid("input exceeds size limit"));
     }
-    String::from_utf8(bytes).map_err(|_| invalid("input is not UTF-8"))
+    String::from_utf8(bytes).map_err(|_| files::invalid("input is not UTF-8"))
 }
 
 fn basename(value: &str) -> io::Result<&str> {
     if !files::is_component(OsStr::new(value)) || value.contains(['\n', '\r']) {
-        return Err(invalid("invalid font name"));
+        return Err(files::invalid("invalid font name"));
     }
     Ok(value)
 }
@@ -90,7 +86,7 @@ fn list(share: &OwnedFd, name: &str, prefix: Option<&str>) -> io::Result<Vec<Str
                 .unwrap_or(line),
         )?;
         if !seen.insert(line) {
-            return Err(invalid("duplicate manifest entry"));
+            return Err(files::invalid("duplicate manifest entry"));
         }
     }
     Ok(text.lines().map(str::to_owned).collect())
@@ -107,7 +103,7 @@ fn state_path(line: &str) -> io::Result<(&str, &str)> {
         ) {
             (Some(name), _) => Ok(("fonts", basename(name)?)),
             (None, Some(name)) => Ok(("product/fonts", basename(name)?)),
-            (None, None) => Err(invalid("unsafe state entry")),
+            (None, None) => Err(files::invalid("unsafe state entry")),
         },
     }
 }
@@ -246,7 +242,7 @@ fn plan(
             None => format!("fonts/{font}"),
         };
         if !unique.insert(entry.clone()) {
-            return Err(invalid("font is both copied and hidden"));
+            return Err(files::invalid("font is both copied and hidden"));
         }
         entries.push(entry);
     }
@@ -265,15 +261,15 @@ pub fn sync(paths: &Paths) -> io::Result<Outcome> {
         paths
             .state
             .parent()
-            .ok_or_else(|| invalid("state has no parent"))?,
+            .ok_or_else(|| files::invalid("state has no parent"))?,
     )?;
     rustix::fs::flock(&state_dir, FlockOperation::LockExclusive)?;
     let state_name = paths
         .state
         .file_name()
-        .ok_or_else(|| invalid("state has no name"))?;
+        .ok_or_else(|| files::invalid("state has no name"))?;
     if !files::is_component(state_name) {
-        return Err(invalid("invalid path component"));
+        return Err(files::invalid("invalid path component"));
     }
     let old = state_entries(&state_dir, state_name)?;
     let uninstall = |outcome: Outcome| -> io::Result<Outcome> {
@@ -309,7 +305,7 @@ pub fn sync(paths: &Paths) -> io::Result<Outcome> {
     if rustix::fs::fstat(&manifest)?.st_size > MAX_XML
         || rustix::fs::fstat(&customization)?.st_size > MAX_XML
     {
-        return Err(invalid("XML exceeds size limit"));
+        return Err(files::invalid("XML exceeds size limit"));
     }
     scan_fonts(&paths.host_fonts, &optional, &mut found)?;
     let entries = plan(&required, &optional, &hidden, &found)?;

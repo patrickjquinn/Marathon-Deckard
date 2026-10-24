@@ -55,13 +55,10 @@ fn env_nonempty(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.is_empty())
 }
 
-fn socket_identity(path: &Path) -> io::Result<(u64, u64)> {
+fn socket_identity(path: &Path) -> Result<(u64, u64)> {
     let metadata = fs::metadata(path)?;
     if !metadata.file_type().is_socket() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Wayland display is not a socket",
-        ));
+        return Err("Wayland display is not a socket".into());
     }
     Ok((metadata.dev(), metadata.ino()))
 }

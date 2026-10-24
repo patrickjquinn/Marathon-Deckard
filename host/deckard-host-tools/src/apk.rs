@@ -1,6 +1,8 @@
 use std::io;
 use std::path::Path;
 
+use crate::files;
+
 /// The `busctl` arguments that ask the Store to open the APK at `path`.
 ///
 /// # Errors
@@ -12,14 +14,11 @@ pub fn arguments(path: &Path) -> io::Result<Vec<String>> {
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("apk"))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected a regular .apk file",
-        ));
+        return Err(files::invalid("expected a regular .apk file"));
     }
     let path = path
         .to_str()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "APK path is not UTF-8"))?;
+        .ok_or_else(|| files::invalid("APK path is not UTF-8"))?;
     let payload = serde_json::to_string(&serde_json::json!({"path": path}))?;
     Ok([
         "--user",
