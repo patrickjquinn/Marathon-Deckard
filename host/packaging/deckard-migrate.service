@@ -1,0 +1,14 @@
+[Unit]
+Description=Move Android from Waydroid's names to Deckard's
+DefaultDependencies=no
+RequiresMountsFor=/var/lib /home
+After=local-fs.target
+Before=sysinit.target systemd-tmpfiles-setup.service deckard-container.service systemd-user-sessions.service greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/deckard-migrate forward
+
+[Install]
+WantedBy=sysinit.target

@@ -433,6 +433,7 @@ version = "0.4.0"
 dependencies = [
  "nix",
  "rustix",
+ "serde",
  "serde_json",
  "tempfile",
 ]
