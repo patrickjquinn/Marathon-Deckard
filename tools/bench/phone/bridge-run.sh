@@ -6,7 +6,7 @@
 set -u
 label=$1 unit=$2 exe=$3
 cd "$(dirname "$0")"
-systemctl --user -M user@ stop deckard-bridge deckardd
+systemctl --user -M user@ stop deckard-bridge
 sleep 3
 python3 bench.py startup "$label" session org.marathonos.Deckard 3 \
 	"systemctl --user -M user@ start $unit"
