@@ -151,7 +151,7 @@ fn package_uid(path: &Path, package: &PackageName) -> io::Result<u32> {
 /// process closes the previous connection, including its blocked read.
 pub struct BridgeListener {
     listener: UnixListener,
-    /// Removals and moves in the socket's directory.
+    /// Removals and moves of the socket and its directory.
     removals: OwnedFd,
     socket_path: PathBuf,
     socket_identity: (u64, u64),
@@ -179,9 +179,6 @@ impl BridgeListener {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket has no parent"))?;
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
-        let removals = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?;
-        let removed = WatchFlags::DELETE | WatchFlags::MOVED_FROM | WatchFlags::DELETE_SELF;
-        inotify::add_watch(&removals, parent, removed | WatchFlags::MOVE_SELF)?;
         match fs::symlink_metadata(&socket_path) {
             Ok(metadata)
                 if metadata.file_type().is_socket()
@@ -200,6 +197,11 @@ impl BridgeListener {
         }
         let listener = UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o666))?;
+        let removals = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?;
+        let gone = WatchFlags::DELETE_SELF | WatchFlags::MOVE_SELF;
+        inotify::add_watch(&removals, parent, gone)?;
+        // The bound socket pins its inode, so an unlink shows only as ATTRIB.
+        inotify::add_watch(&removals, &socket_path, gone | WatchFlags::ATTRIB)?;
         let metadata = fs::symlink_metadata(&socket_path)?;
         Ok(Self {
             listener,
