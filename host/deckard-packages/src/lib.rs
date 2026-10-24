@@ -470,22 +470,19 @@ impl PackagesInterface {
 
 fn reap_stale(directory: &Path) -> io::Result<()> {
     let mut entries = fs::read_dir(directory)?;
-    for _ in 0..MAX_STALE_ENTRIES {
-        let Some(entry) = entries.next() else {
-            return Ok(());
-        };
+    let first = entries.by_ref().take(MAX_STALE_ENTRIES);
+    for entry in first {
         let entry = entry?;
         let apk = entry.path().extension().is_some_and(|ext| ext == "apk");
         if apk && entry.file_type()?.is_file() {
             fs::remove_file(entry.path())?;
         }
     }
-    match entries.next() {
-        None => Ok(()),
-        Some(_) => Err(io::Error::other(
-            "too many entries in Android install staging directory",
-        )),
+    if entries.next().is_some() {
+        let why = "too many entries in Android install staging directory";
+        return Err(io::Error::other(why));
     }
+    Ok(())
 }
 
 fn flag(message: &Map<String, Value>, key: &str) -> bool {
