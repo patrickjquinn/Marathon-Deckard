@@ -66,6 +66,19 @@ Pooled latency samples (20 per run):
 | `deckard-launch app launch`, pooled (n=30) | 151 ms median, 174 ms p90 | 151 ms median, 190 ms p90 |
 | `deckard-launch app launch`, median of runs | 150 ms (148–160) | 155 ms (145–164) |
 
+## Idle after the polling fixes (deckard r15, 2026-10-24)
+
+Voluntary context switches summed over threads and CPU time, 60 s idle with
+Android booted and all three peers connected, packaged r15 on the phone:
+
+| Daemon | Wakeups | CPU | Threads |
+|---|---:|---:|---:|
+| `deckard-bridge` | 0/s (was 30.8/s) | 0 ms (was 25 ms per 60 s) | 27 (was 38) |
+| `deckard-containerd` | 0/s (was 60.7/s) | 0 ms (was 34 ms per 60 s) | 6 |
+| `deckard-runtime` | 0/s (was 24.0/s) | 0 ms (was 19 ms per 60 s) | 10 |
+
+The sections below record the original comparison and are kept as measured.
+
 ## What the numbers say
 
 - **Memory: Rust wins clearly.** The bridge's private dirty memory is about a
