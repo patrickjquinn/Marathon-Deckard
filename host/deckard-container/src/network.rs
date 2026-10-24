@@ -25,12 +25,14 @@ pub struct Network {
 
 impl Network {
     /// # Errors
-    /// The bridge is not a plain interface name or the runtime path is relative.
+    /// The bridge is not a plain interface name or the runtime path is
+    /// relative or holds whitespace.
     pub fn new(bridge: String, runtime: PathBuf) -> Result<Self> {
         let plain = bridge
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-        if bridge.is_empty() || bridge.len() > 15 || !plain || !runtime.is_absolute() {
+        let spaced = runtime.to_string_lossy().contains(char::is_whitespace);
+        if bridge.is_empty() || bridge.len() > 15 || !plain || !runtime.is_absolute() || spaced {
             return Err("invalid bridge or runtime directory".into());
         }
         Ok(Self { bridge, runtime })
@@ -79,23 +81,16 @@ impl Network {
 
     fn dnsmasq(&self) -> Command {
         let passwd = fs::read_to_string("/etc/passwd").unwrap_or_default();
-        let bridge = &self.bridge;
-        Command::new([
-            "dnsmasq".into(),
-            "--conf-file=/dev/null".into(),
-            "--strict-order".into(),
-            "--bind-interfaces".into(),
-            format!("--pid-file={}", self.pidfile().display()),
-            format!("--user={}", dnsmasq_account(&passwd)),
-            "--listen-address=192.168.240.1".into(),
-            "--dhcp-range=192.168.240.2,192.168.240.254".into(),
-            "--dhcp-lease-max=253".into(),
-            "--dhcp-no-override".into(),
-            "--except-interface=lo".into(),
-            format!("--interface={bridge}"),
-            format!("--dhcp-leasefile=/var/lib/misc/dnsmasq.{bridge}.leases"),
-            "--dhcp-authoritative".into(),
-        ])
+        let (bridge, pidfile) = (&self.bridge, self.pidfile());
+        let user = dnsmasq_account(&passwd);
+        Command::line(&format!(
+            "dnsmasq --conf-file=/dev/null --strict-order --bind-interfaces \
+             --pid-file={} --user={user} --listen-address=192.168.240.1 \
+             --dhcp-range=192.168.240.2,192.168.240.254 --dhcp-lease-max=253 \
+             --dhcp-no-override --except-interface=lo --interface={bridge} \
+             --dhcp-leasefile=/var/lib/misc/dnsmasq.{bridge}.leases --dhcp-authoritative",
+            pidfile.display()
+        ))
     }
 
     fn delete_bridge(&self) -> Command {
