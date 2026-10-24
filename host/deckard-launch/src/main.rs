@@ -15,16 +15,16 @@ fn run() -> Result<()> {
     let mut backend = NativeBackend::new(Path::new(&config), &session_unit)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
-        ["app", "launch", package] => deckard_launch::launch_app(&mut backend, package),
-        ["app", "intent", action, uri] => deckard_launch::launch_intent(&mut backend, action, uri),
+        ["app", "launch", package] => backend.launch_app(package),
+        ["app", "intent", action, uri] => backend.launch_intent(action, uri),
         ["prop", "get", key] => {
-            let value = deckard_launch::get_property(&mut backend, key)?;
+            let value = backend.get_property(key)?;
             if !value.is_empty() {
                 println!("{value}");
             }
             Ok(())
         }
-        ["prop", "set", key, value] => deckard_launch::set_property(&mut backend, key, value),
+        ["prop", "set", key, value] => backend.set_property(key, value),
         _ => Err(USAGE.into()),
     }
 }
