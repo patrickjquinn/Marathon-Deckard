@@ -1,7 +1,10 @@
 //! Android's 65 Material You system colours from the Shell's highlight.
 
-use std::f64::consts::PI;
 use std::fmt::Write;
+
+use palette::convert::IntoColorUnclamped;
+use palette::white_point::D65;
+use palette::{Lch, LinSrgb, Srgb};
 
 use crate::Error;
 
@@ -57,68 +60,19 @@ impl Default for Theme {
     }
 }
 
-fn to_linear(channel: f64) -> f64 {
-    if channel <= 0.04045 {
-        channel / 12.92
-    } else {
-        ((channel + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn from_linear(channel: f64) -> f64 {
-    if channel <= 0.0031308 {
-        12.92 * channel
-    } else {
-        1.055 * channel.powf(1.0 / 2.4) - 0.055
-    }
-}
-
-fn lab(value: f64) -> f64 {
-    let delta: f64 = 6.0 / 29.0;
-    if value > delta.powi(3) {
-        value.cbrt()
-    } else {
-        value / (3.0 * delta * delta) + 4.0 / 29.0
-    }
-}
-
-fn inverse_lab(value: f64) -> f64 {
-    let delta: f64 = 6.0 / 29.0;
-    if value > delta {
-        value.powi(3)
-    } else {
-        3.0 * delta * delta * (value - 4.0 / 29.0)
-    }
-}
-
 fn to_lch(color: Color) -> (f64, f64) {
-    let [red, green, blue] = color.0.map(|channel| to_linear(f64::from(channel) / 255.0));
-    let x = 0.4124564 * red + 0.3575761 * green + 0.1804375 * blue;
-    let y = 0.2126729 * red + 0.7151522 * green + 0.0721750 * blue;
-    let z = 0.0193339 * red + 0.1191920 * green + 0.9503041 * blue;
-    let axis_a = 500.0 * (lab(x / 0.95047) - lab(y));
-    let axis_b = 200.0 * (lab(y) - lab(z / 1.08883));
-    (
-        axis_a.hypot(axis_b),
-        axis_b.atan2(axis_a).to_degrees().rem_euclid(360.0),
-    )
+    let lch: Lch<D65, f64> = Srgb::from(color.0).into_format().into_color_unclamped();
+    (lch.chroma, lch.hue.into_positive_degrees())
 }
 
+/// Gamma-encoded sRGB, with every channel at or below zero linear as -1.
 fn to_rgb(lightness: f64, chroma: f64, hue: f64) -> [f64; 3] {
-    let axis_a = chroma * (hue * PI / 180.0).cos();
-    let axis_b = chroma * (hue * PI / 180.0).sin();
-    let axis_y = (lightness + 16.0) / 116.0;
-    let x = 0.95047 * inverse_lab(axis_y + axis_a / 500.0);
-    let y = inverse_lab(axis_y);
-    let z = 1.08883 * inverse_lab(axis_y - axis_b / 200.0);
-    [
-        3.2404542 * x - 1.5371385 * y - 0.4985314 * z,
-        -0.9692660 * x + 1.8760108 * y + 0.0415560 * z,
-        0.0556434 * x - 0.2040259 * y + 1.0572252 * z,
-    ]
-    .map(|channel| {
-        if channel > 0.0 {
-            from_linear(channel)
+    let linear: LinSrgb<f64> = Lch::<D65, f64>::new(lightness, chroma, hue).into_color_unclamped();
+    let encoded: [f64; 3] = Srgb::from_linear(linear).into();
+    let linear: [f64; 3] = linear.into();
+    [0, 1, 2].map(|index| {
+        if linear[index] > 0.0 {
+            encoded[index]
         } else {
             -1.0
         }
