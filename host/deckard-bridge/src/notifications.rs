@@ -1,21 +1,17 @@
 //! Android notification socket dispatch for the Rust Hub adapter.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use deckard_core::ids::PackageName;
-use deckard_core::json;
-use deckard_core::messages;
 use deckard_core::notification_state::BridgeEvent;
-use deckard_core::png_guard;
-use deckard_core::validate;
+use deckard_core::{json, keel, messages, png_guard, sync, validate};
 use deckard_notifications::{NotificationAdapter, Result};
 use serde_json::{Map, Value};
 use zbus::blocking::Connection;
@@ -27,19 +23,25 @@ const MAX_ICON_BYTES: usize = 256 * 1024;
 const MAX_SYNC_KEYS: usize = 4096;
 const TOAST_INTERVAL: Duration = Duration::from_millis(500);
 const TOAST_LIFETIME: Duration = Duration::from_secs(4);
-static NEXT_ICON: AtomicU64 = AtomicU64::new(0);
+const MAX_EXPIRING: usize = 64;
 
+/// Android's notifications and toasts on the Hub; cheap to clone.
 #[derive(Clone)]
 pub struct NotificationBridge {
     adapter: NotificationAdapter,
     bus: Connection,
     icon_dir: PathBuf,
     last_toast: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Toasts to close and when, in the order they were shown.
+    expiring: SyncSender<(Instant, u32)>,
 }
 
 impl NotificationBridge {
     /// Validated Hub actions go back to Android through `to_android`, which
     /// must not block.
+    ///
+    /// # Errors
+    /// As [`NotificationAdapter::new`], or the toast thread could not start.
     pub fn new(
         bus: Connection,
         state_path: impl Into<PathBuf>,
@@ -49,21 +51,34 @@ impl NotificationBridge {
         let icon_dir = icon_dir.into();
         let adapter =
             NotificationAdapter::new(bus.clone(), state_path, icon_dir.clone(), to_android)?;
+        let (expiring, due) = mpsc::sync_channel(MAX_EXPIRING);
+        let hub = bus.clone();
+        thread::Builder::new()
+            .name("deckard-toast-expiry".to_owned())
+            .spawn(move || close_toasts(&hub, &due))?;
         Ok(Self {
             adapter,
             bus,
             icon_dir,
             last_toast: Arc::new(Mutex::new(HashMap::new())),
+            expiring,
         })
     }
 
+    /// Follows the Hub's signals on their own thread.
+    ///
+    /// # Errors
+    /// The subscription failed.
     pub fn listen_hub(&self) -> Result<JoinHandle<()>> {
         self.adapter.listen()
     }
 
     /// Call only on the authenticated app bridge, in wire order.
+    ///
+    /// # Errors
+    /// The Hub refused a call, or state or an icon could not be saved.
     pub fn handle(&self, message: &Map<String, Value>) -> Result<()> {
-        match message.get("t").and_then(Value::as_str).unwrap_or("") {
+        match json::string(message, "t") {
             "post" => {
                 if let Ok(post) = messages::post(message) {
                     self.adapter.post(&post)?;
@@ -96,7 +111,7 @@ impl NotificationBridge {
         let Some(png) = png_guard::sanitize(&bytes, MAX_ICON_BYTES, 128) else {
             return Ok(());
         };
-        save_icon(&self.icon_dir, &package, &png)?;
+        save_icon(&self.icon_dir, package.as_str(), &png)?;
         Ok(())
     }
 
@@ -108,29 +123,22 @@ impl NotificationBridge {
         if text.is_empty() {
             return Ok(());
         }
+        let package = package.as_str();
         {
-            let mut last = self
-                .last_toast
-                .lock()
-                .map_err(|_| io::Error::other("toast state poisoned"))?;
+            let mut last = sync::lock(&self.last_toast);
             let now = Instant::now();
             if last
-                .get(&package)
+                .get(package)
                 .is_some_and(|previous| now.duration_since(*previous) < TOAST_INTERVAL)
             {
                 return Ok(());
             }
             last.retain(|_, previous| now.duration_since(*previous) < TOAST_LIFETIME);
-            last.insert(package.clone(), now);
+            last.insert(package.to_owned(), now);
         }
-        let label = validate::label(json::string(message, "label"), &package);
-        let icon = self.icon_dir.join(format!("{package}.png"));
-        let icon_url = if icon.is_file() {
-            format!("file://{}", icon.display())
-        } else {
-            String::new()
-        };
-        let desktop_entry = format!("waydroid.{package}");
+        let label = validate::label(json::string(message, "label"), package);
+        let icon_url = deckard_notifications::icon_url(&self.icon_dir, package);
+        let desktop_entry = keel::app_id(package);
         let hints: HashMap<&str, Variant<'_>> = HashMap::from([
             ("desktop-entry", Variant::from(&desktop_entry)),
             ("urgency", Variant::from(0_u8)),
@@ -144,7 +152,7 @@ impl NotificationBridge {
             Some(HUB),
             "Notify",
             &(
-                label,
+                label.as_str(),
                 0_u32,
                 icon_url.as_str(),
                 text.as_str(),
@@ -155,74 +163,46 @@ impl NotificationBridge {
             ),
         )?;
         let id: u32 = reply.body().deserialize()?;
-        let bus = self.bus.clone();
-        thread::Builder::new()
-            .name("deckard-toast-expiry".to_owned())
-            .spawn(move || {
-                thread::sleep(TOAST_LIFETIME);
-                let _ =
-                    bus.call_method(Some(HUB), HUB_PATH, Some(HUB), "CloseNotification", &(id,));
-            })?;
+        let expiry = (Instant::now() + TOAST_LIFETIME, id);
+        // Full: the Hub's own expiry closes it.
+        let _ = self.expiring.try_send(expiry);
         Ok(())
     }
 }
 
-pub fn bridge_event(event: &BridgeEvent) -> Map<String, Value> {
-    match serde_json::to_value(event) {
-        Ok(Value::Object(object)) => object,
-        _ => Map::new(),
+/// Every toast lives `TOAST_LIFETIME`, so they come due in queue order.
+fn close_toasts(bus: &Connection, due: &Receiver<(Instant, u32)>) {
+    for (deadline, id) in due {
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let _ = bus.call_method(Some(HUB), HUB_PATH, Some(HUB), "CloseNotification", &(id,));
     }
 }
 
-fn package(message: &Map<String, Value>) -> Option<String> {
-    PackageName::try_from(json::string(message, "pkg"))
-        .ok()
-        .map(|name| name.as_str().to_owned())
+fn package(message: &Map<String, Value>) -> Option<PackageName> {
+    PackageName::try_from(json::string(message, "pkg")).ok()
 }
 
 fn live_keys(message: &Map<String, Value>) -> Vec<String> {
-    message
-        .get("keys")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .take(MAX_SYNC_KEYS)
-        .filter_map(Value::as_str)
-        .filter(|key| validate::is_notification_key(key))
-        .map(str::to_owned)
-        .collect()
+    let keys = json::array(message, "keys");
+    let mut live = Vec::new();
+    for key in &keys[..keys.len().min(MAX_SYNC_KEYS)] {
+        if let Some(key) = key
+            .as_str()
+            .filter(|key| validate::is_notification_key(key))
+        {
+            live.push(key.to_owned());
+        }
+    }
+    live
 }
 
 fn save_icon(directory: &Path, package: &str, png: &[u8]) -> io::Result<()> {
     fs::create_dir_all(directory)?;
-    let destination = directory.join(format!("{package}.png"));
-    for _ in 0..4 {
-        let nonce = NEXT_ICON.fetch_add(1, Ordering::Relaxed);
-        let temporary = directory.join(format!(".{package}.{}.{}.tmp", std::process::id(), nonce));
-        let result = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary);
-        let Ok(mut output) = result else {
-            continue;
-        };
-        let written = output.write_all(png).and_then(|()| output.sync_all());
-        drop(output);
-        if let Err(error) = written {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        if let Err(error) = fs::rename(&temporary, &destination) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        return Ok(());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "cannot allocate icon file",
-    ))
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(png)?;
+    file.as_file().sync_all()?;
+    file.persist(directory.join(format!("{package}.png")))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -232,7 +212,6 @@ fn save_icon(directory: &Path, package: &str, png: &[u8]) -> io::Result<()> {
 )]
 mod tests {
     use super::*;
-    use deckard_core::notification_state::BridgeEvent;
     use serde_json::json;
 
     #[test]
@@ -241,20 +220,6 @@ mod tests {
         assert_eq!(
             live_keys(input.as_object().expect("object")),
             ["good", "also-good"]
-        );
-    }
-
-    #[test]
-    fn action_event_keeps_android_wire_contract() {
-        assert_eq!(
-            bridge_event(&BridgeEvent::Invoke {
-                key: "k".into(),
-                action: "default".into()
-            }),
-            json!({"t":"invoke","key":"k","action":"default"})
-                .as_object()
-                .expect("object")
-                .clone()
         );
     }
 

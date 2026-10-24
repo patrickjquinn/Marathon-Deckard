@@ -1,22 +1,23 @@
 use std::env;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::Receiver;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use deckard_bridge::Outbound;
+use deckard_bridge::Wake;
 use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
-use deckard_bridge::app_channel::{AppChannel, ChannelEvent, ChannelHandle};
-use deckard_bridge::audio::{self, AudioWake};
+use deckard_bridge::app_channel::{self, AppChannel, ChannelEvent, ChannelHandle};
+use deckard_bridge::audio;
 use deckard_bridge::ime;
 use deckard_bridge::intents::Intents;
 use deckard_bridge::keel::KeelApps;
 use deckard_bridge::location::LocationSync;
 use deckard_bridge::manage::Manage;
-use deckard_bridge::notifications::{self, NotificationBridge};
+use deckard_bridge::notifications::NotificationBridge;
 use deckard_bridge::packages::PackageBridge;
 use deckard_bridge::prompts::PermissionPrompts;
 use deckard_bridge::reclaim::Reclaimer;
@@ -26,6 +27,7 @@ use deckard_bridge::shell_sync;
 use deckard_bridge::storage::SharedStorage;
 use deckard_bridge::watchdog::{self, BootWatchdog};
 use deckard_core::ids::PackageName;
+use deckard_core::json;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
 use deckard_core::validate;
@@ -39,8 +41,6 @@ use zbus::fdo::{RequestNameFlags, RequestNameReply};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-const READ_POLL: Duration = Duration::from_millis(100);
-const MEDIA_POLL: Duration = Duration::from_millis(10);
 const SYSTEM_QUEUE: usize = 64;
 
 fn emit_runtime(bus: &Connection, runtime: &Runtime) {
@@ -107,7 +107,7 @@ impl System {
         let Ok(reply) = future::block_on(self.manage.request("info", Map::new())) else {
             return;
         };
-        let release = reply.get("release").and_then(Value::as_str).unwrap_or("");
+        let release = json::string(&reply, "release");
         if self.manage.is_generation(generation)
             && self.runtime.set_version(&validate::clean_text(release, 16))
         {
@@ -117,39 +117,17 @@ impl System {
 }
 
 fn serve_system(
-    mut session: BridgeSession,
+    session: BridgeSession,
     generation: u64,
     outgoing: async_channel::Receiver<Map<String, Value>>,
     system: &System,
 ) {
-    let writer = session.set_read_timeout(Some(READ_POLL));
-    if let Ok(mut writer) = writer.and_then(|()| session.writer()) {
-        // Manage closes the queue when a new DeckardSystem connects.
-        thread::spawn(move || {
-            while let Ok(message) = outgoing.recv_blocking() {
-                if let Err(error) = writer.send_message(&message) {
-                    eprintln!("deckard-bridge: system bridge write failed: {error}");
-                    break;
-                }
-            }
-            writer.close();
-        });
-        loop {
-            match session.read_message() {
-                Ok(Some(message)) => system.handle(generation, &message),
-                Ok(None) => break,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                    ) => {}
-                Err(error) => {
-                    eprintln!("deckard-bridge: system bridge read failed: {error}");
-                    break;
-                }
-            }
-        }
-    }
+    // Manage closes the queue when a new DeckardSystem connects.
+    let outgoing = move || outgoing.recv_blocking().ok();
+    app_channel::pump(session, outgoing, &AtomicBool::new(false), |message| {
+        system.handle(generation, &message);
+        true
+    });
     system.disconnected(generation);
 }
 
@@ -191,7 +169,7 @@ struct App {
     packages: PackageBridge,
     notifications: NotificationBridge,
     media: MprisAdapter,
-    audio: AudioWake,
+    audio: Wake,
     keel: KeelApps,
     intents: Intents,
     location: Option<LocationSync>,
@@ -199,7 +177,7 @@ struct App {
 
 impl App {
     fn handle(&mut self, message: &Map<String, Value>) {
-        let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
+        let kind = json::string(message, "t");
         let what = "app event failed";
         match kind {
             "location_request" => {
@@ -207,10 +185,7 @@ impl App {
                     location.handle(message);
                 }
             }
-            "pick_done" => {
-                let id = message.get("id").and_then(Value::as_str).unwrap_or("");
-                self.intents.pick_done(id);
-            }
+            "pick_done" => self.intents.pick_done(json::string(message, "id")),
             _ if KeelApps::handles(kind) => self.keel.handle(BridgeRoute::User, message),
             _ if kind.starts_with("media") => {
                 deckard_bridge::report(what, self.media.handle(message))
@@ -225,41 +200,38 @@ impl App {
 
     fn disconnected(&mut self) {
         self.keel.set_connected(BridgeRoute::User, false);
-        self.media.clear();
+        self.media.clear(|_| {});
         let _ = self.packages.disconnected(BridgeRoute::User);
         if let Some(location) = &self.location {
             location.bridge_lost();
         }
     }
 
-    /// Polls for MPRIS commands between Android's messages.
     fn serve(mut self, events: &Receiver<ChannelEvent>) {
         let mut current = None;
-        loop {
-            match events.recv_timeout(MEDIA_POLL) {
-                Ok(ChannelEvent::Connected(generation)) => {
+        for event in events {
+            match event {
+                ChannelEvent::Connected(generation) => {
                     if current.replace(generation).is_some() {
                         self.keel.set_connected(BridgeRoute::User, false);
                     }
                     self.keel.set_connected(BridgeRoute::User, true);
-                    self.media.clear();
+                    let handle = self.handle.clone();
+                    self.media.clear(move |command| {
+                        let _ = handle.send_to(generation, command);
+                    });
                     let hello = deckard_bridge::object(json!({"t": "hello", "v": 1}));
                     let _ = self.handle.send_to(generation, hello);
                     self.audio.wake();
                 }
-                Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
+                ChannelEvent::Message(generation, message) if current == Some(generation) => {
                     self.handle(&message);
                 }
-                Ok(ChannelEvent::Disconnected(generation)) if current == Some(generation) => {
+                ChannelEvent::Disconnected(generation) if current == Some(generation) => {
                     current = None;
                     self.disconnected();
                 }
-                Ok(_) | Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
-            let Some(generation) = current else { continue };
-            for command in self.media.take_commands() {
-                let _ = self.handle.send_to(generation, command);
+                _ => {}
             }
         }
     }
@@ -369,7 +341,9 @@ fn main() -> Result<(), Error> {
         state.join("notifications.json"),
         cache,
         move |action| {
-            actions(notifications::bridge_event(&action));
+            actions(deckard_bridge::object(
+                serde_json::to_value(&action).unwrap_or_default(),
+            ));
         },
     )?;
     let _hub_listener = notifications.listen_hub()?;
@@ -448,9 +422,10 @@ fn main() -> Result<(), Error> {
     });
     let (watch_bus, watch_runtime) = (bus.clone(), runtime.clone());
     deckard_bridge::spawn("unit watch failed", move || {
-        runtime::watch_unit(&watch_bus, &watch_runtime, || {
-            emit_runtime(&watch_bus, &watch_runtime);
-            boot_watchdog.set_active_since(watch_runtime.active_since_ms());
+        let runtime = watch_runtime.clone();
+        runtime::watch_unit(&watch_bus.clone(), watch_runtime, move || {
+            emit_runtime(&watch_bus, &runtime);
+            boot_watchdog.set_active_since(runtime.active_since_ms());
         })
     });
     let (doze_bus, doze) = (bus.clone(), data.join("deckard/doze"));
@@ -459,7 +434,7 @@ fn main() -> Result<(), Error> {
     });
     let (palette_bus, palette) = (bus.clone(), data.join("deckard/palette"));
     deckard_bridge::spawn("palette sync failed", move || {
-        shell_sync::sync_palette(palette_bus.inner(), &palette)
+        shell_sync::sync_palette(&palette_bus, &palette)
     });
     let marker = dirs::runtime_dir()
         .unwrap_or_else(env::temp_dir)

@@ -8,11 +8,13 @@ license = "Apache-2.0"
 
 [dependencies]
 deckard-core = { path = "../deckard-core" }
-image.workspace = true
 serde_json.workspace = true
 sha2 = "=0.10.9"
 tempfile.workspace = true
 zbus = { workspace = true, features = ["blocking-api"] }
+
+[dev-dependencies]
+image.workspace = true
 
 [lints]
 workspace = true

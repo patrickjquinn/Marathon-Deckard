@@ -1,6 +1,6 @@
 //! Authenticated, framed Android app socket with replaceable connections.
 
-use std::io;
+use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
@@ -157,8 +157,48 @@ impl AppChannel {
     }
 }
 
-fn serve(
+/// Runs `session`: what `outgoing` yields is written from a second thread,
+/// and each message read goes to `each` until the peer leaves, `stop` is
+/// set or `each` returns false.
+pub fn pump(
     mut session: BridgeSession,
+    mut outgoing: impl FnMut() -> Option<Map<String, Value>> + Send + 'static,
+    stop: &AtomicBool,
+    mut each: impl FnMut(Map<String, Value>) -> bool,
+) {
+    let started = session.set_read_timeout(Some(READ_POLL));
+    let mut writer = match started.and_then(|()| session.writer()) {
+        Ok(writer) => writer,
+        Err(error) => return eprintln!("deckard-bridge: Android session failed: {error}"),
+    };
+    thread::spawn(move || {
+        while let Some(message) = outgoing() {
+            if let Err(error) = writer.send_message(&message) {
+                eprintln!("deckard-bridge: Android write failed: {error}");
+                break;
+            }
+        }
+        writer.close();
+    });
+    while !stop.load(Ordering::Acquire) {
+        match session.read_message() {
+            Ok(Some(message)) => {
+                if !each(message) {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
+            Err(error) => {
+                eprintln!("deckard-bridge: Android read failed: {error}");
+                break;
+            }
+        }
+    }
+}
+
+fn serve(
+    session: BridgeSession,
     outbound: Receiver<Map<String, Value>>,
     events: &SyncSender<ChannelEvent>,
     active: &Mutex<Option<Active>>,
@@ -166,42 +206,23 @@ fn serve(
 ) {
     let generation = session.generation();
     let mut dropped = 0_u32;
-    let started = session.set_read_timeout(Some(READ_POLL));
-    if let Ok(mut writer) = started.and_then(|()| session.writer()) {
-        thread::spawn(move || {
-            while let Ok(message) = outbound.recv() {
-                if writer.send_message(&message).is_err() {
-                    break;
+    pump(
+        session,
+        move || outbound.recv().ok(),
+        stop,
+        |message| match events.try_send(ChannelEvent::Message(generation, message)) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                dropped += 1;
+                let flooded = dropped > transport::MAX_DROPPED;
+                if flooded {
+                    eprintln!("deckard-bridge: Android peer floods a stalled consumer");
                 }
+                !flooded
             }
-            writer.close();
-        });
-        while !stop.load(Ordering::Acquire) {
-            let message = match session.read_message() {
-                Ok(Some(message)) => message,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    continue;
-                }
-                Ok(None) | Err(_) => break,
-            };
-            match events.try_send(ChannelEvent::Message(generation, message)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
-                    dropped += 1;
-                    if dropped > transport::MAX_DROPPED {
-                        eprintln!("deckard-bridge: Android peer floods a stalled consumer");
-                        break;
-                    }
-                }
-                Err(TrySendError::Disconnected(_)) => break,
-            }
-        }
-    }
+            Err(TrySendError::Disconnected(_)) => false,
+        },
+    );
     let mut guard = sync::lock(active);
     if guard
         .as_ref()

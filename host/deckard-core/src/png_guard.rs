@@ -3,16 +3,15 @@
 use std::io::Cursor;
 
 use image::imageops::FilterType;
-use image::{ImageFormat, ImageReader, Limits};
+use image::{ImageFormat, ImageReader, Limits, RgbaImage};
 
 const MAX_DIMENSION: u32 = 4096;
 const MAX_ALLOCATION: u64 = 128 * 1024 * 1024;
 
-/// `data`, at most `max_input` bytes of PNG, decoded within the limits,
-/// scaled to fit `max_side` and re-encoded as RGBA PNG. `None` when it is
-/// not a PNG or breaks a limit.
+/// `data`, at most `max_input` bytes of PNG, decoded within the limits and
+/// scaled to fit `max_side`. `None` when it is not a PNG or breaks a limit.
 #[must_use]
-pub fn sanitize(data: &[u8], max_input: usize, max_side: u32) -> Option<Vec<u8>> {
+pub fn decode(data: &[u8], max_input: usize, max_side: u32) -> Option<RgbaImage> {
     if data.len() > max_input {
         return None;
     }
@@ -26,11 +25,15 @@ pub fn sanitize(data: &[u8], max_input: usize, max_side: u32) -> Option<Vec<u8>>
     if image.width() > max_side || image.height() > max_side {
         image = image.resize(max_side, max_side, FilterType::Triangle);
     }
+    Some(image.into_rgba8())
+}
+
+/// [`decode`], re-encoded as RGBA PNG.
+#[must_use]
+pub fn sanitize(data: &[u8], max_input: usize, max_side: u32) -> Option<Vec<u8>> {
     let mut output = Cursor::new(Vec::new());
-    image
-        .into_rgba8()
-        .write_to(&mut output, ImageFormat::Png)
-        .ok()?;
+    let image = decode(data, max_input, max_side)?;
+    image.write_to(&mut output, ImageFormat::Png).ok()?;
     Some(output.into_inner())
 }
 
@@ -38,7 +41,7 @@ pub fn sanitize(data: &[u8], max_input: usize, max_side: u32) -> Option<Vec<u8>>
 #[allow(clippy::unwrap_used, reason = "tests encode generated PNG fixtures")]
 mod tests {
     use super::*;
-    use image::{Rgba, RgbaImage};
+    use image::Rgba;
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let image = RgbaImage::from_pixel(width, height, Rgba([12, 24, 48, 128]));

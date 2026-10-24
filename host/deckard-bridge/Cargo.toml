@@ -20,17 +20,17 @@ deckard-packages = { path = "../deckard-packages" }
 dirs = "=6.0.0"
 futures-lite.workspace = true
 getrandom = "=0.4.3"
-image.workspace = true
 mime_guess = { version = "=2.0.5", default-features = false }
 percent-encoding = "=2.3.2"
 regex.workspace = true
 rustix = { workspace = true, features = ["event"] }
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 zbus = { workspace = true, features = ["blocking-api"] }
 
 [dev-dependencies]
-tempfile.workspace = true
+image.workspace = true
 
 [lints]
 workspace = true

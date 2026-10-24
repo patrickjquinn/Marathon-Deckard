@@ -68,7 +68,7 @@ fn mirrors_ambience_and_doze_into_data_deckard() -> TestResult {
     let palette = dir.path().join("deckard/palette");
     let bus = Connection::session()?;
     let palette_path = palette.clone();
-    thread::spawn(move || shell_sync::sync_palette(bus.inner(), &palette_path));
+    thread::spawn(move || shell_sync::sync_palette(&bus, &palette_path));
     wait_for("the first palette", || {
         colors(&palette)
             .get("system_accent1_100")

@@ -14,8 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use deckard_core::pressure::{self, Reason, ReclaimPolicy};
-use deckard_core::sync;
-use deckard_core::validate;
+use deckard_core::{json, sync, validate};
 use rustix::event::{PollFd, PollFlags};
 use rustix::fs::inotify::{CreateFlags, WatchFlags};
 use rustix::fs::{Mode, OFlags};
@@ -104,29 +103,20 @@ impl Reclaimer {
 
     /// Takes DeckardSystem's `reclaimed` answers; ignores other messages.
     pub fn handle(&self, message: &Map<String, Value>) {
-        if message.get("t").and_then(Value::as_str) != Some("reclaimed") {
+        if json::string(message, "t") != "reclaimed" {
             return;
         }
         let ok = message.get("ok").and_then(Value::as_bool) == Some(true);
-        let killed = message
-            .get("killed")
-            .and_then(Value::as_array)
-            .map_or(&[][..], Vec::as_slice);
+        let killed = json::array(message, "killed");
         sync::lock(&self.0.policy).answered(ok, killed.len());
-        let logged = killed.iter().take(MAX_LOGGED);
-        for process in logged {
+        for process in &killed[..killed.len().min(MAX_LOGGED)] {
             let name = process.get("process").and_then(Value::as_str);
-            eprintln!(
-                "deckard-bridge: reclaim ended {}",
-                validate::clean_text(name.unwrap_or(""), 128)
-            );
+            let name = validate::clean_text(name.unwrap_or(""), 128);
+            eprintln!("deckard-bridge: reclaim ended {name}");
         }
         if !ok {
-            let error = message.get("error").and_then(Value::as_str).unwrap_or("");
-            eprintln!(
-                "deckard-bridge: reclaim failed: {}",
-                validate::clean_text(error, 256)
-            );
+            let error = json::text(message, "error", 256);
+            eprintln!("deckard-bridge: reclaim failed: {error}");
         }
     }
 
