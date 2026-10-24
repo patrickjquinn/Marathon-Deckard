@@ -32,7 +32,7 @@ nix = { version = "=0.31.3", default-features = false, features = ["user"] }
 palette = { version = "=0.7.7", default-features = false, features = ["std"] }
 regex = "=1.13.1"
 rsbinder = { version = "=0.12.0", default-features = false }
-rustix = { version = "=1.1.5", features = ["fs", "mount", "net", "process"] }
+rustix = { version = "=1.1.5", features = ["event", "fs", "mount", "net", "process"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 signal-hook = "=0.3.18"

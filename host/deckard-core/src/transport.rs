@@ -4,11 +4,14 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use rustix::event::{PollFd, PollFlags, Timespec};
+use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
 use serde_json::{Map, Value};
 
 use crate::Error;
@@ -25,6 +28,12 @@ const MAX_BUFFER_SIZE: usize = MAX_FRAME_SIZE + 4;
 const MAX_PACKAGES_LIST_SIZE: u64 = 4 << 20;
 const READ_CHUNK_SIZE: usize = 8192;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long removals in the socket's directory must pause before a lost
+/// socket is made again, so that a removal of the whole tree is not undone.
+const REBIND_SETTLE: Timespec = Timespec {
+    tv_sec: 1,
+    tv_nsec: 0,
+};
 
 fn invalid_data(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
@@ -142,6 +151,8 @@ fn package_uid(path: &Path, package: &PackageName) -> io::Result<u32> {
 /// process closes the previous connection, including its blocked read.
 pub struct BridgeListener {
     listener: UnixListener,
+    /// Removals and moves in the socket's directory.
+    removals: OwnedFd,
     socket_path: PathBuf,
     socket_identity: (u64, u64),
     packages_list: PathBuf,
@@ -168,6 +179,9 @@ impl BridgeListener {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket has no parent"))?;
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
+        let removals = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?;
+        let removed = WatchFlags::DELETE | WatchFlags::MOVED_FROM | WatchFlags::DELETE_SELF;
+        inotify::add_watch(&removals, parent, removed | WatchFlags::MOVE_SELF)?;
         match fs::symlink_metadata(&socket_path) {
             Ok(metadata)
                 if metadata.file_type().is_socket()
@@ -189,6 +203,7 @@ impl BridgeListener {
         let metadata = fs::symlink_metadata(&socket_path)?;
         Ok(Self {
             listener,
+            removals,
             socket_path,
             socket_identity: (metadata.dev(), metadata.ino()),
             packages_list: packages_list.as_ref().to_path_buf(),
@@ -198,12 +213,46 @@ impl BridgeListener {
         })
     }
 
+    /// Makes the socket again once its path no longer names it, while the
+    /// directory above the socket's exists.
+    fn rebind(&mut self) -> io::Result<()> {
+        let ours = fs::symlink_metadata(&self.socket_path)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.socket_identity);
+        let above = self.socket_path.parent().and_then(Path::parent);
+        if ours || !above.is_some_and(Path::is_dir) {
+            return Ok(());
+        }
+        let mut next = Self::bind(&self.socket_path, &self.packages_list, self.package.clone())?;
+        next.active = self.active.take();
+        next.generation = self.generation;
+        *self = next;
+        Ok(())
+    }
+
     /// Waits for the next peer whose UID is the package's, closing the
-    /// previous one.
+    /// previous one. A removed socket is made again.
     ///
     /// # Errors
-    /// Accepting failed, or the peer is not the package.
+    /// Accepting or remaking the socket failed, or the peer is not the
+    /// package.
     pub fn accept(&mut self) -> io::Result<BridgeSession> {
+        let mut settling = false;
+        loop {
+            let mut ready = [
+                PollFd::new(&self.listener, PollFlags::IN),
+                PollFd::new(&self.removals, PollFlags::IN),
+            ];
+            let count = rustix::event::poll(&mut ready, settling.then_some(&REBIND_SETTLE))?;
+            if !ready[0].revents().is_empty() {
+                break;
+            }
+            settling = count > 0;
+            if settling {
+                while rustix::io::read(&self.removals, &mut [0_u8; 4096]).is_ok() {}
+            } else {
+                self.rebind()?;
+            }
+        }
         let (stream, _) = self.listener.accept()?;
         let actual_uid = rustix::net::sockopt::socket_peercred(&stream)?.uid.as_raw();
         let expected_uid = package_uid(&self.packages_list, &self.package)?;
