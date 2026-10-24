@@ -138,7 +138,7 @@ pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
     match kind {
         "url" => {
             let url = web(uri, &scheme).ok_or("not a web address")?;
-            let args = object(json!({"url": url, "newTab": true}));
+            let args = crate::object(json!({"url": url, "newTab": true}));
             Ok(Target::Keel("browser", "browser.open", args))
         }
         "tel" | "sms" => phone(kind, &scheme, m),
@@ -274,7 +274,7 @@ fn geo(uri: &str) -> Target {
     }
     match validate::clean_text(&q, 256).trim() {
         "" => Target::Launch("maps"),
-        text => Target::Keel("maps", "search.show", object(json!({"query": text}))),
+        text => Target::Keel("maps", "search.show", crate::object(json!({"query": text}))),
     }
 }
 
@@ -286,7 +286,7 @@ fn point(text: &str) -> Option<Map<String, Value>> {
     if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) || nowhere {
         return None;
     }
-    let mut args = object(json!({"lat": lat, "lon": lon}));
+    let mut args = crate::object(json!({"lat": lat, "lon": lon}));
     let name = validate::truncate(captures.get(3).map_or("", |name| name.as_str()), 256);
     if !name.is_empty() {
         args.insert("name".into(), name.into());
@@ -327,14 +327,6 @@ pub fn safe_name(path: &str) -> String {
     match validate::truncate(&kept, 200).trim() {
         "" | "." | ".." => "file".into(),
         name => name.into(),
-    }
-}
-
-/// `value` if it is an object, else an empty one.
-pub(crate) fn object(value: Value) -> Map<String, Value> {
-    match value {
-        Value::Object(map) => map,
-        _ => Map::new(),
     }
 }
 
@@ -693,7 +685,7 @@ impl Intents {
     }
 
     fn send(&self, message: Value) {
-        (self.send)(object(message));
+        (self.send)(crate::object(message));
     }
 
     /// DeckardSystem connected: it hears which Android app is in front.

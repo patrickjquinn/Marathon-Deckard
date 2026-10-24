@@ -231,7 +231,7 @@ impl Sharing {
         if !is_mime(&mime_type) {
             return Err(ApiError::InvalidArgs("not a MIME type".into()));
         }
-        let message = intents::object(json!({"t": "share_targets", "mime": mime_type}));
+        let message = crate::object(json!({"t": "share_targets", "mime": mime_type}));
         let reply = self.request(Kind::Targets, new_id()?, message).await;
         Ok(reply.map(|reply| targets(&reply)).unwrap_or_default())
     }
@@ -267,7 +267,7 @@ impl Sharing {
         let message = json!({
             "t": "share", "target": id, "mime": mime, "title": title, "text": joined, "files": files,
         });
-        let reply = self.request(Kind::Share, tid.clone(), intents::object(message));
+        let reply = self.request(Kind::Share, tid.clone(), crate::object(message));
         let failure = match reply.await {
             Ok(reply) if json::boolean(&reply, "ok") => return Ok(()),
             Ok(reply) => json::text(&reply, "error", 512),

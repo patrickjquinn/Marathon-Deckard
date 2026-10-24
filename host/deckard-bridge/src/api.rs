@@ -20,7 +20,7 @@ use zbus::{Connection, DBusError, interface};
 
 use crate::auth;
 use crate::contract::{self, Fixed, VariantMap};
-use crate::intents::{self, Endpoint, NAVIGATION};
+use crate::intents::{Endpoint, NAVIGATION};
 use crate::manage::Manage;
 use crate::runtime::{self, Runtime};
 
@@ -108,7 +108,7 @@ impl SettingsApi {
         header: Header<'_>,
     ) -> Result<Map<String, Value>> {
         self.allowed(header).await?;
-        let reply = self.manage.request(op, intents::object(args)).await;
+        let reply = self.manage.request(op, crate::object(args)).await;
         let reply = reply.map_err(ApiError::Failed)?;
         if let Some(pkg) = changed {
             self.emit("AppChanged", &(pkg,)).await;
