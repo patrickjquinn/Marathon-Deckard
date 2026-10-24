@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sat, 24 Oct 2026 13:37:22 +0100
+Subject: [PATCH] flatc: Use the C-locale parsers on musl hosts
+
+flatbuffers turns on its locale-independent parsing whenever
+_XOPEN_VERSION >= 700, which musl defines, but musl has no strtoll_l or
+strtoull_l, so flatc failed to compile for a musl host (the only kind of
+host Soong builds on arm64).
+
+Change-Id: I139e71261ad9ac55a5752a930fad78378cd146b2
+---
+ Android.bp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/Android.bp b/Android.bp
+index e715631..217d858 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -87,6 +87,13 @@ cc_binary_host {
+     exclude_srcs: [
+         "src/flathash.cpp",
+     ],
++
++    target: {
++        musl: {
++            // musl has no strtoll_l or strtoull_l.
++            cflags: ["-DFLATBUFFERS_LOCALE_INDEPENDENT=0"],
++        },
++    },
+ }
+ 
+ java_library {

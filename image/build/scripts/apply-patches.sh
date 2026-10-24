@@ -8,6 +8,7 @@ set -euo pipefail
 T=$(readlink -f "$1"); P=$(readlink -f "$(dirname "$0")/../patches")
 declare -A MAP=(
   [bionic]=bionic [build_make]=build/make [build_soong]=build/soong
+  [external_flatbuffers]=external/flatbuffers
   [external_jemalloc_new]=external/jemalloc_new
   [external_pulseaudio]=external/pulseaudio
   [external_rust_android-crates-io]=external/rust/android-crates-io

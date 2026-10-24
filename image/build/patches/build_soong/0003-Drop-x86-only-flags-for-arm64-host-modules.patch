@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jetbee <7734987+jetbee@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 12:57:28 +0100
+Subject: [PATCH] Drop x86-only flags for arm64 host modules
+
+Some generated Android.bp files (external/cronet) give every host module
+x86 target-feature options (-msse3, -mavx2, ...) that clang rejects for an
+aarch64 host. Filter them for arm64 host modules.
+
+From jetbee/hk-lineageos-build-on-dgx-spark (lineage-24.0), ported to
+lineage-23.2.
+
+Change-Id: I13d1c24fcd597cba90e14ef37eedaff67c72067f
+---
+ cc/compiler.go | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/cc/compiler.go b/cc/compiler.go
+index 24c8a85..9a1aca7 100644
+--- a/cc/compiler.go
++++ b/cc/compiler.go
+@@ -410,6 +410,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
+ 
+ 	cflags := compiler.Properties.Cflags.GetOrDefault(ctx, nil)
+ 	cppflags := compiler.Properties.Cppflags.GetOrDefault(ctx, nil)
++	if ctx.Host() && ctx.Arch().ArchType == android.Arm64 {
++		// Some generated Android.bp files (cronet) give every host module
++		// x86-only options, which clang rejects for an aarch64 host.
++		cflags = filterX86OnlyFlags(cflags)
++		cppflags = filterX86OnlyFlags(cppflags)
++	}
+ 	CheckBadCompilerFlags(ctx, "cflags", cflags)
+ 	CheckBadCompilerFlags(ctx, "cppflags", cppflags)
+ 	CheckBadCompilerFlags(ctx, "conlyflags", compiler.Properties.Conlyflags)
+@@ -859,3 +865,17 @@ type RustBindgenClangProperties struct {
+ 
+ 	//TODO(b/161141999) Add support for headers from cc_library_header modules.
+ }
++
++// filterX86OnlyFlags drops x86 target-feature options from a list of flags.
++func filterX86OnlyFlags(flags []string) []string {
++	var ret []string
++	for _, f := range flags {
++		switch f {
++		case "-msse", "-msse2", "-msse3", "-mssse3", "-msse4", "-msse4.1", "-msse4.2",
++			"-mavx", "-mavx2", "-mpclmul", "-maes", "-mfpmath=sse", "-m32", "-m64":
++			continue
++		}
++		ret = append(ret, f)
++	}
++	return ret
++}
