@@ -63,15 +63,6 @@ fn integer(message: &Map<String, Value>, name: &str, min: i64, max: i64, fallbac
     }
 }
 
-fn label(message: &Map<String, Value>, package: &PackageName) -> String {
-    let label = validate::label(json::string(message, "label"));
-    if label.is_empty() {
-        package.as_str().to_owned()
-    } else {
-        label
-    }
-}
-
 fn category(value: &str) -> String {
     let known = match value {
         "msg" => "im.received",
@@ -190,7 +181,7 @@ pub fn post(message: &Map<String, Value>) -> Result<Post, MessageError> {
     }
     Ok(Post {
         key: key.to_owned(),
-        label: label(message, &package),
+        label: validate::label(json::string(message, "label"), package.as_str()),
         package,
         title: json::text(message, "title", 256),
         body: json::text(message, "text", 4096),
@@ -228,7 +219,7 @@ pub fn media(message: &Map<String, Value>) -> Result<Media, MessageError> {
     let can = json::object(message, "can").unwrap_or(&empty);
     Ok(Media {
         session_id,
-        label: label(message, &package),
+        label: validate::label(json::string(message, "label"), package.as_str()),
         package,
         status: status.to_owned(),
         position_ms: integer(message, "position", 0, 100_000_000_000, 0),

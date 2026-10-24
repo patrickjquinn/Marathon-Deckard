@@ -45,10 +45,15 @@ pub fn simplified(value: &str) -> String {
 }
 
 /// An Android app label: clean, at most 128 UTF-16 units, the runtime named
-/// "Android", whitespace simplified. Empty when nothing usable is left.
+/// "Android", whitespace simplified; `package` when nothing usable is left.
 #[must_use]
-pub fn label(value: &str) -> String {
-    simplified(&RUNTIME_NAME.replace_all(&clean_text(value, 128), "Android"))
+pub fn label(value: &str, package: &str) -> String {
+    let label = simplified(&RUNTIME_NAME.replace_all(&clean_text(value, 128), "Android"));
+    if label.is_empty() {
+        package.to_owned()
+    } else {
+        label
+    }
 }
 
 /// Whether `value` is a usable Android notification key.
