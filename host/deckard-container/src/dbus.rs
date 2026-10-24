@@ -21,7 +21,6 @@ use zbus::fdo::{self, DBusProxy};
 use zbus::message::Header;
 use zbus::names::BusName;
 
-use crate::command::ProcessRunner;
 use crate::drivers::{self, DriverNodes};
 use crate::hardware::{self, HardwareRequest};
 use crate::initializer_dbus::{self, InitializerService};
@@ -241,7 +240,7 @@ impl DirectBackend {
         };
         self.suspend_stops = config::get_or_default(&text, "suspend_action") == Some("stop");
         let dev = Path::new("/dev");
-        drivers::ensure_binder_nodes(&mut ProcessRunner)?;
+        drivers::ensure_binder_nodes()?;
         DriverNodes::from_config(&self.config_path())?.prepare(dev)?;
         drivers::open_device_access(dev, Path::new("/sys/kernel/debug/sync/sw_sync"))
     }
@@ -281,7 +280,7 @@ impl Backend for DirectBackend {
     }
 
     fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
-        let stopped = self.manager.lxc.status(&mut ProcessRunner)? == State::Stopped;
+        let stopped = self.manager.lxc.status()? == State::Stopped;
         crate::ensure(
             stopped,
             "container must be stopped before updating session files",
@@ -291,9 +290,9 @@ impl Backend for DirectBackend {
         let instance = self.manager.lxc.root.join(&self.manager.lxc.name);
         session_config::write(&instance, fields, uid, Path::new("/run/user"), &stage)?;
         let started = properties::write(&self.manager.mounts.work, fields, uid)
-            .and_then(|()| self.manager.start(&mut ProcessRunner));
+            .and_then(|()| self.manager.start());
         if let Err(error) = started {
-            if self.manager.lxc.status(&mut ProcessRunner)? == State::Stopped {
+            if self.manager.lxc.status()? == State::Stopped {
                 let _ = stage.release();
             }
             return Err(error);
@@ -306,30 +305,28 @@ impl Backend for DirectBackend {
         if let Some(stop) = self.hardware_stop.take() {
             stop.store(true, Ordering::Relaxed);
         }
-        self.manager.stop(&mut ProcessRunner)?;
+        self.manager.stop()?;
         Stage::new(&self.manager.network.runtime).release()
     }
 
     fn freeze(&mut self) -> Result<()> {
-        self.manager.lxc.freeze(&mut ProcessRunner)
+        self.manager.lxc.freeze()
     }
 
     fn unfreeze(&mut self) -> Result<()> {
-        self.manager.lxc.unfreeze(&mut ProcessRunner)
+        self.manager.lxc.unfreeze()
     }
 
     fn status(&mut self) -> Result<State> {
-        self.manager.lxc.status(&mut ProcessRunner)
+        self.manager.lxc.status()
     }
 
     fn get_property(&mut self, key: &str) -> Result<String> {
-        self.manager.lxc.get_property(&mut ProcessRunner, key)
+        self.manager.lxc.get_property(key)
     }
 
     fn set_property(&mut self, key: &str, value: &str) -> Result<()> {
-        self.manager
-            .lxc
-            .set_property(&mut ProcessRunner, key, value)
+        self.manager.lxc.set_property(key, value)
     }
 
     fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
@@ -344,14 +341,14 @@ impl Backend for DirectBackend {
                 Ok(HardwareOutcome::Active)
             }
             HardwareRequest::Reboot => {
-                lxc.stop(&mut ProcessRunner)?;
-                lxc.start(&mut ProcessRunner)?;
+                lxc.stop()?;
+                lxc.start()?;
                 Ok(HardwareOutcome::Active)
             }
             HardwareRequest::ShutdownRequest(reason) => {
-                lxc.wait_for(&mut ProcessRunner, State::Stopped, Duration::from_secs(30))?;
+                lxc.wait_for(State::Stopped, Duration::from_secs(30))?;
                 if reason.starts_with('1') {
-                    lxc.start(&mut ProcessRunner)?;
+                    lxc.start()?;
                     return Ok(HardwareOutcome::Active);
                 }
                 self.stop()?;

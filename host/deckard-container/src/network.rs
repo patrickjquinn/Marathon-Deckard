@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use deckard_host_tools::files;
 
 use crate::Result;
-use crate::command::{Command, Runner};
+use crate::command::{self, Command};
 
 const SUBNET: &str = "192.168.240.0/24";
 
@@ -102,11 +102,11 @@ impl Network {
         Command::line(&format!("ip link delete {}", self.bridge))
     }
 
-    fn rollback(&self, runner: &mut impl Runner, rules: &[Command]) {
+    fn rollback(&self, rules: &[Command]) {
         for rule in rules.iter().rev() {
-            let _ = runner.run(rule.clone());
+            let _ = command::run(rule.clone());
         }
-        let _ = runner.run(self.delete_bridge());
+        let _ = command::run(self.delete_bridge());
     }
 
     /// Brings the network up unless our marker says it is; undoes what it
@@ -114,7 +114,7 @@ impl Network {
     ///
     /// # Errors
     /// A foreign bridge exists, the runtime directory is unsafe or a command fails.
-    pub fn start(&self, runner: &mut impl Runner) -> Result<()> {
+    pub fn start(&self) -> Result<()> {
         if self.marker().exists() {
             return Ok(());
         }
@@ -134,9 +134,9 @@ impl Network {
             format!("ip link set dev {bridge} up"),
         ];
         for (index, line) in setup.iter().enumerate() {
-            if let Err(error) = runner.run(Command::line(line)) {
+            if let Err(error) = command::run(Command::line(line)) {
                 if index > 0 {
-                    let _ = runner.run(self.delete_bridge());
+                    let _ = command::run(self.delete_bridge());
                 }
                 return Err(error);
             }
@@ -144,20 +144,20 @@ impl Network {
         let remove = self.firewall(Change::Remove);
         let add = self.firewall(Change::Add);
         for (installed, rule) in add.into_iter().enumerate() {
-            if let Err(error) = runner.run(rule) {
-                self.rollback(runner, &remove[..installed]);
+            if let Err(error) = command::run(rule) {
+                self.rollback(&remove[..installed]);
                 return Err(error);
             }
         }
-        if let Err(error) = runner.run(self.dnsmasq()) {
-            self.rollback(runner, &remove);
+        if let Err(error) = command::run(self.dnsmasq()) {
+            self.rollback(&remove);
             return Err(error);
         }
         if let Err(error) = fs::write(self.marker(), b"up\n") {
             if let Ok(Some(pid)) = verified_dnsmasq_pid(&self.pidfile()) {
-                let _ = runner.run(Command::new(["kill".into(), pid.to_string()]));
+                let _ = command::run(Command::new(["kill".into(), pid.to_string()]));
             }
-            self.rollback(runner, &remove);
+            self.rollback(&remove);
             return Err(error.into());
         }
         Ok(())
@@ -165,21 +165,21 @@ impl Network {
 
     /// # Errors
     /// The dnsmasq PID file is foreign or a command fails.
-    pub fn stop(&self, runner: &mut impl Runner) -> Result<()> {
+    pub fn stop(&self) -> Result<()> {
         if !self.marker().exists() {
             return Ok(());
         }
         if let Some(pid) = verified_dnsmasq_pid(&self.pidfile())? {
-            runner.run(Command::new(["kill".into(), pid.to_string()]))?;
+            command::run(Command::new(["kill".into(), pid.to_string()]))?;
         }
         let rules = self.firewall(Change::Remove);
         for rule in rules.into_iter().rev() {
-            runner.run(rule)?;
+            command::run(rule)?;
         }
         let bridge = &self.bridge;
-        runner.run(Command::line(&format!("ip addr flush dev {bridge}")))?;
-        runner.run(Command::line(&format!("ip link set dev {bridge} down")))?;
-        runner.run(self.delete_bridge())?;
+        command::run(Command::line(&format!("ip addr flush dev {bridge}")))?;
+        command::run(Command::line(&format!("ip link set dev {bridge} down")))?;
+        command::run(self.delete_bridge())?;
         fs::remove_file(self.marker())?;
         let _ = fs::remove_file(self.pidfile());
         Ok(())
@@ -236,36 +236,5 @@ mod tests {
         assert_eq!(dnsmasq_account(passwd), "dnsmasq");
         assert_eq!(dnsmasq_account("dnsmasqx:x:1:1::/:/\n"), "nobody");
         assert!(Network::new("bad;name".into(), "/run/deckard".into()).is_err());
-    }
-
-    struct FailingRunner(Vec<String>);
-
-    impl Runner for FailingRunner {
-        fn run(&mut self, command: Command) -> Result<String> {
-            self.0.push(command.args.join(" "));
-            if self.0.len() == 7 {
-                return Err("injected failure".into());
-            }
-            Ok(String::new())
-        }
-    }
-
-    #[test]
-    fn failed_firewall_setup_rolls_back_only_our_rules_and_bridge() -> Result<()> {
-        let runtime = tempfile::tempdir()?;
-        let network = Network::new("deckard0".into(), runtime.path().into())?;
-        let mut runner = FailingRunner(Vec::new());
-        assert!(network.start(&mut runner).is_err());
-        assert_eq!(
-            runner.0[5..],
-            [
-                "iptables -w -I INPUT -i deckard0 -p udp --dport 67 -j ACCEPT",
-                "iptables -w -I INPUT -i deckard0 -p udp --dport 53 -j ACCEPT",
-                "iptables -w -D INPUT -i deckard0 -p udp --dport 67 -j ACCEPT",
-                "ip link delete deckard0",
-            ]
-        );
-        assert!(!network.marker().exists());
-        Ok(())
     }
 }

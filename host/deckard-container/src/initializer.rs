@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use deckard_host_tools::cfg;
 
-use crate::command::{Command, Runner};
+use crate::command::{self, Command};
 use crate::drivers::DriverNodes;
 use crate::{Result, config, lxc, mounts};
 
@@ -168,7 +168,7 @@ impl Host {
     /// # Errors
     /// The host is a Halium (Android-vendor) device, its architecture or LXC
     /// is unsupported, or a Binder node is missing.
-    pub fn probe(runner: &mut impl Runner) -> Result<Self> {
+    pub fn probe() -> Result<Self> {
         let halium = env::var_os("PATH")
             .is_some_and(|path| env::split_paths(&path).any(|dir| dir.join("getprop").is_file()));
         crate::ensure(!halium, "Halium hosts (with getprop) are not supported")?;
@@ -178,7 +178,7 @@ impl Host {
             other => return Err(format!("unsupported architecture: {other}").into()),
         };
         let version =
-            runner.run(Command::line("lxc-info --version").timeout(Duration::from_secs(3)))?;
+            command::run(Command::line("lxc-info --version").timeout(Duration::from_secs(3)))?;
         let major = version
             .trim()
             .split('.')

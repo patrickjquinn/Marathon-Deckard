@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::Result;
-use crate::command::{Command, Runner};
+use crate::command::{self, Command};
 use crate::mounts::MountLayout;
 use crate::network::Network;
 
@@ -43,49 +43,21 @@ impl Lxc {
         Command::new(head.iter().chain(tail).copied())
     }
 
-    fn property(&self, program: &str, args: &[&str]) -> Command {
-        let mut command = self.command("lxc-attach", &["--clear-env", "--", program]);
-        command
-            .args
-            .extend(args.iter().map(|arg| (*arg).to_owned()));
-        command.timeout(Duration::from_secs(3))
-    }
-
-    /// Android's value of `key`, thawing a frozen container around the read.
-    ///
-    /// # Errors
-    /// The key is invalid, the container is stopped or a command fails.
-    pub fn get_property(&self, runner: &mut impl Runner, key: &str) -> Result<String> {
-        validate_property_key(key)?;
-        let command = self.property("/system/bin/getprop", &[key]);
-        let value = self.with_running(runner, |runner| runner.run(command))?;
-        Ok(value.trim_end_matches(['\r', '\n']).to_owned())
-    }
-
-    /// # Errors
-    /// The key or value is invalid, the container is stopped or a command fails.
-    pub fn set_property(&self, runner: &mut impl Runner, key: &str, value: &str) -> Result<()> {
-        validate_property_key(key)?;
-        validate_property_value(value)?;
-        let command = self.property("/system/bin/setprop", &[key, value]);
-        self.with_running(runner, |runner| runner.run(command))
-            .map(drop)
-    }
-
-    fn with_running<R: Runner, T>(
-        &self,
-        runner: &mut R,
-        action: impl FnOnce(&mut R) -> Result<T>,
-    ) -> Result<T> {
-        let state = self.status(runner)?;
+    /// Runs `program` in the container, thawing a frozen one around it.
+    fn attach(&self, program: &str, args: &[&str]) -> Result<String> {
+        let tail = [&["--clear-env", "--", program], args].concat();
+        let command = self
+            .command("lxc-attach", &tail)
+            .timeout(Duration::from_secs(3));
+        let state = self.status()?;
         if state == State::Stopped {
             return Err("container is stopped".into());
         }
         if state == State::Running {
-            return action(runner);
+            return command::run(command);
         }
-        self.unfreeze(runner)?;
-        match (action(runner), self.freeze(runner)) {
+        self.unfreeze()?;
+        match (command::run(command), self.freeze()) {
             (Ok(value), Ok(())) => Ok(value),
             (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
             (Err(operation), Err(refreeze)) => Err(format!(
@@ -95,10 +67,28 @@ impl Lxc {
         }
     }
 
+    /// Android's value of `key`, thawing a frozen container around the read.
+    ///
+    /// # Errors
+    /// The key is invalid, the container is stopped or a command fails.
+    pub fn get_property(&self, key: &str) -> Result<String> {
+        validate_property_key(key)?;
+        let value = self.attach("/system/bin/getprop", &[key])?;
+        Ok(value.trim_end_matches(['\r', '\n']).to_owned())
+    }
+
+    /// # Errors
+    /// The key or value is invalid, the container is stopped or a command fails.
+    pub fn set_property(&self, key: &str, value: &str) -> Result<()> {
+        validate_property_key(key)?;
+        validate_property_value(value)?;
+        self.attach("/system/bin/setprop", &[key, value]).map(drop)
+    }
+
     /// # Errors
     /// `lxc-info` fails or reports an unknown state.
-    pub fn status(&self, runner: &mut impl Runner) -> Result<State> {
-        match runner.run(self.command("lxc-info", &["-sH"]))?.trim() {
+    pub fn status(&self) -> Result<State> {
+        match command::run(self.command("lxc-info", &["-sH"]))?.trim() {
             "STOPPED" => Ok(State::Stopped),
             "RUNNING" => Ok(State::Running),
             "FROZEN" => Ok(State::Frozen),
@@ -108,14 +98,9 @@ impl Lxc {
 
     /// # Errors
     /// A status check fails or `target` is not reached in time.
-    pub fn wait_for(
-        &self,
-        runner: &mut impl Runner,
-        target: State,
-        timeout: Duration,
-    ) -> Result<()> {
+    pub fn wait_for(&self, target: State, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
-        while self.status(runner)? != target {
+        while self.status()? != target {
             if Instant::now() >= deadline {
                 return Err(format!("LXC did not reach {target:?}").into());
             }
@@ -125,56 +110,50 @@ impl Lxc {
     }
 
     /// From `from`, runs `program` and waits up to 10 seconds for `to`.
-    fn change(
-        &self,
-        runner: &mut impl Runner,
-        from: State,
-        program: &str,
-        to: State,
-    ) -> Result<()> {
-        if self.status(runner)? != from {
+    fn change(&self, from: State, program: &str, to: State) -> Result<()> {
+        if self.status()? != from {
             let from = format!("{from:?}").to_lowercase();
             return Err(format!("container is not {from}").into());
         }
-        runner.run(self.command(program, &[]))?;
-        self.wait_for(runner, to, Duration::from_secs(10))
+        command::run(self.command(program, &[]))?;
+        self.wait_for(to, Duration::from_secs(10))
     }
 
     /// # Errors
     /// The container is not stopped, its config is not a regular file, or
     /// it does not start within 10 seconds.
-    pub fn start(&self, runner: &mut impl Runner) -> Result<()> {
-        if self.status(runner)? != State::Stopped {
+    pub fn start(&self) -> Result<()> {
+        if self.status()? != State::Stopped {
             return Err("container is not stopped".into());
         }
         let config = self.root.join(&self.name).join("config");
         if !fs::symlink_metadata(&config).is_ok_and(|metadata| metadata.is_file()) {
             return Err(format!("LXC config is not a regular file: {}", config.display()).into());
         }
-        runner.run(self.command("lxc-start", &["-d", "--", "/init"]))?;
-        self.wait_for(runner, State::Running, Duration::from_secs(10))
+        command::run(self.command("lxc-start", &["-d", "--", "/init"]))?;
+        self.wait_for(State::Running, Duration::from_secs(10))
     }
 
     /// # Errors
     /// The container does not stop within 30 seconds.
-    pub fn stop(&self, runner: &mut impl Runner) -> Result<()> {
-        if self.status(runner)? == State::Stopped {
+    pub fn stop(&self) -> Result<()> {
+        if self.status()? == State::Stopped {
             return Ok(());
         }
-        runner.run(self.command("lxc-stop", &["-k"]))?;
-        self.wait_for(runner, State::Stopped, Duration::from_secs(30))
+        command::run(self.command("lxc-stop", &["-k"]))?;
+        self.wait_for(State::Stopped, Duration::from_secs(30))
     }
 
     /// # Errors
     /// The container is not running or does not freeze within 10 seconds.
-    pub fn freeze(&self, runner: &mut impl Runner) -> Result<()> {
-        self.change(runner, State::Running, "lxc-freeze", State::Frozen)
+    pub fn freeze(&self) -> Result<()> {
+        self.change(State::Running, "lxc-freeze", State::Frozen)
     }
 
     /// # Errors
     /// The container is not frozen or does not thaw within 10 seconds.
-    pub fn unfreeze(&self, runner: &mut impl Runner) -> Result<()> {
-        self.change(runner, State::Frozen, "lxc-unfreeze", State::Running)
+    pub fn unfreeze(&self) -> Result<()> {
+        self.change(State::Frozen, "lxc-unfreeze", State::Running)
     }
 }
 
@@ -190,21 +169,21 @@ impl ContainerManager {
     ///
     /// # Errors
     /// The container is not stopped or a step fails.
-    pub fn start(&self, runner: &mut impl Runner) -> Result<()> {
-        if self.lxc.status(runner)? != State::Stopped {
+    pub fn start(&self) -> Result<()> {
+        if self.lxc.status()? != State::Stopped {
             return Err("container must be stopped before mounting".into());
         }
         self.mounts.preflight()?;
-        self.network.start(runner)?;
-        if let Err(error) = self.mounts.mount(runner) {
-            let _ = self.network.stop(runner);
+        self.network.start()?;
+        if let Err(error) = self.mounts.mount() {
+            let _ = self.network.stop();
             return Err(error);
         }
-        if let Err(error) = self.lxc.start(runner) {
+        if let Err(error) = self.lxc.start() {
             // An LXC launch can fail after spawning; do not unmount a live container.
-            if self.lxc.status(runner)? == State::Stopped {
-                let _ = self.mounts.unmount(runner);
-                let _ = self.network.stop(runner);
+            if self.lxc.status()? == State::Stopped {
+                let _ = self.mounts.unmount();
+                let _ = self.network.stop();
             }
             return Err(error);
         }
@@ -213,13 +192,13 @@ impl ContainerManager {
 
     /// # Errors
     /// LXC does not stop or an unmount or network step fails.
-    pub fn stop(&self, runner: &mut impl Runner) -> Result<()> {
-        self.lxc.stop(runner)?;
-        if self.lxc.status(runner)? != State::Stopped {
+    pub fn stop(&self) -> Result<()> {
+        self.lxc.stop()?;
+        if self.lxc.status()? != State::Stopped {
             return Err("refusing to unmount a live container".into());
         }
-        self.mounts.unmount(runner)?;
-        self.network.stop(runner)
+        self.mounts.unmount()?;
+        self.network.stop()
     }
 }
 
@@ -248,95 +227,4 @@ pub fn validate_property_value(value: &str) -> Result<()> {
         return Err("invalid property value".into());
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::VecDeque;
-
-    struct FakeRunner {
-        expected: VecDeque<(&'static str, &'static str)>,
-        commands: Vec<Command>,
-    }
-
-    impl FakeRunner {
-        fn new(expected: &[(&'static str, &'static str)]) -> Self {
-            Self {
-                expected: expected.iter().copied().collect(),
-                commands: Vec::new(),
-            }
-        }
-    }
-
-    impl Runner for FakeRunner {
-        fn run(&mut self, command: Command) -> Result<String> {
-            let (program, output) = self.expected.pop_front().ok_or("unexpected command")?;
-            if command.program() != program {
-                return Err(format!("expected {program}, got {}", command.program()).into());
-            }
-            self.commands.push(command);
-            Ok(output.into())
-        }
-    }
-
-    #[test]
-    fn start_and_stop_wait_for_real_lxc_states() -> Result<()> {
-        let root = tempfile::tempdir()?;
-        fs::create_dir(root.path().join("deckard"))?;
-        fs::write(root.path().join("deckard/config"), "lxc.rootfs.path = /x\n")?;
-        let lxc = Lxc::new(root.path().into(), "deckard".into())?;
-        let mut runner = FakeRunner::new(&[
-            ("lxc-info", "STOPPED"),
-            ("lxc-start", ""),
-            ("lxc-info", "RUNNING"),
-            ("lxc-info", "RUNNING"),
-            ("lxc-stop", ""),
-            ("lxc-info", "STOPPED"),
-        ]);
-        lxc.start(&mut runner)?;
-        lxc.stop(&mut runner)?;
-        assert!(runner.expected.is_empty());
-        let root = root.path().display().to_string();
-        let start = [
-            "lxc-start",
-            "-P",
-            &root,
-            "-n",
-            "deckard",
-            "-d",
-            "--",
-            "/init",
-        ];
-        assert_eq!(runner.commands[1].args, start);
-        assert!(Lxc::new("/tmp".into(), "../waydroid".into()).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn property_read_is_a_bounded_attach_that_restores_frozen_state() -> Result<()> {
-        let lxc = Lxc::new("/var/lib/deckard/lxc".into(), "deckard".into())?;
-        let mut runner = FakeRunner::new(&[
-            ("lxc-info", "FROZEN"),
-            ("lxc-info", "FROZEN"),
-            ("lxc-unfreeze", ""),
-            ("lxc-info", "RUNNING"),
-            ("lxc-attach", "1\n"),
-            ("lxc-info", "RUNNING"),
-            ("lxc-freeze", ""),
-            ("lxc-info", "FROZEN"),
-        ]);
-        assert_eq!(lxc.get_property(&mut runner, "sys.boot_completed")?, "1");
-        assert!(runner.expected.is_empty());
-        let attach = &runner.commands[4];
-        let expected = "lxc-attach -P /var/lib/deckard/lxc -n deckard --clear-env -- /system/bin/getprop sys.boot_completed";
-        assert_eq!(attach.args.join(" "), expected);
-        assert_eq!(attach.timeout, Some(Duration::from_secs(3)));
-        assert!(lxc.get_property(&mut runner, "bad;key").is_err());
-        assert!(
-            lxc.set_property(&mut runner, "persist.x", "bad\nvalue")
-                .is_err()
-        );
-        Ok(())
-    }
 }

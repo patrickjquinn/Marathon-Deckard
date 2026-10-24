@@ -22,7 +22,6 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{DynamicType, Value};
 
 use crate::Result;
-use crate::command::ProcessRunner;
 use crate::dbus::{Caller, ContainerService};
 use crate::drivers;
 use crate::initializer::{Host, Images, Init, Instance, PREINSTALLED};
@@ -142,8 +141,8 @@ fn emit(conn: &Connection, signal: &str, body: &(impl Serialize + DynamicType)) 
 
 fn initialize(progress: &Progress<'_>, cancelled: &AtomicBool) -> Result<()> {
     let instance = Instance::production();
-    drivers::ensure_binder_nodes(&mut ProcessRunner)?;
-    let host = Host::probe(&mut ProcessRunner)?;
+    drivers::ensure_binder_nodes()?;
+    let host = Host::probe()?;
     let preinstalled: Vec<PathBuf> = PREINSTALLED.iter().map(PathBuf::from).collect();
     let images = Images::find(&preinstalled, &instance.work.join("images"))?;
     progress(&format!(
