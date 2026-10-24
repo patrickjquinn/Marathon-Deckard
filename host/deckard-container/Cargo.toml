@@ -8,7 +8,6 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 async-io.workspace = true
-blocking = "=1.7.0"
 deckard-host-tools = { path = "../deckard-host-tools" }
 deckard-launch = { path = "../deckard-launch" }
 futures-lite.workspace = true

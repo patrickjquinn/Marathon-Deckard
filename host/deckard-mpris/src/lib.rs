@@ -11,10 +11,11 @@ use std::time::Instant;
 use deckard_core::messages::{self, Media};
 use deckard_core::png_guard;
 use deckard_core::{json, keel};
+use deckard_host_tools::bus;
 use serde_json::{Map, Value};
 use tempfile::TempPath;
+use zbus::Address;
 use zbus::blocking::Connection;
-use zbus::blocking::connection::Builder;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value as Variant};
 
 const PATH: &str = "/org/mpris/MediaPlayer2";
@@ -436,15 +437,13 @@ impl MprisAdapter {
     }
 
     fn connect(&self, name: &str, root: Root, player: Player) -> zbus::Result<Connection> {
-        let builder = match &self.address {
-            Some(address) => Builder::address(address.as_str())?,
-            None => Builder::session()?,
+        let address = match &self.address {
+            Some(address) => address.parse()?,
+            None => Address::session()?,
         };
-        builder
-            .name(name)?
-            .serve_at(PATH, root)?
-            .serve_at(PATH, player)?
-            .build()
+        let builder = bus::builder(address)?.name(name)?;
+        let builder = builder.serve_at(PATH, root)?.serve_at(PATH, player)?;
+        Ok(async_io::block_on(builder.build())?.into())
     }
 
     fn update(&mut self, media: Media) -> zbus::Result<()> {

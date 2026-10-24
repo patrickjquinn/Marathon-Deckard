@@ -7,11 +7,14 @@ publish.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+async-channel.workspace = true
+async-io.workspace = true
 nix.workspace = true
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+zbus = { workspace = true, features = ["blocking-api"] }
 
 [lints]
 workspace = true

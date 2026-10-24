@@ -31,7 +31,7 @@ use deckard_core::json;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
 use deckard_core::validate;
-use deckard_host_tools::{names, shared_folders};
+use deckard_host_tools::{bus, names, shared_folders};
 use deckard_mpris::MprisAdapter;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::future;
@@ -272,7 +272,7 @@ fn main() -> Result<(), Error> {
         cgroup.join("memory.current"),
     );
     let manage = Manage::default();
-    let bus = Connection::session()?;
+    let bus = bus::session()?;
     let api = SettingsApi {
         bus: bus.inner().clone(),
         runtime: runtime.clone(),
@@ -354,7 +354,7 @@ fn main() -> Result<(), Error> {
     );
     let sharing = Sharing::new(bus.inner().clone(), Arc::clone(&to_system), xfer);
     bus.object_server().at(OBJECT_PATH, sharing.clone())?;
-    let location = match Connection::system() {
+    let location = match bus::system() {
         Ok(system) => Some(LocationSync::start(system.inner().clone(), to_user)),
         Err(error) => {
             eprintln!("deckard-bridge: no system bus, so no location for Android: {error}");

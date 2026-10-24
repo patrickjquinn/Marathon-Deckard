@@ -14,6 +14,7 @@ use std::time::Duration;
 use async_channel::Sender;
 use async_io::Timer;
 use deckard_core::{ids, json, sync, validate};
+use deckard_host_tools::bus;
 use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::blocking::Connection;
@@ -315,7 +316,7 @@ impl Packages {
     /// executor; its path in Android.
     async fn stage(&self, path: &str) -> fdo::Result<(String, Staged)> {
         let (service, path) = (self.clone(), path.to_owned());
-        blocking::unblock(move || service.copy(&path)).await
+        bus::unblock(move || service.copy(&path)).await
     }
 
     fn copy(&self, path: &str) -> fdo::Result<(String, Staged)> {

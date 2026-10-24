@@ -16,13 +16,14 @@ use async_executor::{Executor, Task};
 use async_io::Timer;
 use deckard_core::keel::{self, APP_ID_PREFIX, App, Manifest, Shortcut};
 use deckard_core::{json, sync, validate};
+use deckard_host_tools::bus;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::message::Header;
 use zbus::zvariant::{OwnedValue, Value as Variant};
-use zbus::{Connection, DBusError, connection, interface};
+use zbus::{Connection, DBusError, interface};
 
 use crate::auth;
 use crate::intents::{self, NAVIGATION};
@@ -440,7 +441,7 @@ impl Shared {
             calls,
         };
         let builder = async {
-            let builder = connection::Builder::session()?.internal_executor(false);
+            let builder = bus::builder(zbus::Address::session()?)?.internal_executor(false);
             builder.serve_at(PATH, provider)?.build().await
         };
         let connection = match builder.await {

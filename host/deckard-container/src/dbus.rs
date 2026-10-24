@@ -12,11 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use deckard_host_tools::cfg;
+use deckard_host_tools::{bus, cfg};
 use deckard_launch::binder::BinderConfig;
 use rustix::fd::OwnedFd;
 use rustix::process::{Pid, PidfdFlags, Signal};
-use zbus::connection::{Builder, Connection};
+use zbus::connection::Connection;
 use zbus::fdo::{self, DBusProxy};
 use zbus::message::Header;
 use zbus::names::BusName;
@@ -399,7 +399,7 @@ impl ContainerService {
         work: impl FnOnce(&mut ServiceState) -> fdo::Result<T> + Send + 'static,
     ) -> fdo::Result<T> {
         let state = Arc::clone(&self.state);
-        blocking::unblock(move || work(&mut *state.lock().map_err(poisoned)?)).await
+        bus::unblock(move || work(&mut *state.lock().map_err(poisoned)?)).await
     }
 
     /// Stops a tracked session's container and tells its process to exit.
@@ -641,7 +641,7 @@ pub async fn serve_system_bus(
 ) -> zbus::Result<(Connection, ContainerService)> {
     let service = ContainerService::new(manager, hardware_sender);
     let initializer = InitializerService::production(service.clone());
-    let connection = Builder::system()?
+    let connection = bus::builder(zbus::Address::system()?)?
         .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, service.clone())?
         .serve_at(initializer_dbus::OBJECT_PATH, initializer)?

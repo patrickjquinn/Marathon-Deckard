@@ -362,7 +362,6 @@ dependencies = [
  "async-executor",
  "async-io",
  "base64",
- "blocking",
  "deckard-core",
  "deckard-host-tools",
  "deckard-mpris",
@@ -388,7 +387,6 @@ name = "deckard-container"
 version = "0.4.0"
 dependencies = [
  "async-io",
- "blocking",
  "deckard-host-tools",
  "deckard-launch",
  "futures-lite",
@@ -431,11 +429,14 @@ dependencies = [
 name = "deckard-host-tools"
 version = "0.4.0"
 dependencies = [
+ "async-channel",
+ "async-io",
  "nix",
  "rustix",
  "serde",
  "serde_json",
  "tempfile",
+ "zbus",
 ]
 
 [[package]]
@@ -462,8 +463,10 @@ dependencies = [
 name = "deckard-mpris"
 version = "0.1.0"
 dependencies = [
+ "async-io",
  "base64",
  "deckard-core",
+ "deckard-host-tools",
  "image",
  "serde_json",
  "tempfile",
@@ -485,8 +488,8 @@ version = "0.4.0"
 dependencies = [
  "async-channel",
  "async-io",
- "blocking",
  "deckard-core",
+ "deckard-host-tools",
  "futures-lite",
  "getrandom",
  "serde_json",

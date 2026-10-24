@@ -11,6 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use deckard_core::runtime_state::{ResetError, State, UnitCall};
 use deckard_core::{ids, png_guard};
+use deckard_host_tools::bus;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use zbus::message::{Flags, Header, Message};
@@ -382,7 +383,7 @@ impl SettingsApi {
             self.runtime.finish_reset();
             return Err(error);
         }
-        let success = blocking::unblock(move || run_helper(&helper)).await;
+        let success = bus::unblock(move || run_helper(&helper)).await;
         self.runtime.finish_reset();
         if success {
             return Ok(());

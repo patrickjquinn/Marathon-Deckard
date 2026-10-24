@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use async_channel::Sender;
 use deckard_core::{ids, json, keel, png_guard, sync, validate};
+use deckard_host_tools::bus;
 use serde_json::{Map, Value, json};
 use zbus::message::Header;
 use zbus::zvariant::{Dict, Fd, Value as Variant};
@@ -252,7 +253,7 @@ impl Sharing {
         }
         let (tid, xfer) = (new_id()?, self.xfer.clone());
         let copy_tid = tid.clone();
-        let copied = blocking::unblock(move || copy_in(&xfer, &copy_tid, &configuration)).await;
+        let copied = bus::unblock(move || copy_in(&xfer, &copy_tid, &configuration)).await;
         let (files, joined) = copied.map_err(|error| {
             remove(&self.xfer, &tid);
             ApiError::InvalidArgs(error.into())

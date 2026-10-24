@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+use deckard_host_tools::bus;
 use deckard_launch::binder::{BinderConfig, Platform};
-use zbus::blocking::Connection;
 
 use crate::Result;
 
@@ -43,7 +43,7 @@ fn apply(config: &BinderConfig, zone: &str) -> Result<()> {
 }
 
 fn follow(config: &BinderConfig, stop: &AtomicBool) -> Result<()> {
-    let timedate = TimedateProxyBlocking::new(&Connection::system()?)?;
+    let timedate = TimedateProxyBlocking::new(&bus::system()?)?;
     let changes = timedate.receive_timezone_changed();
     apply(config, &timedate.timezone()?)?;
     for change in changes {

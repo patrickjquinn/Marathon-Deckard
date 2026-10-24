@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime};
 use async_channel::Receiver;
 use async_io::Timer;
 use deckard_core::{ids, json, keel, sync, validate};
+use deckard_host_tools::bus;
 use futures_lite::{StreamExt, future};
 use percent_encoding::CONTROLS;
 use regex::Regex;
@@ -814,7 +815,7 @@ impl Intents {
         };
         if let Some(copy) = self.conclude(&id, ask, chosen) {
             let (xfer, copy_id) = (self.xfer.clone(), id.clone());
-            let files = blocking::unblock(move || copy_in(&xfer, &copy_id, &copy)).await;
+            let files = bus::unblock(move || copy_in(&xfer, &copy_id, &copy)).await;
             self.picked(&id, files);
         }
         Ok(())
@@ -915,7 +916,7 @@ impl Intents {
         let xfer = self.xfer.clone();
         self.tasks.spawn(&self.bus, "deckard-save", async move {
             let shown = target.display().to_string();
-            match blocking::unblock(move || save(&xfer, &id, &target)).await {
+            match bus::unblock(move || save(&xfer, &id, &target)).await {
                 Ok(()) => eprintln!("deckard-bridge: saved {shown}"),
                 Err(error) => eprintln!("deckard-bridge: save of {shown} failed: {error}"),
             }

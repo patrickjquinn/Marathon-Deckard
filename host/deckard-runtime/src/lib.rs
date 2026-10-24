@@ -17,7 +17,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use deckard_host_tools::names;
+use deckard_host_tools::{bus, names};
 use deckard_launch::binder::{self, BinderConfig, Platform};
 use deckard_launch::session::{ContainerManagerProxyBlocking, SESSION_NAME};
 use nix::unistd::User;
@@ -288,7 +288,7 @@ pub fn session_start() -> Result<()> {
         signal_hook::flag::register(signal, Arc::clone(&stop))?;
     }
     signal_hook::flag::register(SIGUSR1, Arc::clone(&leave_container))?;
-    let session_bus = Connection::session()?;
+    let session_bus = bus::session()?;
     let manager = SessionManager {
         stop: Arc::clone(&stop),
     };
@@ -305,7 +305,7 @@ pub fn session_start() -> Result<()> {
         return Err(error);
     }
     fs::remove_file(&marker)?;
-    let system_bus = Connection::system()?;
+    let system_bus = bus::system()?;
     start_container(&system_bus, &payload)?;
 
     let data_home = PathBuf::from(&payload["xdg_data_home"]);
