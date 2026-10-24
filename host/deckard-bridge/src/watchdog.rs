@@ -15,7 +15,7 @@ use deckard_core::runtime_state::{
     self, BOOT_TIMEOUT_MS, BootTimer, EVIDENCE_TIMEOUT_MS, SHELL_BUS_NAME, SHELL_SETTLE_MS,
     SessionFollower, Stall,
 };
-use zbus::blocking::{Connection, MessageIterator};
+use zbus::blocking::Connection;
 
 const EVENT_CAPACITY: usize = 16;
 const EVIDENCE_LOG_LIMIT: u64 = 256 * 1024;
@@ -175,14 +175,12 @@ pub fn follow_shell(
     restart: impl Fn() + Send + Sync + 'static,
 ) -> zbus::Result<()> {
     let rule = crate::owner_changes(SHELL_BUS_NAME)?;
-    let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
     let mut follower = SessionFollower::default();
     let restart = Arc::new(restart);
     let start = Instant::now();
-    for signal in signals {
-        let Ok(signal) = signal else { continue };
+    crate::relay(bus, rule, 8, move |signal| {
         let Ok((name, _, owner)) = signal.body().deserialize::<(String, String, String)>() else {
-            continue;
+            return true;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         if follower.on_name_owner_changed(&name, !owner.is_empty(), now) {
@@ -193,6 +191,6 @@ pub fn follow_shell(
                 restart();
             });
         }
-    }
-    Ok(())
+        true
+    })
 }

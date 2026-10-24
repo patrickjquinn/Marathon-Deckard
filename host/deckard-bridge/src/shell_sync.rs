@@ -10,7 +10,7 @@ use std::process;
 use deckard_core::palette::{self, Color, Theme};
 use deckard_core::runtime_state::SHELL_BUS_NAME;
 use zbus::MatchRule;
-use zbus::blocking::{Connection, MessageIterator};
+use zbus::blocking::Connection;
 use zbus::zvariant::OwnedValue;
 
 const POWER_PATH: &str = "/org/marathonos/Shell/Power";
@@ -54,19 +54,19 @@ fn write(path: &Path, content: &str, done: &str) {
 pub fn sync_doze(bus: &Connection, path: &Path) -> zbus::Result<()> {
     let rule = crate::signals(SHELL_BUS_NAME, POWER_PATH, POWER_INTERFACE)?;
     let rule = rule.member("StateChanged")?.build();
-    let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
-    for signal in signals {
-        let Ok(signal) = signal else { continue };
-        let Ok(state) = signal.body().deserialize::<State>() else {
-            continue;
-        };
-        match state.get("dozing").map(bool::try_from) {
-            Some(Ok(true)) => write(path, "1\n", "Android idles with Marathon"),
-            Some(Ok(false)) => write(path, "0\n", "Android wakes with Marathon"),
+    let path = path.to_owned();
+    crate::relay(bus, rule, 8, move |signal| {
+        let state = signal.body().deserialize::<State>();
+        match state
+            .ok()
+            .and_then(|state| state.get("dozing").map(bool::try_from))
+        {
+            Some(Ok(true)) => write(&path, "1\n", "Android idles with Marathon"),
+            Some(Ok(false)) => write(&path, "0\n", "Android wakes with Marathon"),
             _ => {}
         }
-    }
-    Ok(())
+        true
+    })
 }
 
 fn refresh_palette(bus: &Connection, path: &Path) {

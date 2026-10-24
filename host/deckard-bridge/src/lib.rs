@@ -23,8 +23,10 @@ use std::fmt::Display;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread;
 
+use futures_lite::StreamExt;
 use serde_json::{Map, Value};
-use zbus::blocking::{Connection, MessageIterator};
+use zbus::MessageStream;
+use zbus::blocking::Connection;
 use zbus::match_rule::Builder;
 use zbus::{MatchRule, Message, message};
 
@@ -104,9 +106,35 @@ impl Wake {
     }
 }
 
+/// Subscribes to `rule` now and hands each signal to `each` on the bus's
+/// executor until `each` returns false. `each` must never block.
+///
+/// # Errors
+/// The subscription failed.
+pub fn relay(
+    bus: &Connection,
+    rule: MatchRule<'static>,
+    queue: usize,
+    mut each: impl FnMut(&Message) -> bool + Send + 'static,
+) -> zbus::Result<()> {
+    let bus = bus.inner();
+    let mut signals = async_io::block_on(MessageStream::for_match_rule(rule, bus, Some(queue)))?;
+    let relay = async move {
+        while let Some(signal) = signals.next().await {
+            match signal {
+                Ok(signal) if !each(&signal) => return,
+                Ok(_) => {}
+                Err(error) => eprintln!("deckard-bridge: signal failed: {error}"),
+            }
+        }
+    };
+    bus.executor().spawn(relay, "deckard-relay").detach();
+    Ok(())
+}
+
 /// Runs `refresh` on its own thread now and after each wake or relevant
-/// signal. Each rule drains on its own thread, so a burst during a refresh
-/// folds into one more and never fills a queue behind a pending reply.
+/// signal. Signals only wake the thread, so a burst during a refresh folds
+/// into one more and never fills a queue behind a pending reply.
 ///
 /// # Errors
 /// A subscription failed.
@@ -118,17 +146,10 @@ pub fn follow(
     let (sender, wakes) = mpsc::sync_channel(1);
     let wake = Wake(sender);
     for (rule, relevant) in rules {
-        let signals = MessageIterator::for_match_rule(rule, bus, Some(16))?;
         let wake = wake.clone();
-        thread::spawn(move || {
-            for signal in signals {
-                match signal {
-                    Ok(signal) if relevant(&signal) && !wake.wake() => return,
-                    Ok(_) => {}
-                    Err(error) => eprintln!("deckard-bridge: signal failed: {error}"),
-                }
-            }
-        });
+        relay(bus, rule, 16, move |signal| {
+            !relevant(signal) || wake.wake()
+        })?;
     }
     wake.wake();
     thread::spawn(move || {

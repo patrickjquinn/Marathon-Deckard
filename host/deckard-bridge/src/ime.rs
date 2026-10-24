@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 use deckard_core::ids::PackageName;
 use deckard_core::keel::{self, APP_ID_PREFIX};
@@ -13,7 +12,7 @@ use deckard_core::sync;
 use deckard_core::{json, validate};
 use serde_json::{Map, Value, json};
 use zbus::Message;
-use zbus::blocking::{Connection, MessageIterator, Proxy};
+use zbus::blocking::{Connection, Proxy};
 
 use crate::app_channel::{ChannelEvent, ChannelHandle};
 
@@ -230,8 +229,13 @@ fn listen(
     handle: &ChannelHandle,
 ) -> zbus::Result<()> {
     let rule = crate::signals(SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)?.build();
-    let signals = MessageIterator::for_match_rule(rule, bus, Some(64))?;
     let (state, handle, owner) = (Arc::clone(state), handle.clone(), shell.clone());
+    crate::relay(bus, rule, 64, move |signal| {
+        if let Some(message) = sync::lock(&state).shell(signal) {
+            let _ = handle.send(message);
+        }
+        true
+    })?;
     let rules = vec![(
         crate::owner_changes(SHELL_BUS_NAME)?,
         crate::gained_owner as _,
@@ -239,19 +243,6 @@ fn listen(
     crate::follow(bus, rules, move || {
         crate::report("IME register failed", register(&owner));
     })?;
-    thread::spawn(move || {
-        for signal in signals {
-            match signal {
-                Ok(signal) => {
-                    let mut ime = sync::lock(&state);
-                    if let Some(message) = ime.shell(&signal) {
-                        let _ = handle.send(message);
-                    }
-                }
-                Err(error) => eprintln!("deckard-bridge: Shell IME signal failed: {error}"),
-            }
-        }
-    });
     Ok(())
 }
 

@@ -406,30 +406,23 @@ fn main() -> Result<(), Error> {
             future::block_on(runtime::call_unit(restart_bus.inner(), UnitCall::Restart));
         deckard_bridge::report("restarting Android failed", restarted);
     });
-    let follow_bus = bus.clone();
-    deckard_bridge::spawn("Shell follower failed", move || {
-        let restart_bus = follow_bus.clone();
-        watchdog::follow_shell(&follow_bus, move || {
-            let restarted = future::block_on(runtime::try_restart_unit(restart_bus.inner()));
-            deckard_bridge::report("restarting Android failed", restarted);
-        })
+    let restart_bus = bus.clone();
+    let restart = move || {
+        let restarted = future::block_on(runtime::try_restart_unit(restart_bus.inner()));
+        deckard_bridge::report("restarting Android failed", restarted);
+    };
+    let follower = watchdog::follow_shell(&bus, restart);
+    deckard_bridge::report("Shell follower failed", follower);
+    let (watch_bus, watched) = (bus.clone(), runtime.clone());
+    let watch = runtime::watch_unit(&bus, runtime.clone(), move || {
+        emit_runtime(&watch_bus, &watched);
+        boot_watchdog.set_active_since(watched.active_since_ms());
     });
-    let (watch_bus, watch_runtime) = (bus.clone(), runtime.clone());
-    deckard_bridge::spawn("unit watch failed", move || {
-        let runtime = watch_runtime.clone();
-        runtime::watch_unit(&watch_bus.clone(), watch_runtime, move || {
-            emit_runtime(&watch_bus, &runtime);
-            boot_watchdog.set_active_since(runtime.active_since_ms());
-        })
-    });
-    let (doze_bus, doze) = (bus.clone(), data.join("deckard/doze"));
-    deckard_bridge::spawn("Doze sync failed", move || {
-        shell_sync::sync_doze(&doze_bus, &doze)
-    });
-    let (palette_bus, palette) = (bus.clone(), data.join("deckard/palette"));
-    deckard_bridge::spawn("palette sync failed", move || {
-        shell_sync::sync_palette(&palette_bus, &palette)
-    });
+    deckard_bridge::report("unit watch failed", watch);
+    let doze = shell_sync::sync_doze(&bus, &data.join("deckard/doze"));
+    deckard_bridge::report("Doze sync failed", doze);
+    let palette = shell_sync::sync_palette(&bus, &data.join("deckard/palette"));
+    deckard_bridge::report("palette sync failed", palette);
     let marker = dirs::runtime_dir()
         .unwrap_or_else(env::temp_dir)
         .join("deckard-login");
@@ -439,8 +432,6 @@ fn main() -> Result<(), Error> {
             let _ = future::block_on(runtime::call_unit(bus.inner(), UnitCall::Start));
         }
     }
-    while !bus.is_closed() {
-        thread::sleep(Duration::from_secs(60));
-    }
+    future::block_on(bus.inner().closed());
     Ok(())
 }
