@@ -312,17 +312,8 @@ fn image_data(png: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
 }
 
 fn html_escape(value: &str) -> String {
-    let mut result = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '&' => result.push_str("&amp;"),
-            '<' => result.push_str("&lt;"),
-            '>' => result.push_str("&gt;"),
-            '"' => result.push_str("&quot;"),
-            _ => result.push(character),
-        }
-    }
-    result
+    let value = value.replace('&', "&amp;").replace('<', "&lt;");
+    value.replace('>', "&gt;").replace('"', "&quot;")
 }
 
 fn now_ms() -> i64 {
