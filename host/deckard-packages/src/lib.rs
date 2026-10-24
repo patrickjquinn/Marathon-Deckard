@@ -531,7 +531,7 @@ fn identity(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 
         ("pkg", pkg.unwrap_or("").to_owned().into()),
         (
             "label",
-            validate::label(json::string(message, "label")).into(),
+            validate::label(json::string(message, "label"), "").into(),
         ),
         ("versionName", json::text(message, "versionName", 64).into()),
         (

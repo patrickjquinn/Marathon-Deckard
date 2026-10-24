@@ -790,10 +790,8 @@ impl Shared {
         host: Host,
     ) -> Result<Value, Error> {
         let unknown = || {
-            Error::UnknownAction(format!(
-                "no action named {}",
-                validate::truncate(action, 64)
-            ))
+            let name = validate::truncate(action, 64);
+            Error::UnknownAction(format!("no action named {name}"))
         };
         let (tool, search, shortcut, snapshot) = {
             let state = sync::lock(&self.state);
@@ -938,10 +936,8 @@ impl Provider {
 }
 
 fn no_entity(entity_type: &str) -> Error {
-    Error::UnknownAction(format!(
-        "no entity type {}",
-        validate::truncate(entity_type, 64)
-    ))
+    let name = validate::truncate(entity_type, 64);
+    Error::UnknownAction(format!("no entity type {name}"))
 }
 
 #[zbus::interface(name = "org.shipwright.Keel.Actions")]

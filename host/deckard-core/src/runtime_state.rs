@@ -9,6 +9,7 @@ pub const SHELL_SETTLE_MS: u64 = 2_000;
 const SHELL_MIN_GAP_MS: u64 = 30_000;
 pub const SHELL_BUS_NAME: &str = "org.marathonos.Shell";
 
+/// Android as Settings shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     Stopped,
@@ -17,6 +18,7 @@ pub enum State {
     Stopping,
 }
 
+/// A systemd call on the session unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitCall {
     Start,
@@ -24,12 +26,14 @@ pub enum UnitCall {
     Restart,
 }
 
+/// Why a reset cannot start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetError {
     AlreadyResetting,
     Unavailable,
 }
 
+/// What Settings shows about the runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSnapshot {
     pub state: State,

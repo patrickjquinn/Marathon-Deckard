@@ -6,6 +6,7 @@ use crate::ids::PackageName;
 use crate::json;
 use crate::validate;
 
+/// The field that made a message unusable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageError {
     Key,
@@ -13,6 +14,7 @@ pub enum MessageError {
     Session,
 }
 
+/// A validated notification `post`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Post {
     pub key: String,
@@ -34,6 +36,7 @@ pub struct Post {
     pub progress: Option<i32>,
 }
 
+/// A validated `media` session update.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Media {
     pub session_id: i32,
@@ -60,15 +63,6 @@ fn integer(message: &Map<String, Value>, name: &str, min: i64, max: i64, fallbac
     match message.get(name).and_then(Value::as_f64) {
         Some(value) => value.clamp(min as f64, max as f64) as i64,
         None => fallback,
-    }
-}
-
-fn label(message: &Map<String, Value>, package: &PackageName) -> String {
-    let label = validate::label(json::string(message, "label"));
-    if label.is_empty() {
-        package.as_str().to_owned()
-    } else {
-        label
     }
 }
 
@@ -190,7 +184,7 @@ pub fn post(message: &Map<String, Value>) -> Result<Post, MessageError> {
     }
     Ok(Post {
         key: key.to_owned(),
-        label: label(message, &package),
+        label: validate::label(json::string(message, "label"), package.as_str()),
         package,
         title: json::text(message, "title", 256),
         body: json::text(message, "text", 4096),
@@ -228,7 +222,7 @@ pub fn media(message: &Map<String, Value>) -> Result<Media, MessageError> {
     let can = json::object(message, "can").unwrap_or(&empty);
     Ok(Media {
         session_id,
-        label: label(message, &package),
+        label: validate::label(json::string(message, "label"), package.as_str()),
         package,
         status: status.to_owned(),
         position_ms: integer(message, "position", 0, 100_000_000_000, 0),

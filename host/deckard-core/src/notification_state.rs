@@ -16,6 +16,7 @@ const MAX_TRACKED: usize = 200;
 const DISMISS_DELAY_MS: u64 = 500;
 const TAP_GRACE_MS: i64 = 3_000;
 
+/// Work for the adapter, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Close(u32),
@@ -62,6 +63,7 @@ struct Closing {
     token: u64,
 }
 
+/// Android notification keys and the Hub rows that show them.
 #[derive(Default)]
 pub struct NotificationState {
     entries: BTreeMap<String, Entry>,

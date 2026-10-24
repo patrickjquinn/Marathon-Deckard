@@ -401,7 +401,7 @@ fn targets(reply: &Map<String, Value>) -> Vec<VariantMap> {
             ("pkg", pkg.into()),
             (
                 "label",
-                validate::label(json::string(target, "label")).into(),
+                validate::label(json::string(target, "label"), "").into(),
             ),
             (
                 "icon",

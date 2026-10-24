@@ -74,12 +74,6 @@ fn number(value: &Map<String, Value>, key: &str, max: i64) -> i64 {
     number.clamp(0.0, max as f64) as i64
 }
 
-/// The app's label, or its package when it has none.
-fn label(value: &Map<String, Value>, pkg: &str) -> String {
-    let label = validate::label(json::string(value, "label"));
-    if label.is_empty() { pkg.into() } else { label }
-}
-
 /// The objects of the list at `key`, at most `MAX_ENTRIES` read.
 fn objects<'a>(value: &'a Map<String, Value>, key: &str) -> Vec<&'a Map<String, Value>> {
     let entries = json::array(value, key).iter().take(MAX_ENTRIES);
@@ -99,7 +93,10 @@ pub fn app(value: &Map<String, Value>) -> VariantMap {
     };
     deckard_packages::dict([
         ("pkg", pkg.into()),
-        ("label", label(value, pkg).into()),
+        (
+            "label",
+            validate::label(json::string(value, "label"), pkg).into(),
+        ),
         ("versionName", json::text(value, "versionName", 64).into()),
         ("versionCode", number(value, "versionCode", 1 << 53).into()),
         ("system", flag(value, "system").into()),
@@ -171,7 +168,10 @@ pub fn apps(value: &Map<String, Value>, fixed: Fixed) -> Vec<VariantMap> {
         }
         let mut map = deckard_packages::dict([
             ("pkg", pkg.into()),
-            ("label", label(item, pkg).into()),
+            (
+                "label",
+                validate::label(json::string(item, "label"), pkg).into(),
+            ),
             ("granted", flag(item, "granted").into()),
         ]);
         if fixed == Fixed::Shown {

@@ -6,17 +6,17 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use deckard_core::ids::PackageName;
+use deckard_core::json;
 use deckard_core::messages;
 use deckard_core::notification_state::BridgeEvent;
 use deckard_core::png_guard;
-use deckard_core::validate::{base64_png, clean_text, is_notification_key};
+use deckard_core::validate;
 use deckard_notifications::{NotificationAdapter, Result};
-use regex::Regex;
 use serde_json::{Map, Value};
 use zbus::blocking::Connection;
 use zbus::zvariant::Value as Variant;
@@ -28,10 +28,6 @@ const MAX_SYNC_KEYS: usize = 4096;
 const TOAST_INTERVAL: Duration = Duration::from_millis(500);
 const TOAST_LIFETIME: Duration = Duration::from_secs(4);
 static NEXT_ICON: AtomicU64 = AtomicU64::new(0);
-static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:waydroid|lineageos|lineage os)\b")
-        .unwrap_or_else(|error| panic!("invalid fixed runtime-name pattern: {error}"))
-});
 
 #[derive(Clone)]
 pub struct NotificationBridge {
@@ -74,8 +70,8 @@ impl NotificationBridge {
                 }
             }
             "remove" => {
-                let key = string(message, "key");
-                if is_notification_key(key) {
+                let key = json::string(message, "key");
+                if validate::is_notification_key(key) {
                     self.adapter.remove(key)?;
                 }
             }
@@ -94,7 +90,7 @@ impl NotificationBridge {
         let Some(package) = package(message) else {
             return Ok(());
         };
-        let Some(bytes) = base64_png(string(message, "png"), MAX_ICON_BYTES) else {
+        let Some(bytes) = validate::base64_png(json::string(message, "png"), MAX_ICON_BYTES) else {
             return Ok(());
         };
         let Some(png) = png_guard::sanitize(&bytes, MAX_ICON_BYTES, 128) else {
@@ -108,7 +104,7 @@ impl NotificationBridge {
         let Some(package) = package(message) else {
             return Ok(());
         };
-        let text = clean_text(string(message, "text"), 512).trim().to_owned();
+        let text = json::text(message, "text", 512).trim().to_owned();
         if text.is_empty() {
             return Ok(());
         }
@@ -127,12 +123,7 @@ impl NotificationBridge {
             last.retain(|_, previous| now.duration_since(*previous) < TOAST_LIFETIME);
             last.insert(package.clone(), now);
         }
-        let label = toast_label(message);
-        let label = if label.trim().is_empty() {
-            package.as_str()
-        } else {
-            label.as_str()
-        };
+        let label = validate::label(json::string(message, "label"), &package);
         let icon = self.icon_dir.join(format!("{package}.png"));
         let icon_url = if icon.is_file() {
             format!("file://{}", icon.display())
@@ -183,23 +174,10 @@ pub fn bridge_event(event: &BridgeEvent) -> Map<String, Value> {
     }
 }
 
-fn string<'a>(message: &'a Map<String, Value>, field: &str) -> &'a str {
-    message.get(field).and_then(Value::as_str).unwrap_or("")
-}
-
 fn package(message: &Map<String, Value>) -> Option<String> {
-    PackageName::try_from(string(message, "pkg"))
+    PackageName::try_from(json::string(message, "pkg"))
         .ok()
         .map(|name| name.as_str().to_owned())
-}
-
-fn toast_label(message: &Map<String, Value>) -> String {
-    let label = clean_text(string(message, "label"), 128);
-    RUNTIME_NAME
-        .replace_all(&label, "Android")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn live_keys(message: &Map<String, Value>) -> Vec<String> {
@@ -210,7 +188,7 @@ fn live_keys(message: &Map<String, Value>) -> Vec<String> {
         .flatten()
         .take(MAX_SYNC_KEYS)
         .filter_map(Value::as_str)
-        .filter(|key| is_notification_key(key))
+        .filter(|key| validate::is_notification_key(key))
         .map(str::to_owned)
         .collect()
 }
@@ -277,15 +255,6 @@ mod tests {
                 .as_object()
                 .expect("object")
                 .clone()
-        );
-    }
-
-    #[test]
-    fn toast_label_matches_runtime_branding() {
-        let input = json!({"label":"  Lineage OS  Waydroid\nMedia  "});
-        assert_eq!(
-            toast_label(input.as_object().expect("object")),
-            "Android Android Media"
         );
     }
 

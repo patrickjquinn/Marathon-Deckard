@@ -182,14 +182,9 @@ pub fn app(message: &Map<String, Value>) -> Option<App> {
         }
     }
     let search = json::string(message, "search");
-    let label = validate::label(json::string(message, "label"));
     Some(App {
         pkg: pkg.to_owned(),
-        label: if label.is_empty() {
-            pkg.to_owned()
-        } else {
-            label
-        },
+        label: validate::label(json::string(message, "label"), pkg),
         links,
         share: json::boolean(message, "share"),
         search: if matches!(search, "gms" | "android") {
@@ -481,14 +476,10 @@ pub fn invalid(schema: &Value, args: &Map<String, Value>) -> Option<String> {
 #[must_use]
 pub fn screen(message: &Map<String, Value>) -> Option<Screen> {
     let pkg = json::string(message, "pkg");
-    let snapshot = message.get("snap").and_then(Value::as_f64).unwrap_or(0.0);
-    if !ids::is_package_name(pkg)
-        || !(1.0..=2_147_483_647.0).contains(&snapshot)
-        || snapshot.fract() != 0.0
-    {
+    let snapshot = int(message, "snap").filter(|snapshot| *snapshot >= 1)?;
+    if !ids::is_package_name(pkg) {
         return None;
     }
-    let snapshot = snapshot as i64;
     let mut lines = Vec::new();
     let sent = json::array(message, "nodes")
         .iter()
