@@ -556,7 +556,7 @@ as the possible cause of the real hang.
 | privapp permissions | `image/overlay/system/etc/permissions/privapp-permissions-deckard-bridge.xml` (`MEDIA_CONTENT_CONTROL`, `START_ACTIVITIES_FROM_BACKGROUND`). The image enforces privapp permissions (`ro.control_privapp_permissions=enforce`). |
 | Boot settings | `image/overlay/system/etc/init/deckard-bridge.rc`, on `sys.boot_completed=1`: listener access, notification-policy access, no heads-up, no touch sounds or haptics, no notification assistant |
 | deckard-bridge | `deckard-bridge.service` (user), `/usr/libexec/deckard-bridge`, wanted by `graphical-session.target` |
-| Overlay sync | `deckard-overlay-sync`, `ExecStartPre` of `waydroid-container.service`: copies `/usr/share/deckard/overlay` into `/var/lib/waydroid/overlay` and removes files a previous version shipped |
+| Overlay sync | `deckard-overlay-sync`, `ExecStartPre` of `deckard-container.service`: copies `/usr/share/deckard/overlay` into `/var/lib/waydroid/overlay` and removes files a previous version shipped |
 | Image | Marathon-Shell `packaging/packages/deckard` (aport), `scripts/qemu/lib/build-deckard-apk.sh`, pipeline patch 0044 (HackberryPi) |
 
 The bridge installed as `flags=[ SYSTEM HAS_CODE PERSISTENT ]` with all its

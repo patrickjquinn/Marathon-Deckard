@@ -21,9 +21,8 @@ use rustix::fs::{AtFlags, FileType, Mode};
 
 use crate::files;
 
-/// The container units, the current one first. Whichever is active owns the
-/// container.
-const UNITS: [&str; 2] = ["deckard-container.service", "waydroid-container.service"];
+/// The container's unit.
+const UNITS: [&str; 1] = ["deckard-container.service"];
 
 /// The container identities LXC may know: (name, configuration path).
 const CONTAINERS: [(&str, &str); 2] = [

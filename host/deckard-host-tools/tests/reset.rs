@@ -161,10 +161,10 @@ fn refuses_without_pkexec_for_root_or_with_arguments() {
 }
 
 #[test]
-fn removes_android_data_and_restarts_the_legacy_container() {
+fn removes_android_data_and_restarts_the_container() {
     let fixture = Fixture::new();
     fixture.seed();
-    fixture.activate("waydroid-container.service");
+    fixture.activate("deckard-container.service");
     let output = fixture.reset(&[]);
     assert_eq!(
         status(&output),
@@ -201,40 +201,12 @@ fn removes_android_data_and_restarts_the_legacy_container() {
     );
     let log = fixture.log();
     assert!(
-        log.contains(&"stop waydroid-container.service".to_owned()),
-        "not stopped: {log:?}"
-    );
-    assert_eq!(
-        log.last().map(String::as_str),
-        Some("start waydroid-container.service")
-    );
-}
-
-#[test]
-fn stops_and_restarts_the_deckard_container() {
-    let fixture = Fixture::new();
-    fixture.seed();
-    fixture.activate("deckard-container.service");
-    let output = fixture.reset(&[]);
-    assert_eq!(
-        status(&output),
-        0,
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let log = fixture.log();
-    assert!(
         log.contains(&"stop deckard-container.service".to_owned()),
         "not stopped: {log:?}"
     );
     assert_eq!(
         log.last().map(String::as_str),
         Some("start deckard-container.service")
-    );
-    assert!(
-        !log.iter()
-            .any(|line| line == "stop waydroid-container.service"),
-        "{log:?}"
     );
 }
 

@@ -645,7 +645,7 @@ from `PKEXEC_UID` and refuses root). It removes everything in that user's
 deckardd's sockets live, and removes `deckard/xfer` and `deckard/install`
 and Waydroid's `waydroid.*.desktop` entries. Waydroid's images in
 `/var/lib/waydroid` and Deckard's overlay stay. It stops
-`waydroid-container.service` first and touches nothing if that fails, and
+`deckard-container.service` first and touches nothing if that fails, and
 starts it again only if it was running. It works from inside the data
 directory after checking it is in the user's home and owned by them, so a
 symlink can't send the removal elsewhere. Exit status: 0 done, 2 usage, 3 no
