@@ -191,7 +191,7 @@ isn't a privacy switch. So there is nothing for the prompt to defer to yet.
   reach the shell. The waiting list is bounded and a repeated id is
   ignored. All 17 deckardd tests pass.
 - **overlay sync**: the PermissionController APK is installed only for
-  `system_datetime 1790477549` (`test-deckard-overlay-sync.sh`).
+  `system_datetime 1790477549` (`host/deckard-overlay-sync/tests/overlay_sync.rs`).
 - **Patch**: the patched `classes.dex` disassembles to the intended
   constructor; `classes2.dex` holds `MarathonGrantView`; apksigner verifies
   the platform signature.
