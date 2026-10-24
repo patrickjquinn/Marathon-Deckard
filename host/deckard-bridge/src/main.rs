@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::Receiver;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -40,7 +40,6 @@ use zbus::fdo::{RequestNameFlags, RequestNameReply};
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 const READ_POLL: Duration = Duration::from_millis(100);
-const MEDIA_POLL: Duration = Duration::from_millis(10);
 const SYSTEM_QUEUE: usize = 64;
 
 fn emit_runtime(bus: &Connection, runtime: &Runtime) {
@@ -225,41 +224,38 @@ impl App {
 
     fn disconnected(&mut self) {
         self.keel.set_connected(BridgeRoute::User, false);
-        self.media.clear();
+        self.media.clear(|_| {});
         let _ = self.packages.disconnected(BridgeRoute::User);
         if let Some(location) = &self.location {
             location.bridge_lost();
         }
     }
 
-    /// Polls for MPRIS commands between Android's messages.
     fn serve(mut self, events: &Receiver<ChannelEvent>) {
         let mut current = None;
-        loop {
-            match events.recv_timeout(MEDIA_POLL) {
-                Ok(ChannelEvent::Connected(generation)) => {
+        for event in events {
+            match event {
+                ChannelEvent::Connected(generation) => {
                     if current.replace(generation).is_some() {
                         self.keel.set_connected(BridgeRoute::User, false);
                     }
                     self.keel.set_connected(BridgeRoute::User, true);
-                    self.media.clear();
+                    let handle = self.handle.clone();
+                    self.media.clear(move |command| {
+                        let _ = handle.send_to(generation, command);
+                    });
                     let hello = deckard_bridge::object(json!({"t": "hello", "v": 1}));
                     let _ = self.handle.send_to(generation, hello);
                     self.audio.wake();
                 }
-                Ok(ChannelEvent::Message(generation, message)) if current == Some(generation) => {
+                ChannelEvent::Message(generation, message) if current == Some(generation) => {
                     self.handle(&message);
                 }
-                Ok(ChannelEvent::Disconnected(generation)) if current == Some(generation) => {
+                ChannelEvent::Disconnected(generation) if current == Some(generation) => {
                     current = None;
                     self.disconnected();
                 }
-                Ok(_) | Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
-            let Some(generation) = current else { continue };
-            for command in self.media.take_commands() {
-                let _ = self.handle.send_to(generation, command);
+                _ => {}
             }
         }
     }

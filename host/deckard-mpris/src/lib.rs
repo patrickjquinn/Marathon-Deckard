@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::Arc;
 use std::time::Instant;
 
 use deckard_core::messages::{self, Media};
@@ -19,11 +19,11 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value as Variant};
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
 const MAX_PLAYERS: usize = 8;
-const MAX_COMMANDS: usize = 16;
 const MAX_ART_BYTES: usize = 768 * 1024;
 const ART_SIDE: u32 = 512;
 
 type Command = Map<String, Value>;
+type Sink = Arc<dyn Fn(Command) + Send + Sync>;
 type Changes = HashMap<&'static str, Variant<'static>>;
 
 struct Root {
@@ -87,7 +87,7 @@ struct Player {
     track: u64,
     since: Instant,
     art_url: Option<String>,
-    commands: SyncSender<Command>,
+    send: Sink,
 }
 
 impl Player {
@@ -98,8 +98,7 @@ impl Player {
             ("cmd".to_owned(), Value::from(command)),
             ("position".to_owned(), Value::from(position_ms)),
         ]);
-        // Past MAX_COMMANDS between two drains, the command is dropped.
-        let _ = self.commands.try_send(message);
+        (self.send)(message);
     }
 
     fn position_us(&self) -> i64 {
@@ -338,13 +337,13 @@ pub struct MprisAdapter {
     art_dir: PathBuf,
     art_serial: u64,
     players: HashMap<i32, ActivePlayer>,
-    sender: SyncSender<Command>,
-    commands: Receiver<Command>,
+    send: Sink,
 }
 
 impl MprisAdapter {
     /// Players connect to the bus at `address`, or the session bus when it is
-    /// `None`. Art left in `art_dir` by an earlier run is deleted.
+    /// `None`, and drop their commands until [`Self::clear`] gives them a
+    /// sink. Art left in `art_dir` by an earlier run is deleted.
     ///
     /// # Errors
     ///
@@ -357,14 +356,12 @@ impl MprisAdapter {
             return Err(error);
         }
         fs::create_dir_all(&art_dir)?;
-        let (sender, commands) = mpsc::sync_channel(MAX_COMMANDS);
         Ok(Self {
             address: address.map(str::to_owned),
             art_dir,
             art_serial: 0,
             players: HashMap::new(),
-            sender,
-            commands,
+            send: Arc::new(|_| {}),
         })
     }
 
@@ -403,16 +400,11 @@ impl MprisAdapter {
         }
     }
 
-    /// Removes every player and discards commands they had queued.
-    pub fn clear(&mut self) {
+    /// Removes every player; later players hand their `media_cmd` messages
+    /// to `send`, which must not block.
+    pub fn clear(&mut self, send: impl Fn(Command) + Send + Sync + 'static) {
         self.players.clear();
-        (self.sender, self.commands) = mpsc::sync_channel(MAX_COMMANDS);
-    }
-
-    /// `media_cmd` messages for Android, at most one queue's worth per call.
-    #[must_use]
-    pub fn take_commands(&self) -> Vec<Command> {
-        self.commands.try_iter().take(MAX_COMMANDS).collect()
+        self.send = Arc::new(send);
     }
 
     fn insert(&mut self, media: Media) -> zbus::Result<()> {
@@ -435,7 +427,7 @@ impl MprisAdapter {
             track: 1,
             since: Instant::now(),
             art_url: art_url(&art),
-            commands: self.sender.clone(),
+            send: Arc::clone(&self.send),
         };
         let connection = self.connect(&name, root, player)?;
         self.players.insert(sid, ActivePlayer { connection, art });
