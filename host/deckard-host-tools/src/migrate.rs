@@ -31,8 +31,6 @@ const SHELL: &str = "/usr/bin/marathon-shell-bin";
 /// Files a start remakes, by their path in the tree: tmpfiles' seed and the
 /// bridge's copies of the Shell's state.
 const REMADE: [&str; 3] = ["waydroid.cfg", "data/deckard/doze", "data/deckard/palette"];
-const APK_DATABASE: &str = "/lib/apk/db/installed";
-const PACKAGES: [&str; 2] = ["deckard", "marathon-shell"];
 const SYSTEM_PROCESSES: [&str; 1] = ["/usr/libexec/deckard-containerd"];
 const USER_PROCESSES: [&str; 3] = [
     SHELL,
@@ -101,8 +99,6 @@ struct Journal {
     /// Steps finished in `direction`, in order.
     done: Vec<Step>,
     complete: bool,
-    /// Package versions when the transaction started.
-    packages: BTreeMap<String, String>,
     /// Each moved tree, by its step.
     roots: BTreeMap<Step, Root>,
     /// Android packages and their UIDs, from `packages.list`.
@@ -265,20 +261,6 @@ fn running(executables: &[&str]) -> Option<String> {
         }
     }
     None
-}
-
-fn package_versions() -> BTreeMap<String, String> {
-    let text = fs::read_to_string(APK_DATABASE).unwrap_or_default();
-    let mut versions = BTreeMap::new();
-    let mut name = None;
-    for line in text.lines() {
-        if let Some(package) = line.strip_prefix("P:") {
-            name = PACKAGES.contains(&package).then_some(package);
-        } else if let (Some(version), Some(package)) = (line.strip_prefix("V:"), name) {
-            versions.insert(package.to_owned(), version.to_owned());
-        }
-    }
-    versions
 }
 
 fn android_apps(data: &Path) -> BTreeMap<String, u32> {
@@ -478,7 +460,6 @@ fn transact(direction: Direction, home: Option<&Path>) -> io::Result<()> {
             direction,
             done: Vec::new(),
             complete: false,
-            packages: package_versions(),
             roots: BTreeMap::new(),
             apps: plan.data.as_ref().map_or_else(BTreeMap::new, |(from, to)| {
                 android_apps(if from.exists() { from } else { to })
