@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jetbee <7734987+jetbee@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 11:12:11 +0000
+Subject: [PATCH] Enable bison, flex, m4 and make for the arm64 host
+
+Add musl_arm64 sources (linux-arm64/bin/*) and the musl loader and libc++ as deps for
+the prebuilt_build_tool modules so that the arm64 host can run them.
+
+From jetbee/hk-lineageos-build-on-dgx-spark (lineage-24.0); applies
+unchanged to lineage-23.2.
+
+Change-Id: Ic6dc91d361829ac2e476cbe7b6ed654e9234453b
+---
+ Android.bp | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/Android.bp b/Android.bp
+index 7f4f67c..6ea9804 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -84,12 +84,22 @@ prebuilt_build_tool {
+         x86_64: {
+             enabled: true,
+         },
++        arm64: {
++            enabled: true,
++        },
+     },
+     target: {
+         darwin: {
+             src: "darwin-x86/bin/bison",
+             deps: ["darwin-x86/lib64/libc++.dylib"],
+         },
++        musl_arm64: {
++            src: "linux-arm64/bin/bison",
++            deps: [
++                "linux-arm64/lib64/libc++.so",
++                "linux-arm64/lib64/libc_musl.so",
++            ],
++        },
+         linux: {
+             src: "linux-x86/bin/bison",
+             deps: ["linux-x86/lib64/libc++.so"],
+@@ -105,12 +115,19 @@ prebuilt_build_tool {
+         x86_64: {
+             enabled: true,
+         },
++        arm64: {
++            enabled: true,
++        },
+     },
+     licenses: ["prebuilts_build-tools_flex_license"],
+     target: {
+         darwin: {
+             src: "darwin-x86/bin/flex",
+         },
++        musl_arm64: {
++            src: "linux-arm64/bin/flex",
++            deps: ["linux-arm64/lib64/libc_musl.so"],
++        },
+         linux: {
+             src: "linux-x86/bin/flex",
+         },
+@@ -125,12 +142,19 @@ prebuilt_build_tool {
+         x86_64: {
+             enabled: true,
+         },
++        arm64: {
++            enabled: true,
++        },
+     },
+     licenses: ["prebuilts_build-tools_gnu_license"],
+     target: {
+         darwin: {
+             src: "darwin-x86/bin/m4",
+         },
++        musl_arm64: {
++            src: "linux-arm64/bin/m4",
++            deps: ["linux-arm64/lib64/libc_musl.so"],
++        },
+         linux: {
+             src: "linux-x86/bin/m4",
+         },
+@@ -144,11 +168,18 @@ prebuilt_build_tool {
+         x86_64: {
+             enabled: true,
+         },
++        arm64: {
++            enabled: true,
++        },
+     },
+     target: {
+         darwin: {
+             src: "darwin-x86/bin/make",
+         },
++        musl_arm64: {
++            src: "linux-arm64/bin/make",
++            deps: ["linux-arm64/lib64/libc_musl.so"],
++        },
+         linux: {
+             src: "linux-x86/bin/make",
+         },

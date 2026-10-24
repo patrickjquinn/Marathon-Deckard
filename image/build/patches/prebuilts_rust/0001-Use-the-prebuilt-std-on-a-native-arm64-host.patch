@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jetbee <7734987+jetbee@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 09:11:40 +0100
+Subject: [PATCH] Use the prebuilt std on a native arm64 host
+
+Proc-macro crates are built for the build host and need the proc_macro
+crate of the running rustc, so a native arm64 host has to use the
+toolchain's prebuilt std (linux-arm64, aarch64-unknown-linux-musl), not
+the sysroot built from source for an arm64 cross host. Add the musl arm64
+prebuilt target and turn the source-built musl_arm64 sysroot off.
+
+From jetbee/hk-lineageos-build-on-dgx-spark (lineage-24.0), where this code
+lives in build/soong; lineage-23.2 keeps it in prebuilts/rust/soong.
+
+Change-Id: I6c0c54d962c4faf88f41bb9559126463db38bb35
+---
+ Android.bp             | 5 ++++-
+ soong/rustprebuilts.go | 5 +++++
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/Android.bp b/Android.bp
+index 60e1696..1b3fe03 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -108,7 +108,10 @@ rust_defaults {
+             enabled: false,
+         },
+         musl_arm64: {
+-            enabled: true,
++            // Upstream builds the sysroot from source for an arm64 *cross* host.
++            // On a native arm64 build host the prebuilt std (linux-arm64) is used
++            // instead, so these must stay off to avoid duplicate core/std crates.
++            enabled: false,
+         },
+         windows: {
+             enabled: true,
+diff --git a/soong/rustprebuilts.go b/soong/rustprebuilts.go
+index 1a0df62..a3dcfcf 100644
+--- a/soong/rustprebuilts.go
++++ b/soong/rustprebuilts.go
+@@ -86,6 +86,7 @@ type props struct {
+ 		Linux_glibc_x86    targetProps
+ 		Linux_musl_x86_64  targetProps
+ 		Linux_musl_x86     targetProps
++		Linux_musl_arm64   targetProps
+ 		Darwin_x86_64      targetProps
+ 	}
+ }
+@@ -127,6 +128,8 @@ func constructLibProps(rlib, solib bool) func(ctx android.LoadHookContext) {
+ 		if ctx.Config().BuildOS == android.Linux {
+ 			p.Target.Linux_glibc_x86_64.addPrebuiltToTarget(ctx, name, rustDir, "linux-x86", "x86_64-unknown-linux-gnu", rlib, solib)
+ 			p.Target.Linux_glibc_x86.addPrebuiltToTarget(ctx, name, rustDir, "linux-x86", "i686-unknown-linux-gnu", rlib, solib)
++		} else if ctx.Config().BuildOS == android.LinuxMusl && ctx.Config().BuildArch == android.Arm64 {
++			p.Target.Linux_musl_arm64.addPrebuiltToTarget(ctx, name, rustDir, "linux-arm64", "aarch64-unknown-linux-musl", rlib, solib)
+ 		} else if ctx.Config().BuildOS == android.LinuxMusl {
+ 			p.Target.Linux_musl_x86_64.addPrebuiltToTarget(ctx, name, rustDir, "linux-musl-x86", "x86_64-unknown-linux-musl", rlib, solib)
+ 			p.Target.Linux_musl_x86.addPrebuiltToTarget(ctx, name, rustDir, "linux-musl-x86", "i686-unknown-linux-musl", rlib, solib)
+@@ -171,6 +174,8 @@ func rustToolchainFilegroupFactory() android.Module {
+ 		} else if ctx.Config().BuildOS == android.LinuxMusl {
+ 			if ctx.Config().BuildArch == android.X86_64 {
+ 				archTriple = "x86_64-unknown-linux-musl"
++			} else if ctx.Config().BuildArch == android.Arm64 {
++				archTriple = "aarch64-unknown-linux-musl"
+ 			} else {
+ 				archTriple = "i686-unknown-linux-musl"
+ 			}

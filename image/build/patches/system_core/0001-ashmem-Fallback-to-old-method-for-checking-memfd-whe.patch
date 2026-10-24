@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SupeChicken666 <me@supechicken666.dev>
+Date: Sun, 1 Mar 2026 17:05:13 +0800
+Subject: [PATCH] ashmem: Fallback to old method for checking memfd when EPERM
+
+Refreshed for lineage-23.2, which checks the memfd seals after the
+readlink (b/498720726): on EPERM, fall back to has_memfd_support() and
+keep the seals check.
+
+Change-Id: I64aac6c0e3774eab42e7afd0c513946d9d5d0a11
+Signed-off-by: SupeChicken666 <me@supechicken666.dev>
+---
+ libcutils/ashmem-dev.cpp | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/libcutils/ashmem-dev.cpp b/libcutils/ashmem-dev.cpp
+index 03d3fc4..6aded5d 100644
+--- a/libcutils/ashmem-dev.cpp
++++ b/libcutils/ashmem-dev.cpp
+@@ -202,11 +202,14 @@ static bool is_memfd_fd(int fd) {
+     std::string fd_path = android::base::StringPrintf("/proc/self/fd/%d", fd);
+     std::string result;
+     if (!android::base::Readlink(fd_path, &result)) {
+-        ALOGE("readlink(%s) failed: %m", fd_path.c_str());
+-        return false;
+-    }
+-
+-    if (!result.starts_with("/memfd:")) {
++        if (errno != EPERM) {
++            ALOGE("readlink(%s) failed: %m", fd_path.c_str());
++            return false;
++        }
++        if (!has_memfd_support()) {
++            return false;
++        }
++    } else if (!result.starts_with("/memfd:")) {
+         return false;
+     }
+ 

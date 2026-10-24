@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jetbee <7734987+jetbee@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 09:11:58 +0100
+Subject: [PATCH] Support an aarch64 Linux build host
+
+Soong already runs on linux/arm64 as linux_musl-arm64; these pieces were
+still x86-only.
+
+- rust: set RUSTC_BOOTSTRAP=1 on an arm64 host, where the upstream
+  rust-lang toolchain is a stable build that rejects -Z options.
+- genrule: an arm64 host has no second (32-bit) host arch, so missing
+  host_second_srcs are expected.
+- android/paths.go: install Common-arch host modules next to the arm64
+  host tools.
+- rule_builder, cc/gen.go: the arm64 build-tools and every Soong-built host
+  tool are musl-linked and load the loader and libc++ relative to
+  themselves; carry those into the sbox sandbox.
+
+From jetbee/hk-lineageos-build-on-dgx-spark (lineage-24.0), ported to
+lineage-23.2. The prebuilt-std part lives in prebuilts/rust there.
+
+Change-Id: I3d5343866be022fb85ed2e99bdbc3a6082f41a55
+---
+ android/paths.go        |  4 ++++
+ android/rule_builder.go | 15 ++++++++++++---
+ cc/gen.go               |  7 +++++++
+ genrule/genrule.go      |  5 +++++
+ rust/builder.go         |  5 +++++
+ 5 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/android/paths.go b/android/paths.go
+index cbd2ab4..ab209f4 100644
+--- a/android/paths.go
++++ b/android/paths.go
+@@ -2054,6 +2054,10 @@ func pathForInstall(ctx PathContext, os OsType, arch ArchType, partition string,
+ 		archName := arch.String()
+ 		if os.Class == Host && (arch == X86_64 || arch == Common) {
+ 			archName = "x86"
++			if ctx.Config().BuildArch == Arm64 {
++				// Common (e.g. Java) modules share the arm64 host tools' directory.
++				archName = "arm64"
++			}
+ 		}
+ 		partitionPaths = []string{"host", osName + "-" + archName, partition}
+ 	}
+diff --git a/android/rule_builder.go b/android/rule_builder.go
+index 88898f3..13be695 100644
+--- a/android/rule_builder.go
++++ b/android/rule_builder.go
+@@ -1327,8 +1327,8 @@ func (c *RuleBuilderCommand) ImplicitTools(paths Paths) *RuleBuilderCommand {
+ //
+ //	cmd.Tool(ctx.Config().HostToolPath(ctx, tool))
+ func (c *RuleBuilderCommand) BuiltTool(tool string) *RuleBuilderCommand {
+-	if c.rule.ctx.Config().UseHostMusl() {
+-		// If the host is using musl, assume that the tool was built against musl libc and include
++	if c.rule.ctx.Config().UseHostMusl() || c.rule.ctx.Config().BuildArch == Arm64 {
++		// If the host is using musl (arm64 hosts always do), assume that the tool was built against musl libc and include
+ 		// libc_musl.so in the sandbox.
+ 		// TODO(ccross): if we supported adding new dependencies during GenerateAndroidBuildActions
+ 		// this could be a dependency + TransitivePackagingSpecs.
+@@ -1350,7 +1350,16 @@ func (c *RuleBuilderCommand) builtToolWithoutDeps(tool string) *RuleBuilderComma
+ //
+ //	cmd.Tool(ctx.Config().PrebuiltBuildTool(ctx, tool))
+ func (c *RuleBuilderCommand) PrebuiltBuildTool(ctx PathContext, tool string) *RuleBuilderCommand {
+-	return c.Tool(ctx.Config().PrebuiltBuildTool(ctx, tool))
++	c.Tool(ctx.Config().PrebuiltBuildTool(ctx, tool))
++	if ctx.Config().BuildArch == Arm64 {
++		// The arm64 build-tools are dynamically linked against musl and find the
++		// loader and libc++ through an rpath relative to the tool, so they have to
++		// be copied into the sandbox next to it.
++		libDir := PathForSource(ctx, "prebuilts/build-tools", ctx.Config().PrebuiltOS(), "lib64")
++		c.ImplicitTool(libDir.Join(ctx, "libc_musl.so"))
++		c.ImplicitTool(libDir.Join(ctx, "libc++.so"))
++	}
++	return c
+ }
+ 
+ // Input adds the specified input path to the command line.  The path will also be added to the dependencies returned by
+diff --git a/cc/gen.go b/cc/gen.go
+index e351fdd..e1725b2 100644
+--- a/cc/gen.go
++++ b/cc/gen.go
+@@ -102,6 +102,13 @@ func genYacc(ctx android.ModuleContext, rule *android.RuleBuilder, yaccFile andr
+ 		FlagWithOutput("--defines=", headerFile).
+ 		Flag("-o").Output(outFile).Input(yaccFile)
+ 
++	if ctx.Config().BuildArch == android.Arm64 {
++		// m4 runs from its source path and loads the musl loader next to it.
++		libDir := android.PathForSource(ctx, "prebuilts/build-tools", ctx.Config().PrebuiltOS(), "lib64")
++		cmd.Implicit(libDir.Join(ctx, "libc_musl.so"))
++		cmd.Implicit(libDir.Join(ctx, "libc++.so"))
++	}
++
+ 	return ret
+ }
+ 
+diff --git a/genrule/genrule.go b/genrule/genrule.go
+index d7d40ab..76da7bc 100644
+--- a/genrule/genrule.go
++++ b/genrule/genrule.go
+@@ -497,6 +497,11 @@ func (g *Module) generateCommonBuildActions(ctx android.ModuleContext) {
+ 				Context: ctx, Paths: []string{in}, ExcludePaths: exclude, IncludeDirs: includeDirInPaths,
+ 			})
+ 			if len(missingDeps) > 0 {
++				if propName == "host_second_src" && ctx.Config().BuildArch == android.Arm64 {
++					// An arm64 host has no second (32-bit) host arch, so the
++					// dependency was intentionally never added.
++					continue
++				}
+ 				if !ctx.Config().AllowMissingDependencies() {
+ 					panic(fmt.Errorf("should never get here, the missing dependencies %q should have been reported in DepsMutator",
+ 						missingDeps))
+diff --git a/rust/builder.go b/rust/builder.go
+index 2980983..efc3494 100644
+--- a/rust/builder.go
++++ b/rust/builder.go
+@@ -311,6 +311,11 @@ func rustEnvVars(ctx android.ModuleContext, deps PathDeps, crateName string, car
+ 		envVars["SOONG_RUST_GEN_DIR"] = moduleGenDir.String()
+ 	}
+ 	envVars["ANDROID_RUST_VERSION"] = config.GetRustVersion(ctx)
++	if ctx.Config().BuildArch == android.Arm64 {
++		// The upstream rust-lang aarch64 toolchain is a stable build, while
++		// Android's x86 toolchain accepts unstable (-Z) options.
++		envVars["RUSTC_BOOTSTRAP"] = "1"
++	}
+ 
+ 	if rustMod, ok := ctx.Module().(*Module); ok && rustMod.compiler.cargoEnvCompat() {
+ 		// We only emulate cargo environment variables for 3p code, which is only ever built
