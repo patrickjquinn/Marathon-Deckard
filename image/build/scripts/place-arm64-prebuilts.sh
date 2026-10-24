@@ -24,3 +24,8 @@ ln -sfn "$P/ninja/ninja" "$b/ninja"
 # bison: the wrapper sets BISON_PKGDATADIR for genrules that run it directly.
 if ! head -c2 "$b/bison" | grep -q '#!'; then mv "$b/bison" "$b/bison.real"; fi
 cp "$(dirname "$0")/bison-arm64-wrapper.sh" "$b/bison"
+# Mesa's build-time compilers from build-mesa-tools.sh, where Waydroid links
+# its x86_64 prebuilts/mesa-tools for linux-x86.
+for t in mesa_clc asahi_clc panfrost_compile vtn_bindgen2; do
+	ln_ "$P/mesa-tools/bin/$t" "$T/prebuilts/build-tools/path/linux-arm64/$t"
+done

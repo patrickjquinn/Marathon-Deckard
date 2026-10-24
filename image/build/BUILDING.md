@@ -24,7 +24,12 @@ The arm64-host patch set started from
    `scripts/make-rust-musl-toolchain.sh <dir> <tree>` and
    `scripts/place-arm64-prebuilts.sh <tree> <dir>`.
 4. Patches: `scripts/apply-patches.sh <tree>`.
-5. Build: `scripts/build.sh <tree> <log> nothing`, then
+5. Mesa host tools: `sudo dnf install glslang llvm-devel clang-devel
+   libclc-devel spirv-llvm-translator-devel spirv-tools-devel
+   python3-pycparser`, then `scripts/build-ninja.sh <dir>` and
+   `scripts/build-mesa-tools.sh <dir> <tree>` (rerun
+   `place-arm64-prebuilts.sh` afterwards).
+6. Build: `scripts/build.sh <tree> <log> nothing`, then
    `scripts/build.sh <tree> <log> systemimage vendorimage`.
 
 ## Toolchains
@@ -150,6 +155,18 @@ In the order they appeared.
     `bison` becomes `bison-arm64-wrapper.sh` around `bison.real` (placed by
     `place-arm64-prebuilts.sh`), and Android.bp and Soong carry
     `bison.real` into the sandbox.
+
+18. **Mesa: `meson.build:740: Program 'glslangValidator' not found`**, and
+    behind it the build-time compilers Waydroid takes from
+    prebuilts/mesa-tools (`-Dmesa-clc=system -Dprecomp-compiler=system`),
+    which are x86_64 glibc binaries. Install Fedora's `glslang`;
+    `build-mesa-tools.sh` builds `mesa_clc`, `asahi_clc`,
+    `panfrost_compile` and `vtn_bindgen2` from the tree's own
+    external/mesa3d against Fedora's LLVM 22 (`llvm-devel clang-devel
+    libclc-devel spirv-llvm-translator-devel spirv-tools-devel
+    python3-pycparser`), and `place-arm64-prebuilts.sh` links them into
+    prebuilts/build-tools/path/linux-arm64. `build.sh` sets
+    `CCACHE_DISABLE=1`, since meson picks up /usr/bin/ccache by itself.
 
 Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
 adds `-Wno-everything` and drops the version-gated flags.
