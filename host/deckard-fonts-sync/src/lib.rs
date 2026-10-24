@@ -46,28 +46,6 @@ pub enum Outcome {
     MissingRequiredFonts(Vec<String>),
 }
 
-/// Overlayfs whiteouts, so tests can run unprivileged.
-pub trait Whiteouts {
-    /// # Errors
-    /// The whiteout cannot be created.
-    fn create(&mut self, directory: &OwnedFd, name: &OsStr) -> io::Result<()>;
-}
-
-pub struct LinuxWhiteouts;
-
-impl Whiteouts for LinuxWhiteouts {
-    fn create(&mut self, directory: &OwnedFd, name: &OsStr) -> io::Result<()> {
-        let device = rustix::fs::makedev(0, 0);
-        Ok(rustix::fs::mknodat(
-            directory,
-            name,
-            FileType::CharacterDevice,
-            Mode::empty(),
-            device,
-        )?)
-    }
-}
-
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -282,7 +260,7 @@ fn plan(
 /// # Errors
 /// A path is unsafe or a list is malformed (nothing is removed then), or a
 /// write fails (what this run installed is removed again).
-pub fn sync(paths: &Paths, whiteouts: &mut impl Whiteouts) -> io::Result<Outcome> {
+pub fn sync(paths: &Paths) -> io::Result<Outcome> {
     let system = files::open_dir(&paths.overlay_system)?;
     let state_dir = files::open_dir(
         paths
@@ -363,7 +341,9 @@ pub fn sync(paths: &Paths, whiteouts: &mut impl Whiteouts) -> io::Result<Outcome
                     let (parent, name) = state_path(entry)?;
                     let directory = destination(&system, parent, Create::Yes)?;
                     remove_entry(&system, entry)?;
-                    whiteouts.create(&directory, OsStr::new(name))?;
+                    let device = rustix::fs::makedev(0, 0);
+                    let whiteout = FileType::CharacterDevice;
+                    rustix::fs::mknodat(&directory, name, whiteout, Mode::empty(), device)?;
                 }
             }
         }
