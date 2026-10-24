@@ -106,7 +106,7 @@ struct Pending {
     staged: Option<Staged>,
     /// None for a job, which ends with `Finished`.
     reply: Option<Sender<Answer>>,
-    _timeout: Task<()>,
+    timeout: Option<Task<()>>,
 }
 
 struct Inner {
@@ -224,7 +224,9 @@ impl Packages {
             .extract_if(|_, item| item.route == route)
             .collect();
         for (id, item) in lost {
-            self.fail(&id, item, "Android stopped")?;
+            if let Some(finished) = fail(&id, item, "Android stopped") {
+                self.emit("Finished", &finished)?;
+            }
         }
         Ok(())
     }
@@ -232,15 +234,6 @@ impl Packages {
     /// The requests still waiting for Android.
     pub fn pending_count(&self) -> usize {
         sync::lock(&self.0.pending).len()
-    }
-
-    fn fail(&self, id: &str, item: Pending, why: &str) -> zbus::Result<()> {
-        drop(item.staged);
-        let Some(reply) = item.reply else {
-            return self.emit("Finished", &(id, false, "", why));
-        };
-        let _ = reply.try_send(Err(failed(why)));
-        Ok(())
     }
 
     /// Sends `message` as a new request and fails it after its timeout; the
@@ -266,8 +259,16 @@ impl Packages {
                 return;
             };
             let item = sync::lock(&inner.pending).remove(&timed);
-            if let Some(item) = item {
-                let _ = Packages(inner).fail(&timed, item, "Android didn't answer");
+            let Some(mut item) = item else {
+                return;
+            };
+            // Its own handle: dropped before the await, it would cancel this task.
+            let _this = item.timeout.take();
+            if let Some(finished) = fail(&timed, item, "Android didn't answer") {
+                let bus = inner.bus.inner();
+                let signal =
+                    bus.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, "Finished", &finished);
+                let _ = signal.await;
             }
         };
         let executor = self.0.bus.inner().executor();
@@ -276,7 +277,7 @@ impl Packages {
             route,
             staged,
             reply,
-            _timeout: executor.spawn(timeout, "deckard-package-timeout"),
+            timeout: Some(executor.spawn(timeout, "deckard-package-timeout")),
         };
         {
             let mut pending = sync::lock(&self.0.pending);
@@ -356,6 +357,16 @@ impl Packages {
         let why = "Not allowed for this caller".to_owned();
         Err(fdo::Error::AccessDenied(why))
     }
+}
+
+/// Ends `item` with `why`: a query hears it; a job's `Finished` is returned.
+fn fail<'a>(id: &'a str, item: Pending, why: &'a str) -> Option<(&'a str, bool, &'a str, &'a str)> {
+    drop(item.staged);
+    let Some(reply) = item.reply else {
+        return Some((id, false, "", why));
+    };
+    let _ = reply.try_send(Err(failed(why)));
+    None
 }
 
 fn random_id() -> fdo::Result<String> {
