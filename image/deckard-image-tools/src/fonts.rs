@@ -78,6 +78,10 @@ fn list(names: impl IntoIterator<Item = String>) -> String {
     format!("{}\n", names.join("\n"))
 }
 
+/// Marathon's `fonts.xml` from Lineage's, with the font lists it needs.
+///
+/// # Errors
+/// A pattern fails to compile or the XML names a font with no source.
 pub fn generate(
     xml: &str,
     android_files: &str,

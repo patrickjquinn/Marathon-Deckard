@@ -1,6 +1,10 @@
 use std::io;
 use std::path::Path;
 
+/// The `busctl` arguments that ask the Store to open the APK at `path`.
+///
+/// # Errors
+/// The path is not a regular `.apk` file or is not UTF-8.
 pub fn arguments(path: &Path) -> io::Result<Vec<String>> {
     let path = path.canonicalize()?;
     if !path.is_file()
