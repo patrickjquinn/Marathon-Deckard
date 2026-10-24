@@ -26,7 +26,7 @@ for d in "$P"/*/; do
   for p in "$d"*.patch; do
     subj=$(awk '/^Subject: /{s=$0; f=1; next} f&&/^ /{s=s $0; next} f{exit} END{print s}' "$p" |
       sed 's/^Subject: \(\[PATCH[^]]*\] \)\?//')
-    if git -C "$T/$proj" log -200 --format=%s | grep -qxF "$subj"; then
+    if git -C "$T/$proj" log -200 --format=%s | grep -xF "$subj" >/dev/null; then
       echo "== $proj: already applied: $subj"
     else
       echo "== $proj: $subj"

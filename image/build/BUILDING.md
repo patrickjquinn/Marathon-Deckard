@@ -84,5 +84,29 @@ In the order they appeared.
    (`patches/frameworks_libs_binary_translation`). `host_linux_arm64` does
    not work there: Soong's arch merge reads `linux_<arch>`, not
    `host_linux_<arch>`.
+9. **Kati: `includes non-existent modules in PRODUCT_PACKAGES:
+   android.hardware.camera.provider@2.7-external-service`.** The service is
+   `compile_multilib: "32"` and this product is 64-bit only; it is now
+   `prefer32` (`patches/hardware_interfaces`). Not arm64-host-specific.
+10. **Host jemalloc is configured for 4K pages.** Soong links every musl host
+    tool against libjemalloc5 (external/jemalloc_new, `LG_PAGE 12`), so each
+    would abort like the ninja prebuilt. aarch64 hosts now use `LG_PAGE 16`
+    (64K), which runs on 4K, 16K and 64K kernels
+    (`patches/external_jemalloc_new`).
 
 ## Timings
+
+M1, 16 GB RAM, source and out/ on a USB 2.0 SD card (17 MB/s write),
+shared with other builds.
+
+| Step | Wall time | Peak RSS |
+|---|---|---|
+| `lunch` (soong_ui bootstrap + product config) | 6 min 44 s | small |
+| `m nothing` from a clean out/ (Soong analysis + Kati) | 22 min 29 s | soong_build 12.5 GB |
+
+Analysis needs swap: with 15.3 GB RAM it ran on two zstd zram devices
+(10 GB + 12 GB, about 3.7:1) ahead of the disk swapfiles. Set them up
+transiently before `m`:
+
+    dev=$(sudo zramctl --find --size 12G --algorithm zstd)
+    sudo mkswap $dev && sudo swapon -p 100 $dev

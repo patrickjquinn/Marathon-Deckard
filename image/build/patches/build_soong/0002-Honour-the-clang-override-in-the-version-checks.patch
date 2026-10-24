@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sat, 24 Oct 2026 11:06:27 +0100
+Subject: [PATCH] Honour the clang override in the version checks
+
+ClangPath and the ClangVersion build variable follow LLVM_PREBUILTS_VERSION
+and LLVM_RELEASE_VERSION, but ClangVersion() and ClangShortVersion() read
+only the release flag, so a build that selects a newer clang got none of the
+flags meant for it. An arm64 host builds with clang-r596125 (no arm64 build
+of r563880c exists) and stopped on -Wunterminated-string-initialization in
+musl.
+
+Add the warnings lineage-24.0 turns off for r584948 and r596125, under the
+same version checks.
+
+Change-Id: I5ab57905d647c368abdac5fc972d59312f4537c8
+---
+ cc/config/global.go | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/cc/config/global.go b/cc/config/global.go
+index 4d7bd3c..86211c4 100644
+--- a/cc/config/global.go
++++ b/cc/config/global.go
+@@ -504,6 +504,15 @@ func init() {
+ 			flags = append(flags, "-Wno-preferred-type-bitfield-enum-conversion")
+ 			flags = append(flags, "-Wno-implicit-enum-enum-cast")
+ 		}
++		// New clang-22 warnings, as lineage-24.0 lists them.
++		if ClangVersionAtLeast(ctx, 584948) {
++			flags = append(flags, "-Wno-character-conversion")
++			flags = append(flags, "-Wno-error=uninitialized-const-pointer")
++		}
++		if ClangVersionAtLeast(ctx, 596125) {
++			flags = append(flags, "-Wno-incompatible-pointer-types")
++			flags = append(flags, "-Wno-c2y-extensions")
++		}
+ 		if ctx.Config().IsEnvTrue("LLVM_NEXT") {
+ 			flags = append(noOverrideGlobalCflags, llvmNextExtraCommonGlobalCflags...)
+ 			IllegalFlags = []string{} // Don't fail build while testing a new compiler.
+@@ -612,10 +621,16 @@ func clangPath(ctx android.PathContext) android.SourcePath {
+ }
+ 
+ func ClangVersion(ctx android.PathContext) string {
++	if override := ctx.Config().Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
++		return override
++	}
+ 	return ctx.Config().ReleaseBuildClangVersion(ClangDefaultVersion)
+ }
+ 
+ func ClangShortVersion(ctx android.PathContext) string {
++	if override := ctx.Config().Getenv("LLVM_RELEASE_VERSION"); override != "" {
++		return override
++	}
+ 	return ctx.Config().ReleaseBuildClangShortVersion(ClangDefaultShortVersion)
+ }
+ 
