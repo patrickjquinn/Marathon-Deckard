@@ -1,6 +1,7 @@
 use std::env;
 use std::path::Path;
 
+use deckard_host_tools::names;
 use deckard_launch::Result;
 use deckard_launch::session::NativeBackend;
 
@@ -8,8 +9,7 @@ const USAGE: &str = "usage: deckard-launch app launch PACKAGE | app intent ACTIO
 
 fn run() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
-    let config =
-        env::var("DECKARD_CONFIG").unwrap_or_else(|_| "/var/lib/waydroid/waydroid.cfg".into());
+    let config = env::var("DECKARD_CONFIG").unwrap_or_else(|_| names::CONFIG.into());
     let session_unit =
         env::var("DECKARD_SESSION_UNIT").unwrap_or_else(|_| "deckard-session.service".into());
     let mut backend = NativeBackend::new(Path::new(&config), &session_unit)?;

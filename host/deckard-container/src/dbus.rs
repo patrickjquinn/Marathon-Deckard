@@ -1,4 +1,4 @@
-//! The system-bus `id.waydro.ContainerManager` contract (upstream
+//! The system-bus `org.marathonos.Deckard.ContainerManager` contract (upstream
 //! `tools/services/container_manager.py`) and its `/Initializer`.
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ use crate::lxc::{self, ContainerManager, State};
 use crate::session_config::{self, Stage};
 use crate::{Result, config, properties};
 
-pub const BUS_NAME: &str = "id.waydro.Container";
+pub const BUS_NAME: &str = "org.marathonos.Deckard.Container";
 pub const OBJECT_PATH: &str = "/ContainerManager";
 
 /// A process on the bus: a D-Bus caller or the session's owner.
@@ -210,10 +210,10 @@ impl Backend {
     fn prepare_production(&mut self) -> Result<()> {
         let base = self.manager.mounts.work.join("waydroid_base.prop");
         let initialized = self.initialized() && base.is_file();
-        crate::ensure(initialized, "Waydroid is not initialized")?;
+        crate::ensure(initialized, "Android is not initialized")?;
         let text = config::read(&self.config_path())?;
-        let images =
-            PathBuf::from(cfg::get(&text, "images_path").unwrap_or("/var/lib/waydroid/images"));
+        let images = cfg::get(&text, "images_path")
+            .map_or_else(|| self.manager.mounts.work.join("images"), PathBuf::from);
         crate::ensure(images.is_absolute(), "images_path must be absolute")?;
         self.manager.mounts.images = images;
         self.manager.mounts.overlays = match config::get_or_default(&text, "mount_overlays") {
@@ -508,7 +508,7 @@ impl ContainerService {
     }
 }
 
-#[zbus::interface(name = "id.waydro.ContainerManager")]
+#[zbus::interface(name = "org.marathonos.Deckard.ContainerManager")]
 impl ContainerService {
     async fn start(
         &self,
@@ -631,7 +631,7 @@ impl ContainerService {
     }
 }
 
-/// Owns `id.waydro.Container` and serves the manager and the initializer.
+/// Owns [`BUS_NAME`] and serves the manager and the initializer.
 ///
 /// # Errors
 /// The system bus or the name is unavailable.
@@ -664,13 +664,13 @@ mod tests {
 
     fn service() -> Result<ContainerService> {
         let manager = ContainerManager {
-            lxc: lxc::Lxc::new("/nonexistent/lxc".into(), "waydroid".into())?,
+            lxc: lxc::Lxc::new("/nonexistent/lxc".into(), "deckard".into())?,
             mounts: MountLayout {
                 work: "/nonexistent".into(),
                 images: "/nonexistent/images".into(),
                 overlays: true,
             },
-            network: Network::new("waydroid0".into(), "/nonexistent/run".into())?,
+            network: Network::new("deckard0".into(), "/nonexistent/run".into())?,
         };
         Ok(ContainerService::new(manager, mpsc::sync_channel(1).0))
     }
@@ -705,7 +705,7 @@ mod tests {
         let launcher_pid = std::process::id();
         let slice = format!("0::/user.slice/user-{uid}.slice/user@{uid}.service/app.slice");
         for (pid, unit) in [
-            (session_pid, "marathon-waydroid"),
+            (session_pid, "deckard-session"),
             (launcher_pid, "marathon-shell"),
         ] {
             let process = proc_root.join(pid.to_string());

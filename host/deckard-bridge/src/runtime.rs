@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use deckard_core::keel::APP_ID_PREFIX;
 use deckard_core::runtime_state::{ResetError, RuntimeState, State, UnitCall};
 use deckard_core::sync;
 use serde_json::{Map, Value};
@@ -165,7 +166,7 @@ fn has_apps(path: &Path) -> bool {
     entries.flatten().any(|entry| {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with("waydroid.") || !name.ends_with(".desktop") {
+        if !name.starts_with(APP_ID_PREFIX) || !name.ends_with(".desktop") {
             return false;
         }
         fs::read(entry.path()).ok().is_some_and(|bytes| {
@@ -256,12 +257,12 @@ mod tests {
         let apps = dir.path().join("applications");
         fs::create_dir(&apps).unwrap();
         fs::write(
-            apps.join("waydroid.com.example.desktop"),
+            apps.join("deckard.com.example.desktop"),
             "[Desktop Entry]\nName=Example\n",
         )
         .unwrap();
         fs::write(
-            apps.join("waydroid.hidden.desktop"),
+            apps.join("deckard.hidden.desktop"),
             "[Desktop Entry]\nNoDisplay=true\n",
         )
         .unwrap();

@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use deckard_host_tools::cfg;
+use deckard_host_tools::names::android;
 use rsbinder::{
     Binder, DeathRecipient, Interface, Parcel, ProcessState, Remotable, SIBinder, StatusCode,
     WIBinder,
@@ -19,8 +20,8 @@ use rsbinder::{
 
 use crate::Result;
 
-const PLATFORM: &str = "waydroidplatform";
-const PLATFORM_INTERFACE: &str = "lineageos.waydroid.IPlatform";
+const PLATFORM: &str = android::PLATFORM.0;
+const PLATFORM_INTERFACE: &str = android::PLATFORM.1;
 const SERVICE_MANAGER: &str = "android.os.IServiceManager";
 const CHECK_SERVICE: u32 = 2;
 const ADD_SERVICE: u32 = 3;

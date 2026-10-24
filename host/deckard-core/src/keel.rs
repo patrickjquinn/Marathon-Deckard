@@ -14,8 +14,7 @@ use crate::ids;
 use crate::json;
 use crate::validate;
 
-/// The prefix of an Android app's id in the shell and its Keel bus name.
-pub const APP_ID_PREFIX: &str = "waydroid.";
+pub use deckard_host_tools::names::APP_ID_PREFIX;
 
 const MAX_LINKS: usize = 16;
 const MAX_SHORTCUTS: usize = 15;
@@ -685,18 +684,18 @@ mod tests {
     fn manifests_are_keel_manifests() {
         let manifest = manifest(&app(&sample()).unwrap());
         let json = &manifest.json;
-        assert_eq!(json["appId"], "waydroid.org.example.chat");
+        assert_eq!(json["appId"], "deckard.org.example.chat");
         assert_eq!(json["version"], 1);
         assert_eq!(
             json["context"]["uri"],
-            "keel://waydroid.org.example.chat/context"
+            "keel://deckard.org.example.chat/context"
         );
         for tool in json["tools"].as_array().unwrap() {
             assert!(
                 tool["name"]
                     .as_str()
                     .unwrap()
-                    .starts_with("waydroid.org.example.chat/")
+                    .starts_with("deckard.org.example.chat/")
             );
             assert!(tool["description"].as_str().unwrap().len() >= 20);
             assert_eq!(tool["inputSchema"]["additionalProperties"], false);

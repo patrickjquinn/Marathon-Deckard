@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::SyncSender;
 
+use deckard_host_tools::names::android;
 use deckard_launch::binder::{self, BinderConfig, Reply, Service};
 use rsbinder::{Parcel, StatusCode};
 
@@ -85,8 +86,8 @@ fn admit(code: u32, parcel: &mut Parcel) -> Admission {
 struct Hardware(SyncSender<HardwareRequest>);
 
 impl Service for Hardware {
-    const NAME: &'static str = "waydroidhardware";
-    const INTERFACE: &'static str = "lineageos.waydroid.IHardware";
+    const NAME: &'static str = android::HARDWARE.0;
+    const INTERFACE: &'static str = android::HARDWARE.1;
 
     fn transact(&self, code: u32, request: &mut Parcel) -> Reply {
         match admit(code, request) {

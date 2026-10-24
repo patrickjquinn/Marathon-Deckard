@@ -3,5 +3,6 @@
 pub mod apk;
 pub mod cfg;
 pub mod files;
+pub mod names;
 pub mod reset;
 pub mod shared_folders;

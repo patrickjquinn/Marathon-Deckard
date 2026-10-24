@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use deckard_host_tools::cfg;
+use deckard_host_tools::names;
+use deckard_host_tools::{cfg, prop};
 
 use crate::command::{self, Command};
 use crate::drivers::DriverNodes;
@@ -42,9 +43,9 @@ impl Instance {
     #[must_use]
     pub fn production() -> Self {
         Self {
-            work: PathBuf::from("/var/lib/waydroid"),
-            name: "waydroid".into(),
-            bridge: "waydroid0".into(),
+            work: PathBuf::from(names::WORK),
+            name: names::CONTAINER.into(),
+            bridge: names::BRIDGE.into(),
         }
     }
 
@@ -378,19 +379,19 @@ impl Init<'_> {
         push("ro.hardware.camera", "v4l2");
         push("ro.opengles.version", "196610");
         match self.images {
-            Images::Preinstalled(_) => push("waydroid.updater.disabled", "true"),
+            Images::Preinstalled(_) => push(prop!("updater.disabled"), "true"),
             Images::Installed(_) => {
                 for key in ["system_ota", "vendor_ota"] {
                     let value = cfg::get(config_text, key).unwrap_or("None");
                     lxc::validate_property_value(value)?;
-                    push(&format!("waydroid.{key}"), value);
+                    push(&format!("{}{key}", prop!("")), value);
                 }
             }
         }
-        push("waydroid.tools_version", TOOLS_VERSION);
+        push(prop!("tools_version"), TOOLS_VERSION);
         push("ro.vndk.lite", "true");
         for (product, value) in &host.products {
-            push(&format!("ro.product.waydroid.{product}"), value);
+            push(&format!("{}{product}", prop!("ro.product.", "")), value);
         }
         for (key, value) in property_overrides(config_text)? {
             props.retain(|(existing, _)| *existing != key);
@@ -714,8 +715,8 @@ mod tests {
             Ok(Self {
                 instance: Instance {
                     work,
-                    name: "waydroid".into(),
-                    bridge: "waydroid0".into(),
+                    name: "deckard".into(),
+                    bridge: "deckard0".into(),
                 },
                 root,
             })
@@ -784,15 +785,15 @@ mod tests {
         )?;
         fixture.run(fixture.installed(), false)?;
         let work = fixture.instance.work.display();
-        let config = fixture.read("lxc/waydroid/config")?;
+        let config = fixture.read("lxc/deckard/config")?;
         for line in [
             format!("lxc.rootfs.path = {work}/rootfs\nlxc.arch = aarch64\n"),
-            format!("lxc.include = {work}/lxc/waydroid/config_session\n"),
-            format!("lxc.seccomp.profile = {work}/lxc/waydroid/waydroid.seccomp\n"),
+            format!("lxc.include = {work}/lxc/deckard/config_session\n"),
+            format!("lxc.seccomp.profile = {work}/lxc/deckard/waydroid.seccomp\n"),
             "lxc.mount.auto = cgroup:rw sys:ro proc\n".into(),
             "lxc.hook.mount = /usr/libexec/deckard-shared-folders\n".into(),
-            "lxc.uts.name = waydroid\n".into(),
-            "lxc.net.0.link = waydroid0\n".into(),
+            "lxc.uts.name = deckard\n".into(),
+            "lxc.net.0.link = deckard0\n".into(),
         ] {
             assert!(config.contains(&line), "{line:?} missing");
         }
@@ -820,9 +821,9 @@ mod tests {
         ] {
             let _ = writeln!(expected, "lxc.mount.entry = {line} 0 0");
         }
-        assert_eq!(fixture.read("lxc/waydroid/config_nodes")?, expected);
-        assert_eq!(fixture.read("lxc/waydroid/config_session")?, "");
-        assert_eq!(fixture.read("lxc/waydroid/waydroid.seccomp")?, SECCOMP);
+        assert_eq!(fixture.read("lxc/deckard/config_nodes")?, expected);
+        assert_eq!(fixture.read("lxc/deckard/config_session")?, "");
+        assert_eq!(fixture.read("lxc/deckard/waydroid.seccomp")?, SECCOMP);
         assert_eq!(
             fixture.read("waydroid_base.prop")?,
             "sys.use_memfd=true\nro.adb.secure=1\nro.debuggable=0\n\
@@ -864,7 +865,7 @@ mod tests {
     #[test]
     fn preinstalled_images_clear_ota_and_keep_session_and_custom_files() -> Result<()> {
         let fixture = Fixture::new()?;
-        let lxc = fixture.instance.work.join("lxc/waydroid");
+        let lxc = fixture.instance.work.join("lxc/deckard");
         fs::create_dir_all(&lxc)?;
         fs::write(lxc.join("config_session"), "session bind\n")?;
         fs::write(lxc.join("custom.conf"), "keep me\n")?;
@@ -896,10 +897,10 @@ mod tests {
         assert!(props.contains("waydroid.updater.disabled=true\n"));
         assert!(!props.contains("waydroid.system_ota"));
         assert_eq!(
-            fixture.read("lxc/waydroid/config_session")?,
+            fixture.read("lxc/deckard/config_session")?,
             "session bind\n"
         );
-        assert_eq!(fixture.read("lxc/waydroid/custom.conf")?, "keep me\n");
+        assert_eq!(fixture.read("lxc/deckard/custom.conf")?, "keep me\n");
         assert!(!fixture.instance.work.join("overlay_rw/system/app").exists());
         Ok(())
     }

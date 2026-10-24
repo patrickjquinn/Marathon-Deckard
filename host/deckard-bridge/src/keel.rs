@@ -1,5 +1,5 @@
 //! Each Android app as an `org.shipwright.Keel.Actions` provider for keel-mcp
-//! and Pilot (docs/pilot.md): the bus name `waydroid.<pkg>`, on a connection
+//! and Pilot (docs/pilot.md): the bus name `deckard.<pkg>`, on a connection
 //! of its own, since keel-mcp describes a name again only when its owner
 //! changes.
 

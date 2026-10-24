@@ -1,4 +1,4 @@
-//! Reconcile Deckard's packaged Android overlay with Waydroid's persistent state.
+//! Reconcile Deckard's packaged Android overlay with Android's persistent state.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, Metadata, Permissions};
@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
+use deckard_host_tools::names::android;
 use deckard_host_tools::{cfg, files};
 use rustix::fs::{AtFlags, FileType, Mode, Timespec, Timestamps};
 use rustix::process::{Gid, Uid};
@@ -13,11 +14,7 @@ use rustix::process::{Gid, Uid};
 const SYSTEM: &str = "1790477549";
 /// Overlay files built for one image: (`waydroid.cfg` key, its value, file).
 const GUARDS: &[(&str, &str, &str)] = &[
-    (
-        "vendor_datetime",
-        "1790486210",
-        "vendor/lib64/hw/hwcomposer.waydroid.so",
-    ),
+    ("vendor_datetime", "1790486210", android::COMPOSER),
     (
         "system_datetime",
         SYSTEM,
@@ -35,7 +32,7 @@ const GUARDS: &[(&str, &str, &str)] = &[
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub share: PathBuf,
-    pub waydroid: PathBuf,
+    pub work: PathBuf,
 }
 
 fn is_whiteout(path: &Path) -> io::Result<bool> {
@@ -58,7 +55,7 @@ fn create_whiteout(path: &Path) -> io::Result<()> {
     )?)
 }
 
-/// Copies the packaged overlay over Waydroid's, drops what the previous
+/// Copies the packaged overlay over Android's, drops what the previous
 /// package installed and this one lacks, leaves out files built for another
 /// image, and reconciles whiteouts and properties.
 ///
@@ -70,12 +67,12 @@ pub fn sync(paths: &Paths) -> io::Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
-    let dst = paths.waydroid.join("overlay");
+    let dst = paths.work.join("overlay");
     fs::create_dir_all(&dst)?;
     if fs::symlink_metadata(&dst)?.is_symlink() {
         return Err(files::invalid("overlay root is a symlink"));
     }
-    let list = paths.waydroid.join("deckard-overlay.list");
+    let list = paths.work.join("deckard-overlay.list");
     for old in files::read_optional(&list)?.lines() {
         let rel = relative(old)?;
         if fs::symlink_metadata(src.join(&rel)).is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
@@ -86,7 +83,7 @@ pub fn sync(paths: &Paths) -> io::Result<()> {
     let mut copied = Vec::new();
     copy_tree(&src, &dst, Path::new(""), &mut copied, &mut HashMap::new())?;
     write_lines(&list, &copied)?;
-    let config = files::read_optional(&paths.waydroid.join("waydroid.cfg"))?;
+    let config = files::read_optional(&paths.work.join("waydroid.cfg"))?;
     for &(key, expected, path) in GUARDS {
         let have = cfg::get(&config, key).unwrap_or_default();
         if have != expected {
@@ -237,7 +234,7 @@ fn wanted(path: &Path) -> io::Result<Vec<String>> {
 
 fn reconcile_whiteouts(paths: &Paths, dst: &Path) -> io::Result<()> {
     let wanted = wanted(&paths.share.join("whiteouts"))?;
-    let list = paths.waydroid.join("deckard-whiteouts.list");
+    let list = paths.work.join("deckard-whiteouts.list");
     for line in files::read_optional(&list)?.lines() {
         let path = safe_target(dst, &relative(line)?)?;
         if !wanted.iter().any(|wanted| wanted == line) && is_whiteout(&path)? {
@@ -265,7 +262,7 @@ fn reconcile_whiteouts(paths: &Paths, dst: &Path) -> io::Result<()> {
 /// and `waydroid_base.prop`, dropping the ones a previous package shipped.
 fn reconcile_properties(paths: &Paths) -> io::Result<()> {
     let new = wanted(&paths.share.join("waydroid.prop"))?;
-    let list = paths.waydroid.join("deckard-props.list");
+    let list = paths.work.join("deckard-props.list");
     let mut keys: BTreeSet<String> = files::read_optional(&list)?
         .lines()
         .map(str::to_owned)
@@ -281,8 +278,8 @@ fn reconcile_properties(paths: &Paths) -> io::Result<()> {
         };
         keys.iter().any(named)
     };
-    let cfg = paths.waydroid.join("waydroid.cfg");
-    for path in [&cfg, &paths.waydroid.join("waydroid_base.prop")] {
+    let cfg = paths.work.join("waydroid.cfg");
+    for path in [&cfg, &paths.work.join("waydroid_base.prop")] {
         if !path.is_file() {
             continue;
         }

@@ -136,7 +136,7 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
     let prompt = shown.recv_timeout(WAIT)?;
     assert_eq!(
         (prompt.0.as_str(), prompt.1.as_str()),
-        ("waydroid.me.hackerchick.catima", "camera")
+        ("deckard.me.hackerchick.catima", "camera")
     );
     let options = json!({"request":"0123456789abcdef", "kind":"foreground", "once":true,
         "accuracy":"", "preciseDefault":false});

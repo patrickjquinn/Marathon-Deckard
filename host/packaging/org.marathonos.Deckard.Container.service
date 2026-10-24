@@ -1,5 +1,5 @@
 [D-BUS Service]
-Name=id.waydro.Container
+Name=org.marathonos.Deckard.Container
 Exec=/usr/libexec/deckard-containerd --production-run
 User=root
 SystemdService=deckard-container.service

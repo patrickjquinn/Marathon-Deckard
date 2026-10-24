@@ -6,21 +6,21 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use deckard_host_tools::files;
+use deckard_host_tools::{files, prop};
 
 use crate::Result;
 
 const MAX_BASE_BYTES: u64 = 1024 * 1024;
 const SESSION_KEYS: &[&str] = &[
-    "waydroid.host.user",
-    "waydroid.host.uid",
-    "waydroid.host.gid",
-    "waydroid.host_data_path",
-    "waydroid.background_start",
-    "waydroid.xdg_runtime_dir",
-    "waydroid.pulse_runtime_path",
-    "waydroid.wayland_display",
-    "waydroid.stub_sensors_hal",
+    prop!("host.user"),
+    prop!("host.uid"),
+    prop!("host.gid"),
+    prop!("host_data_path"),
+    prop!("background_start"),
+    prop!("xdg_runtime_dir"),
+    prop!("pulse_runtime_path"),
+    prop!("wayland_display"),
+    prop!("stub_sensors_hal"),
     "ro.sf.lcd_density",
 ];
 
@@ -76,19 +76,19 @@ pub fn render(
         }
     }
     for (key, entry) in [
-        ("waydroid.host.user", user),
-        ("waydroid.host.uid", uid),
-        ("waydroid.host.gid", gid),
-        ("waydroid.host_data_path", data),
-        ("waydroid.background_start", background),
-        ("waydroid.xdg_runtime_dir", "/run/xdg"),
-        ("waydroid.pulse_runtime_path", "/run/xdg/pulse"),
-        ("waydroid.wayland_display", "wayland-0"),
+        (prop!("host.user"), user),
+        (prop!("host.uid"), uid),
+        (prop!("host.gid"), gid),
+        (prop!("host_data_path"), data),
+        (prop!("background_start"), background),
+        (prop!("xdg_runtime_dir"), "/run/xdg"),
+        (prop!("pulse_runtime_path"), "/run/xdg/pulse"),
+        (prop!("wayland_display"), "wayland-0"),
     ] {
         let _ = writeln!(result, "{key}={entry}");
     }
     if !sensors_available {
-        result.push_str("waydroid.stub_sensors_hal=1\n");
+        let _ = writeln!(result, "{}=1", prop!("stub_sensors_hal"));
     }
     if density != 0 {
         let _ = writeln!(result, "ro.sf.lcd_density={density}");

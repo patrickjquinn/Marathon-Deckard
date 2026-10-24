@@ -9,6 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use deckard_host_tools::files;
+use deckard_host_tools::names::android;
 
 use crate::Result;
 use crate::command::{self, Command};
@@ -109,7 +110,7 @@ impl MountLayout {
             }
         }
         let prop = display(&self.work.join("waydroid.prop"));
-        let target = display(&root.join("vendor/waydroid.prop"));
+        let target = display(&root.join(android::VENDOR_PROPERTIES));
         commands.push(Command::new(["mount", "--bind", &prop, &target]));
         Ok(commands)
     }

@@ -23,7 +23,7 @@ use zbus::blocking::{Connection, Proxy};
 use zbus::interface;
 use zbus::zvariant::Value as Variant;
 
-const NAME: &str = "waydroid.org.example.chat";
+const NAME: &str = "deckard.org.example.chat";
 const PATH: &str = "/org/shipwright/Keel/Actions";
 const ERROR: &str = "org.shipwright.Keel.Actions.Error.";
 

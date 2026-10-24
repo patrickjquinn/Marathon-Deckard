@@ -415,7 +415,7 @@ impl MprisAdapter {
         }
         let sid = media.session_id;
         let name = format!(
-            "org.mpris.MediaPlayer2.waydroid_{}.instance{sid}",
+            "org.mpris.MediaPlayer2.deckard_{}.instance{sid}",
             media.package.as_str().replace('.', "_")
         );
         let art = match &media.art {

@@ -71,7 +71,7 @@ fn opens_route_like_cxx() {
     }
     let pages = [
         ("android.settings.WIFI_SETTINGS", "", "wifi"),
-        ("android.settings.APPLICATION_DETAILS_SETTINGS", "org.fdroid.fdroid", "appmanager/waydroid.org.fdroid.fdroid"),
+        ("android.settings.APPLICATION_DETAILS_SETTINGS", "org.fdroid.fdroid", "appmanager/deckard.org.fdroid.fdroid"),
         ("android.settings.APP_NOTIFICATION_SETTINGS", "../x", "notifications"),
         ("android.settings.LOCATION_SOURCE_SETTINGS", "", ""),
         ("android.intent.action.POWER_USAGE_SUMMARY", "", "battery"),
@@ -165,7 +165,7 @@ fn focus_follows_marathon() {
             .emit_signal(None::<&str>, path, iface, "ForegroundAppChanged", &body)
             .unwrap();
     };
-    emit("waydroid.org.example.files");
+    emit("deckard.org.example.files");
     assert_eq!(
         sent.next(),
         map(json!({"t":"focus","pkg":"org.example.files"}))
@@ -173,7 +173,7 @@ fn focus_follows_marathon() {
     emit("browser");
     emit("notes");
     assert_eq!(sent.next(), map(json!({"t":"focus","pkg":""})));
-    intents.foreground_changed("waydroid.../x");
+    intents.foreground_changed("deckard.../x");
     assert!(sent.none_after(Duration::from_millis(100)));
 }
 

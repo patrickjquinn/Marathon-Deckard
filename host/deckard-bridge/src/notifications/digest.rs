@@ -115,7 +115,7 @@ mod tests {
         let post = messages::post(value.as_object().unwrap()).unwrap();
         assert_eq!(
             hex(&display_digest(&post)),
-            "fafa37e96e7ab32bea1805a3e3ab37c19d596f7c21da3e0eb26c7998a2564db5"
+            "30ada5ebfdea4b4830d45f52899046c028afa7ffb21a87c68f523890ec7cd4c2"
         );
     }
 
@@ -133,7 +133,7 @@ mod tests {
         post.image = vec![1, 2, 3];
         assert_eq!(
             hex(&display_digest(&post)),
-            "5ed0c73e352e201ac627d788a693d4345eaa01027ee499e4f215ff3d0fc7b12b"
+            "910eca2e0d7d7c193da74b0f70e59272d054c13e6e37b19c3546baa7d165aa17"
         );
     }
 

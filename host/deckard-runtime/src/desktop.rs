@@ -7,6 +7,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use deckard_host_tools::files;
+use deckard_host_tools::names::{self, APP_ID_PREFIX};
 use deckard_launch::binder::AppInfo;
 
 use crate::Result;
@@ -159,13 +160,14 @@ fn applications_dir(data_home: &Path) -> Result<PathBuf> {
 }
 
 fn launcher_path(applications: &Path, package: &str) -> PathBuf {
-    applications.join(format!("waydroid.{package}.desktop"))
+    applications.join(format!("{APP_ID_PREFIX}{package}.desktop"))
 }
 
 fn write_app(applications: &Path, data_home: &Path, app: &AppInfo) -> Result<()> {
     let path = launcher_path(applications, &app.package);
     let existing = files::read_optional(&path)?;
-    let next = render_app(&existing, app, &data_home.join("waydroid/data/icons"));
+    let icons = data_home.join(names::USER_STATE).join("data/icons");
+    let next = render_app(&existing, app, &icons);
     if next != existing {
         files::replace(&path, next.as_bytes(), 0o644)?;
     }
@@ -203,7 +205,7 @@ pub fn export(data_home: &Path, apps: &[AppInfo]) -> Result<usize> {
         let name = entry.file_name();
         let package = name
             .to_str()
-            .and_then(|name| name.strip_prefix("waydroid.")?.strip_suffix(".desktop"));
+            .and_then(|name| name.strip_prefix(APP_ID_PREFIX)?.strip_suffix(".desktop"));
         if let Some(package) = package
             && valid_package(package)
             && !visible.contains(package)
@@ -263,7 +265,7 @@ mod tests {
         )?;
         let entry = fs::read_to_string(
             root.path()
-                .join("applications/waydroid.com.nononsenseapps.feeder.desktop"),
+                .join("applications/deckard.com.nononsenseapps.feeder.desktop"),
         )?;
         assert!(
             entry.contains(
@@ -273,7 +275,7 @@ mod tests {
         assert!(entry.contains(&format!(
                 "Icon={}\n",
                 root.path()
-                    .join("waydroid/data/icons/com.nononsenseapps.feeder.png")
+                    .join("deckard/data/icons/com.nononsenseapps.feeder.png")
                     .display()
             )));
         assert!(entry.contains("Categories=X-WayDroid-App;\n"));
@@ -287,7 +289,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let apps_dir = root.path().join("applications");
         fs::create_dir(&apps_dir)?;
-        let path = apps_dir.join("waydroid.com.android.settings.desktop");
+        let path = apps_dir.join("deckard.com.android.settings.desktop");
         fs::write(
             &path,
             "# custom\n[Desktop Entry]\nName=Old\nName[fr]=Ancien\nCategories=Utility;\nActions=custom;\nNoDisplay=false\nX-Custom=yes\n\n[Desktop Action custom]\nName=Custom\n",
@@ -311,8 +313,8 @@ mod tests {
         let root = tempfile::tempdir()?;
         let apps_dir = root.path().join("applications");
         fs::create_dir(&apps_dir)?;
-        let stale = apps_dir.join("waydroid.org.example.stale.desktop");
-        let hidden = apps_dir.join("waydroid.org.example.hidden.desktop");
+        let stale = apps_dir.join("deckard.org.example.stale.desktop");
+        let hidden = apps_dir.join("deckard.org.example.hidden.desktop");
         let foreign = apps_dir.join("native.desktop");
         for path in [&stale, &hidden, &foreign] {
             fs::write(path, "old")?;
@@ -327,7 +329,7 @@ mod tests {
         assert!(foreign.exists());
         assert!(
             apps_dir
-                .join("waydroid.org.example.visible.desktop")
+                .join("deckard.org.example.visible.desktop")
                 .exists()
         );
         Ok(())
@@ -338,7 +340,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let apps_dir = root.path().join("applications");
         fs::create_dir(&apps_dir)?;
-        let old = apps_dir.join("waydroid.org.example.old.desktop");
+        let old = apps_dir.join("deckard.org.example.old.desktop");
         fs::write(&old, "old")?;
         assert!(export(root.path(), &[]).is_err());
         assert!(export(root.path(), &[app("Bad", "../escape", true)]).is_err());
@@ -372,10 +374,10 @@ mod tests {
         let root = tempfile::tempdir()?;
         let path = root
             .path()
-            .join("applications/waydroid.org.example.app.desktop");
+            .join("applications/deckard.org.example.app.desktop");
         let other = root
             .path()
-            .join("applications/waydroid.org.example.other.desktop");
+            .join("applications/deckard.org.example.other.desktop");
         export(root.path(), &[app("Other", "org.example.other", true)])?;
         update(
             root.path(),

@@ -1,10 +1,10 @@
 [Unit]
 Description=Deckard Android container
-ConditionPathExists=/run/user/1000/marathon-waydroid-requested
+ConditionPathExists=/run/user/1000/deckard-requested
 
 [Service]
 Type=dbus
-BusName=id.waydro.Container
+BusName=org.marathonos.Deckard.Container
 UMask=0022
 ExecStartPre=/usr/libexec/deckard-overlay-sync
 ExecStartPre=/usr/libexec/deckard-fonts-sync

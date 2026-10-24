@@ -1,11 +1,12 @@
-//! `/Initializer` (`id.waydro.Initializer`): `Init(a{ss})`, `Cancel()` and the
-//! `ProgressChanged(s)`, `Finished()` and `Interrupted()` signals.
+//! `/Initializer` (`org.marathonos.Deckard.Initializer`): `Init(a{ss})`,
+//! `Cancel()` and the `ProgressChanged(s)`, `Finished()` and `Interrupted()`
+//! signals.
 //!
 //! Upstream downloads images from the requested OTA channels. Deckard only
 //! initializes from images already on the device, so custom channels are
 //! refused and the default ones select nothing. Non-root callers need polkit
-//! authorization for `id.waydro.Initializer.Init`; unlike upstream there is
-//! no exemption for the default channels, because Init restarts the session.
+//! authorization for [`POLKIT_ACTION`]; unlike upstream there is no exemption
+//! for the default channels, because Init restarts the session.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,8 +28,8 @@ use crate::drivers;
 use crate::initializer::{Host, Images, Init, Instance, PREINSTALLED};
 
 pub const OBJECT_PATH: &str = "/Initializer";
-pub const INTERFACE: &str = "id.waydro.Initializer";
-pub const POLKIT_ACTION: &str = "id.waydro.Initializer.Init";
+pub const INTERFACE: &str = "org.marathonos.Deckard.Initializer";
+pub const POLKIT_ACTION: &str = "org.marathonos.Deckard.Initializer.Init";
 const SYSTEM_CHANNEL: &str = "https://ota.waydro.id/system";
 const VENDOR_CHANNEL: &str = "https://ota.waydro.id/vendor";
 const SYSTEM_TYPES: [&str; 2] = ["VANILLA", "GAPPS"];
@@ -63,7 +64,7 @@ impl InitializerService {
         }
     }
 
-    /// Initializes `/var/lib/waydroid`, stopping and restarting `container`'s
+    /// Initializes `/var/lib/deckard`, stopping and restarting `container`'s
     /// session around it.
     #[must_use]
     pub fn production(container: ContainerService) -> Self {
@@ -225,7 +226,7 @@ async fn authorize(conn: &Connection, header: &Header<'_>, who: Caller) -> fdo::
     Ok(())
 }
 
-#[zbus::interface(name = "id.waydro.Initializer")]
+#[zbus::interface(name = "org.marathonos.Deckard.Initializer")]
 impl InitializerService {
     async fn init(
         &self,
@@ -476,7 +477,7 @@ mod tests {
         let service = InitializerService::new(Arc::new(|_: &Progress<'_>, _: &AtomicBool| Ok(())));
         let mut xml = String::new();
         service.introspect_to_writer(&mut xml, 0);
-        assert!(xml.contains("interface name=\"id.waydro.Initializer\""));
+        assert!(xml.contains("interface name=\"org.marathonos.Deckard.Initializer\""));
         assert!(xml.contains("type=\"a{ss}\""));
         for name in [
             "Init",

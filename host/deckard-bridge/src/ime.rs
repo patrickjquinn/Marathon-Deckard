@@ -174,7 +174,7 @@ fn send(shell: &Proxy<'_>, calls: &[ShellCall]) {
     }
 }
 
-/// Registers the `waydroid.` app ids with the Shell.
+/// Registers the Android app ids with the Shell.
 fn register(shell: &Proxy<'_>) -> zbus::Result<()> {
     shell.call("Register", &(APP_ID_PREFIX,))
 }
@@ -327,7 +327,7 @@ mod tests {
             None
         );
         let start = json!({"t":"start","package":"org.example.App","purpose":99,"hints":2047});
-        let app = String::from("waydroid.org.example.App");
+        let app = String::from("deckard.org.example.App");
         assert_eq!(
             call_of(&mut ime, start),
             Some(ShellCall::SetEditor(app.clone(), 0, 1023))
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn fixture_panel_replay_disconnect_and_filtered_shell_input() {
-        let app = "waydroid.org.example";
+        let app = "deckard.org.example";
         let mut ime = ImeState::default();
         assert!(
             ime.shell(&signal("PanelChanged", &(app, -4, 700)))
@@ -373,7 +373,7 @@ mod tests {
             Some(message(json!({"t":"key","key":"enter"})))
         );
         assert!(
-            ime.shell(&signal("Key", &("waydroid.org.other", "enter")))
+            ime.shell(&signal("Key", &("deckard.org.other", "enter")))
                 .is_none()
         );
         assert!(ime.shell(&signal("Key", &(app, "delete"))).is_none());
@@ -383,7 +383,7 @@ mod tests {
                 json!({"t":"commit","text":"😀","before":0,"after":2})
             ))
         );
-        let other = signal("CommitString", &("waydroid.org.other", "x", 0, 0));
+        let other = signal("CommitString", &("deckard.org.other", "x", 0, 0));
         assert!(ime.shell(&other).is_none());
         assert_eq!(
             call_of(&mut ime, json!({"t":"show"})),
@@ -424,11 +424,11 @@ mod tests {
         let shell = Proxy::new(&bus, SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)?;
         register(&shell)?;
         let expected = vec![
-            ShellCall::SetEditor("waydroid.org.example".into(), 7, 0x200),
-            ShellCall::SetSurroundingText("waydroid.org.example".into(), "a😀b".into(), 3, 1),
-            ShellCall::ShowPanel("waydroid.org.example".into()),
-            ShellCall::HidePanel("waydroid.org.example".into()),
-            ShellCall::ClearEditor("waydroid.org.example".into()),
+            ShellCall::SetEditor("deckard.org.example".into(), 7, 0x200),
+            ShellCall::SetSurroundingText("deckard.org.example".into(), "a😀b".into(), 3, 1),
+            ShellCall::ShowPanel("deckard.org.example".into()),
+            ShellCall::HidePanel("deckard.org.example".into()),
+            ShellCall::ClearEditor("deckard.org.example".into()),
         ];
         for each in &expected {
             call(&shell, each)?;

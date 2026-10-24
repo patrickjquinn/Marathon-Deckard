@@ -19,20 +19,10 @@ use std::process::Command;
 
 use rustix::fs::{AtFlags, FileType, Mode};
 
-use crate::files;
+use crate::{files, names};
 
 /// The container's unit.
 const UNITS: [&str; 1] = ["deckard-container.service"];
-
-/// The container identities LXC may know: (name, configuration path).
-const CONTAINERS: [(&str, &str); 2] = [
-    ("deckard", "/var/lib/deckard/lxc"),
-    ("waydroid", "/var/lib/waydroid/lxc"),
-];
-
-/// Where a user's Android data lives, under their home: Deckard's path, then
-/// the one it is migrating from.
-const DATA: [&str; 2] = [".local/share/deckard/data", ".local/share/waydroid/data"];
 
 /// Why a reset did not happen, and the helper's exit status for it.
 #[derive(Debug)]
@@ -113,11 +103,11 @@ fn home_of(uid: u32, passwd: Option<&Path>) -> Result<PathBuf, Error> {
 /// the user's own.
 fn open_data(uid: u32, home: &Path) -> Result<(PathBuf, OwnedFd), Error> {
     let no_data = |path: &Path| Error::NoData(format!("no Android data at {}", path.display()));
-    let path = DATA
-        .iter()
-        .map(|relative| home.join(relative))
-        .find(|path| path.symlink_metadata().is_ok())
-        .ok_or_else(|| no_data(&home.join(DATA[1])))?;
+    let path = home
+        .join(".local/share")
+        .join(names::USER_STATE)
+        .join("data");
+    path.symlink_metadata().map_err(|_| no_data(&path))?;
     if !path
         .strip_prefix(home)
         .is_ok_and(|relative| relative.components().next().is_some())
@@ -163,21 +153,22 @@ fn stop_container() -> Result<Vec<&'static str>, Error> {
     if let Some(unit) = UNITS.into_iter().find(active) {
         return Err(Error::Failed(format!("{unit} is still active")));
     }
-    for (name, path) in CONTAINERS {
-        if container_running(name, path) {
-            return Err(Error::Failed(format!("container {name} is still running")));
-        }
+    let lxc = Path::new(names::WORK).join("lxc");
+    if container_running(names::CONTAINER, &lxc) {
+        let name = names::CONTAINER;
+        return Err(Error::Failed(format!("container {name} is still running")));
     }
     Ok(running)
 }
 
 /// Running unless LXC reports it stopped or knows no such container.
-fn container_running(name: &str, path: &str) -> bool {
-    if !Path::new(path).exists() {
+fn container_running(name: &str, path: &Path) -> bool {
+    if !path.exists() {
         return false;
     }
     let Ok(output) = Command::new("lxc-info")
-        .args(["-n", name, "-P", path, "-s"])
+        .args(["-n", name, "-s", "-P"])
+        .arg(path)
         .output()
     else {
         return true;
@@ -238,15 +229,15 @@ fn clear_data(data: &OwnedFd) -> bool {
     complete
 }
 
-/// The desktop entries of the apps that are gone, under either identity.
+/// The desktop entries of the apps that are gone.
 fn clear_entries(home: &Path) {
     let Ok(directory) = files::open_dir(&home.join(".local/share/applications")) else {
         return;
     };
     for name in files::children(&directory).unwrap_or_default() {
         let bytes = name.as_bytes();
-        let android = (bytes.starts_with(b"deckard.") || bytes.starts_with(b"waydroid."))
-            && bytes.ends_with(b".desktop");
+        let android =
+            bytes.starts_with(names::APP_ID_PREFIX.as_bytes()) && bytes.ends_with(b".desktop");
         if android && file_type(&directory, &name).is_ok_and(|kind| kind == FileType::RegularFile) {
             let _ = rustix::fs::unlinkat(&directory, &name, AtFlags::empty());
         }

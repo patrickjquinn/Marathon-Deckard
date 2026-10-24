@@ -6,10 +6,10 @@
 # Wayland link among them). Run as root through pkexec; it only reads.
 set -u
 [ $# -eq 0 ] || { echo "usage: deckard-boot-evidence" >&2; exit 2; }
-cg=/sys/fs/cgroup/lxc.payload.waydroid
+cg=/sys/fs/cgroup/lxc.payload.deckard
 [ -d "$cg" ] || { echo "Android's container is not running"; exit 0; }
 attach() {
-	timeout 20 lxc-attach -P /var/lib/waydroid/lxc -n waydroid --clear-env -- "$@" 2>&1
+	timeout 20 lxc-attach -P /var/lib/deckard/lxc -n deckard --clear-env -- "$@" 2>&1
 }
 
 echo "== freezer: cgroup.freeze $(cat "$cg/cgroup.freeze" 2>&1); $(grep frozen "$cg/cgroup.events" 2>&1)"

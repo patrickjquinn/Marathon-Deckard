@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use deckard_host_tools::names::{APP_ID_PREFIX, android};
+use deckard_host_tools::prop;
 use zbus::blocking::Connection;
 use zbus::blocking::fdo::DBusProxy;
 use zbus::names::BusName;
@@ -16,7 +18,7 @@ use zbus::zvariant::OwnedObjectPath;
 use crate::Result;
 use crate::binder::{BinderConfig, Platform};
 
-pub const SESSION_NAME: &str = "id.waydro.Session";
+pub const SESSION_NAME: &str = "org.marathonos.Deckard.Session";
 const SESSION_WAIT: Duration = Duration::from_secs(35);
 const USER_WAIT: Duration = Duration::from_secs(90);
 
@@ -37,8 +39,8 @@ enum Container {
 
 /// The root container manager.
 #[zbus::proxy(
-    interface = "id.waydro.ContainerManager",
-    default_service = "id.waydro.Container",
+    interface = "org.marathonos.Deckard.ContainerManager",
+    default_service = "org.marathonos.Deckard.Container",
     default_path = "/ContainerManager"
 )]
 pub trait ContainerManager {
@@ -194,7 +196,7 @@ impl NativeBackend {
 
     fn show_android_app(&self, package: &str) -> Result<()> {
         let navigation = NavigationProxyBlocking::new(&self.session_bus)?;
-        if !navigation.show_android_app(&format!("waydroid.{package}"))? {
+        if !navigation.show_android_app(&format!("{APP_ID_PREFIX}{package}"))? {
             return Err(format!("Shell rejected Android window handoff for {package}").into());
         }
         Ok(())
@@ -206,7 +208,7 @@ impl NativeBackend {
         if package.is_empty() || package.contains(char::is_whitespace) {
             return Err("invalid package name".into());
         }
-        self.wake()?.setprop("waydroid.active_apps", package)?;
+        self.wake()?.setprop(prop!("active_apps"), package)?;
         self.show_android_app(package)?;
         let platform = self.platform()?;
         platform.launch_app(package)?;
@@ -224,11 +226,11 @@ impl NativeBackend {
             return Ok(());
         }
         let active = if package == "android" {
-            "Waydroid"
+            android::FULL_UI
         } else {
             &package
         };
-        self.platform()?.setprop("waydroid.active_apps", active)?;
+        self.platform()?.setprop(prop!("active_apps"), active)?;
         // DeckardSystem relays system intents but is not itself a visible app.
         if package != "android" && package != "org.marathonos.deckard.system" {
             self.show_android_app(&package)?;
@@ -269,7 +271,7 @@ impl NativeBackend {
 }
 
 fn immersive(platform: &Platform) -> Result<()> {
-    let value = if platform.getprop("persist.waydroid.multi_windows", "false")? == "false" {
+    let value = if platform.getprop(prop!("persist.", "multi_windows"), "false")? == "false" {
         "immersive.status=*"
     } else {
         "immersive.full=*"

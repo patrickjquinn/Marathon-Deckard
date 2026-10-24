@@ -405,6 +405,7 @@ name = "deckard-core"
 version = "0.4.0"
 dependencies = [
  "base64",
+ "deckard-host-tools",
  "hex",
  "image",
  "palette",

@@ -326,7 +326,7 @@ fn android_shares_open_the_sheet() {
         thread::sleep(Duration::from_millis(10));
     }
     let request = sheet.0.lock().unwrap().remove(0);
-    assert_eq!(text(&request["source"]), "waydroid.org.example.scanner");
+    assert_eq!(text(&request["source"]), "deckard.org.example.scanner");
     assert_eq!(
         (text(&request["mimeType"]), text(&request["title"])),
         ("application/pdf".into(), "Receipt".into())

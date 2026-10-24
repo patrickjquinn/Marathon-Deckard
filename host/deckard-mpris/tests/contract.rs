@@ -76,7 +76,7 @@ fn message(sid: i32, package: &str) -> Value {
 
 fn name(package: &str, sid: i32) -> String {
     format!(
-        "org.mpris.MediaPlayer2.waydroid_{}.instance{sid}",
+        "org.mpris.MediaPlayer2.deckard_{}.instance{sid}",
         package.replace('.', "_")
     )
 }
@@ -125,7 +125,7 @@ fn two_players_have_distinct_connections_and_legacy_properties() -> TestResult<(
     assert_eq!(root.get_property::<String>("Identity")?, "Music");
     assert_eq!(
         root.get_property::<String>("DesktopEntry")?,
-        "waydroid.org.lineageos.eleven"
+        "deckard.org.lineageos.eleven"
     );
     assert!(!root.get_property::<bool>("CanQuit")?);
     assert!(!root.get_property::<bool>("CanRaise")?);

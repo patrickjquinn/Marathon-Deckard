@@ -12,6 +12,7 @@ use deckard_container::mounts::MountLayout;
 use deckard_container::network::Network;
 use deckard_container::session_config::{self, Stage};
 use deckard_container::{Result, hardware, properties};
+use deckard_host_tools::names;
 use deckard_launch::binder::{self, BinderConfig};
 use deckard_launch::session::ContainerManagerProxyBlocking;
 
@@ -22,11 +23,17 @@ fn audit_production() -> Result<()> {
     let fields = ContainerManagerProxyBlocking::new(&zbus::blocking::Connection::system()?)?
         .get_session()?;
     let uid: u32 = fields.get("user_id").ok_or("no active session")?.parse()?;
-    let work = Path::new("/var/lib/waydroid");
+    let work = Path::new(names::WORK);
     DriverNodes::from_config(&work.join("waydroid.cfg"))?.audit(Path::new("/dev"))?;
     let pulse = session_config::check(&fields, uid, Path::new("/run/user"))?;
-    let rendered = session_config::render(&Stage::new(Path::new("/run/waydroid-lxc")), pulse);
-    if rendered != fs::read_to_string(work.join("lxc/waydroid/config_session"))? {
+    let rendered = session_config::render(&Stage::new(Path::new(names::RUN)), pulse);
+    if rendered
+        != fs::read_to_string(
+            work.join("lxc")
+                .join(names::CONTAINER)
+                .join("config_session"),
+        )?
+    {
         return Err("session LXC config differs from the live config".into());
     }
     let base = fs::read_to_string(work.join("waydroid_base.prop"))?;
@@ -41,7 +48,7 @@ fn audit_production() -> Result<()> {
 }
 
 fn audit_hardware() -> Result<()> {
-    let config = BinderConfig::from_file(Path::new("/var/lib/waydroid/waydroid.cfg"))?;
+    let config = BinderConfig::from_file(Path::new(names::CONFIG))?;
     if !binder::service_manager_present(&config)? {
         return Err("Binder service manager is not present".into());
     }
@@ -63,15 +70,15 @@ fn main() -> Result<()> {
         ["--production-run"] => {}
         _ => return Err(USAGE.into()),
     }
-    let work = PathBuf::from("/var/lib/waydroid");
+    let work = PathBuf::from(names::WORK);
     let manager = ContainerManager {
-        lxc: Lxc::new(work.join("lxc"), "waydroid".into())?,
+        lxc: Lxc::new(work.join("lxc"), names::CONTAINER.into())?,
         mounts: MountLayout {
             images: work.join("images"),
             work,
             overlays: true,
         },
-        network: Network::new("waydroid0".into(), "/run/waydroid-lxc".into())?,
+        network: Network::new(names::BRIDGE.into(), names::RUN.into())?,
     };
     let (hardware_sender, hardware_receiver) = mpsc::sync_channel(hardware::QUEUE_DEPTH);
     let terminating = Arc::new(AtomicBool::new(false));

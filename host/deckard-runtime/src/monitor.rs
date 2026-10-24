@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 
+use deckard_host_tools::names::android;
 use deckard_launch::binder::{self, Reply, Service};
 use rsbinder::{Parcel, StatusCode};
 
@@ -49,8 +50,8 @@ pub struct Monitor {
 }
 
 impl Service for Monitor {
-    const NAME: &'static str = "waydroidusermonitor";
-    const INTERFACE: &'static str = "lineageos.waydroid.IUserMonitor";
+    const NAME: &'static str = android::USER_MONITOR.0;
+    const INTERFACE: &'static str = android::USER_MONITOR.1;
 
     fn transact(&self, code: u32, request: &mut Parcel) -> Reply {
         match decode(code, request) {

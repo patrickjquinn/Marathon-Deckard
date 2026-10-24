@@ -307,7 +307,7 @@ pub fn settings_route(action: &str, pkg: &str) -> String {
         (Some(kind), _) if valid => format!("androidaccess/{kind}/{pkg}"),
         (Some(kind), _) => format!("androidaccess/{kind}"),
         (None, Some(page @ ("notifications" | "appmanager"))) if valid => {
-            format!("{page}/waydroid.{pkg}")
+            format!("{page}/{}{pkg}", keel::APP_ID_PREFIX)
         }
         (None, page) => page.unwrap_or("").into(),
     }

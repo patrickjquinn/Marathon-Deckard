@@ -49,7 +49,7 @@ esac"#,
     }
 
     fn data(&self) -> PathBuf {
-        self.home().join(".local/share/waydroid/data")
+        self.home().join(".local/share/deckard/data")
     }
 
     fn script(&self, name: &str, body: &str) {
@@ -91,7 +91,6 @@ esac"#,
         std::os::unix::fs::symlink(self.path("etc"), data.join("etc-link")).expect("link");
         let applications = self.home().join(".local/share/applications");
         for entry in [
-            "waydroid.org.fdroid.fdroid.desktop",
             "deckard.org.fdroid.fdroid.desktop",
             "org.marathonos.notes.desktop",
         ] {
@@ -190,9 +189,6 @@ fn removes_android_data_and_restarts_the_container() {
     );
     let applications = fixture.home().join(".local/share/applications");
     assert!(!exists(
-        &applications.join("waydroid.org.fdroid.fdroid.desktop")
-    ));
-    assert!(!exists(
         &applications.join("deckard.org.fdroid.fdroid.desktop")
     ));
     assert!(
@@ -250,18 +246,4 @@ fn refuses_data_outside_the_home_and_reports_none() {
 
     fs::remove_file(&data).expect("remove link");
     assert_eq!(status(&fixture.reset(&[])), 3);
-}
-
-#[test]
-fn prefers_the_deckard_data_directory() {
-    let fixture = Fixture::new();
-    fixture.seed();
-    let deckard = fixture.home().join(".local/share/deckard/data");
-    fs::create_dir_all(deckard.join("system")).expect("deckard data");
-    assert_eq!(status(&fixture.reset(&[])), 0);
-    assert!(!exists(&deckard.join("system")), "the Deckard data stayed");
-    assert!(
-        fixture.data().join("system").exists(),
-        "the legacy data went too"
-    );
 }

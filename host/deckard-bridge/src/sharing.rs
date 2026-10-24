@@ -203,7 +203,7 @@ impl Sharing {
             ("resources", Variant::from(resources)),
             ("mimeType", mime.unwrap_or("").to_owned().into()),
             ("title", title.into()),
-            ("source", format!("waydroid.{pkg}").into()),
+            ("source", keel::app_id(pkg).into()),
         ]);
         let (bus, pkg) = (self.bus.clone(), pkg.to_owned());
         let task = async move {

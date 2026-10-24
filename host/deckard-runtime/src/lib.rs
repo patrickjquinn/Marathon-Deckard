@@ -17,6 +17,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use deckard_host_tools::names;
 use deckard_launch::binder::{self, BinderConfig, Platform};
 use deckard_launch::session::{ContainerManagerProxyBlocking, SESSION_NAME};
 use nix::unistd::User;
@@ -28,14 +29,13 @@ pub use deckard_launch::Result;
 
 const SESSION_PATH: &str = "/SessionManager";
 const CONTAINER_UNIT: &str = "deckard-container.service";
-const WAYDROID_CONFIG: &str = "/var/lib/waydroid/waydroid.cfg";
 const EVENT_QUEUE: usize = 64;
 
 struct SessionManager {
     stop: Arc<AtomicBool>,
 }
 
-#[zbus::interface(name = "id.waydro.SessionManager")]
+#[zbus::interface(name = "org.marathonos.Deckard.SessionManager")]
 impl SessionManager {
     fn stop(&self) {
         self.stop.store(true, Ordering::Release);
@@ -43,8 +43,8 @@ impl SessionManager {
 }
 
 #[zbus::proxy(
-    interface = "id.waydro.SessionManager",
-    default_service = "id.waydro.Session",
+    interface = "org.marathonos.Deckard.SessionManager",
+    default_service = "org.marathonos.Deckard.Session",
     default_path = "/SessionManager"
 )]
 trait Session {
@@ -108,7 +108,7 @@ pub fn session_payload(spec: &SessionSpec<'_>) -> Result<HashMap<String, String>
         let socket = socket.display();
         return Err(format!("Wayland socket {socket} is missing or is not a socket").into());
     }
-    let user_state = spec.data_home.join("waydroid");
+    let user_state = spec.data_home.join(names::USER_STATE);
     let data = user_state.join("data");
     fs::create_dir_all(&data)?;
     let path = |path: &Path| path.to_string_lossy().into_owned();
@@ -233,9 +233,9 @@ fn apply(data_home: &Path, config: &BinderConfig, event: Option<monitor::Event>)
 }
 
 /// Exports the launchers once Android is ready, then follows Android's
-/// `waydroidusermonitor` callbacks instead of polling the catalog.
+/// user monitor callbacks instead of polling the catalog.
 fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()> {
-    let config = BinderConfig::from_file(Path::new(WAYDROID_CONFIG))?;
+    let config = BinderConfig::from_file(Path::new(names::CONFIG))?;
     let (sender, events) = mpsc::sync_channel(EVENT_QUEUE);
     let resync = Arc::new(AtomicBool::new(false));
     let service = monitor::Monitor {
@@ -246,7 +246,7 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
     let service_stop = Arc::clone(stop);
     thread::spawn(move || {
         if let Err(error) = binder::serve(&service_config, service, service_stop) {
-            eprintln!("deckard-runtime: waydroidusermonitor unavailable: {error}");
+            eprintln!("deckard-runtime: Android user monitor unavailable: {error}");
         }
     });
     // A later userUnlocked callback exports the catalog.
@@ -271,7 +271,7 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
     Ok(())
 }
 
-/// Owns `id.waydro.Session`, starts the container for this user and runs
+/// Owns [`SESSION_NAME`], starts the container for this user and runs
 /// until stopped, told to leave (SIGUSR1) or the compositor's socket changes.
 ///
 /// # Errors
@@ -281,7 +281,7 @@ pub fn session_start() -> Result<()> {
     let runtime_dir = Path::new(&payload["xdg_runtime_dir"]);
     let socket = runtime_dir.join(&payload["wayland_display"]);
     let initial_socket = socket_identity(&socket)?;
-    let marker = runtime_dir.join("marathon-waydroid-requested");
+    let marker = runtime_dir.join(names::REQUESTED);
     let stop = Arc::new(AtomicBool::new(false));
     let leave_container = Arc::new(AtomicBool::new(false));
     for signal in [SIGHUP, SIGINT, SIGTERM] {
@@ -296,7 +296,7 @@ pub fn session_start() -> Result<()> {
     let name_reply =
         session_bus.request_name_with_flags(SESSION_NAME, RequestNameFlags::DoNotQueue.into())?;
     if name_reply != RequestNameReply::PrimaryOwner {
-        return Err("another Waydroid session already owns the bus name".into());
+        return Err("another Deckard session already owns the bus name".into());
     }
 
     fs::write(&marker, [])?;
@@ -355,7 +355,7 @@ mod tests {
 
     struct MockContainer(Arc<Mutex<Option<HashMap<String, String>>>>);
 
-    #[zbus::interface(name = "id.waydro.ContainerManager")]
+    #[zbus::interface(name = "org.marathonos.Deckard.ContainerManager")]
     impl MockContainer {
         #[zbus(name = "Start")]
         fn start(&self, payload: HashMap<String, String>) -> zbus::fdo::Result<()> {
@@ -393,9 +393,9 @@ mod tests {
         assert_eq!(map["background_start"], "true");
         assert_eq!(
             map["waydroid_data"],
-            data_home.join("waydroid/data").to_string_lossy()
+            data_home.join("deckard/data").to_string_lossy()
         );
-        assert!(data_home.join("waydroid/data").is_dir());
+        assert!(data_home.join("deckard/data").is_dir());
         Ok(())
     }
 
@@ -415,7 +415,7 @@ mod tests {
             lcd_density: "0",
         });
         assert!(result.is_err());
-        assert!(!root.path().join("waydroid").exists());
+        assert!(!root.path().join("deckard").exists());
         Ok(())
     }
 
@@ -499,8 +499,10 @@ mod tests {
         owner
             .object_server()
             .at("/ContainerManager", MockContainer(Arc::clone(&captured)))?;
-        let reply = owner
-            .request_name_with_flags("id.waydro.Container", RequestNameFlags::DoNotQueue.into())?;
+        let reply = owner.request_name_with_flags(
+            "org.marathonos.Deckard.Container",
+            RequestNameFlags::DoNotQueue.into(),
+        )?;
         assert_eq!(reply, RequestNameReply::PrimaryOwner);
         let mut payload = HashMap::new();
         payload.insert("user_id".to_owned(), "1000".to_owned());

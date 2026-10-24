@@ -8,7 +8,7 @@
 <policyconfig>
   <vendor>Marathon OS</vendor>
   <vendor_url>https://github.com/patrickjquinn/Marathon-Deckard</vendor_url>
-  <action id="id.waydro.Initializer.Init">
+  <action id="org.marathonos.Deckard.Initializer.Init">
     <description>Set up Android</description>
     <message>Authentication is required to set up Android again from its installed images</message>
     <defaults>

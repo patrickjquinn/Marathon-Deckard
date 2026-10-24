@@ -361,7 +361,7 @@ impl SettingsApi {
         valid(matches!(page, "account" | "selfcheck"))?;
         let args = json!({"page": page});
         self.request("gms_open", args, None, header).await?;
-        let body = ("waydroid.com.google.android.gms",);
+        let body = ("deckard.com.google.android.gms",);
         let _ = notify(&self.bus, NAVIGATION, "ExpectAppWindow", &body).await;
         Ok(())
     }

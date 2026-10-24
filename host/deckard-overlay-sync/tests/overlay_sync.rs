@@ -12,17 +12,17 @@ fn setup() -> (TempDir, Paths) {
     let root = tempfile::tempdir().unwrap();
     let paths = Paths {
         share: root.path().join("share"),
-        waydroid: root.path().join("waydroid"),
+        work: root.path().join("deckard"),
     };
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     fs::create_dir_all(paths.share.join("overlay/system/etc/init")).unwrap();
     fs::create_dir_all(paths.share.join("overlay/vendor/lib64/hw")).unwrap();
-    fs::create_dir_all(&paths.waydroid).unwrap();
+    fs::create_dir_all(&paths.work).unwrap();
     for path in ["waydroid.prop", "whiteouts"] {
         fs::copy(fixture.join(path), paths.share.join(path)).unwrap();
     }
     for path in ["waydroid.cfg", "waydroid_base.prop"] {
-        fs::copy(fixture.join(path), paths.waydroid.join(path)).unwrap();
+        fs::copy(fixture.join(path), paths.work.join(path)).unwrap();
     }
     for path in [
         "system/etc/init/deckard-watch.rc",
@@ -40,23 +40,23 @@ fn setup() -> (TempDir, Paths) {
 #[test]
 fn reconciles_assets_guards_whiteouts_and_properties() {
     let (_root, paths) = setup();
-    let dst = paths.waydroid.join("overlay");
+    let dst = paths.work.join("overlay");
     fs::create_dir_all(dst.join("system")).unwrap();
     fs::write(dst.join("system/conflict.apk"), "keep").unwrap();
     fs::write(dst.join("system/obsolete.apk"), "stale").unwrap();
     fs::write(
-        paths.waydroid.join("deckard-overlay.list"),
+        paths.work.join("deckard-overlay.list"),
         "./system/obsolete.apk\n",
     )
     .unwrap();
-    fs::write(paths.waydroid.join("deckard-props.list"), "old.property\n").unwrap();
+    fs::write(paths.work.join("deckard-props.list"), "old.property\n").unwrap();
     fs::write(
-        paths.waydroid.join("waydroid_base.prop"),
+        paths.work.join("waydroid_base.prop"),
         "old.property=x\nro.product.cpu.abilist=obsolete\nkeep.me=yes\n",
     )
     .unwrap();
     fs::write(
-        paths.waydroid.join("waydroid.cfg"),
+        paths.work.join("waydroid.cfg"),
         format!(
             "{}old.property = x\n",
             include_str!("fixtures/waydroid.cfg")
@@ -95,16 +95,16 @@ fn reconciles_assets_guards_whiteouts_and_properties() {
         "keep"
     );
     assert!(!dst.join("../escape").exists());
-    let cfg = fs::read_to_string(paths.waydroid.join("waydroid.cfg")).unwrap();
+    let cfg = fs::read_to_string(paths.work.join("waydroid.cfg")).unwrap();
     assert!(cfg.contains("ro.product.cpu.abilist = arm64-v8a"));
     assert!(!cfg.contains("obsolete"));
     assert!(!cfg.contains("old.property"));
     assert!(cfg.contains("keep.me = yes"));
-    let base = fs::read_to_string(paths.waydroid.join("waydroid_base.prop")).unwrap();
+    let base = fs::read_to_string(paths.work.join("waydroid_base.prop")).unwrap();
     assert!(base.contains("ro.product.cpu.abilist=arm64-v8a"));
     assert!(!base.contains("old.property"));
     assert_eq!(
-        fs::read_to_string(paths.waydroid.join("deckard-props.list")).unwrap(),
+        fs::read_to_string(paths.work.join("deckard-props.list")).unwrap(),
         "ro.product.cpu.abilist\nro.lmk.use_new_strategy\n"
     );
 
@@ -112,12 +112,12 @@ fn reconciles_assets_guards_whiteouts_and_properties() {
     let whiteout = fs::symlink_metadata(dst.join("system/removed.apk")).unwrap();
     assert!(whiteout.file_type().is_char_device());
     assert_eq!(
-        fs::read_to_string(paths.waydroid.join("deckard-whiteouts.list")).unwrap(),
+        fs::read_to_string(paths.work.join("deckard-whiteouts.list")).unwrap(),
         "system/removed.apk\n"
     );
 
     fs::write(
-        paths.waydroid.join("waydroid.cfg"),
+        paths.work.join("waydroid.cfg"),
         "[waydroid]\nvendor_datetime = 1800000000\n[properties]\n",
     )
     .unwrap();
@@ -137,7 +137,7 @@ fn removed_property_is_retracted_and_hardlinks_are_preserved() {
     let link = paths.share.join("overlay/system/etc/init/second.rc");
     fs::hard_link(&source, &link).unwrap();
     sync(&paths).unwrap();
-    let dst = paths.waydroid.join("overlay/system/etc/init");
+    let dst = paths.work.join("overlay/system/etc/init");
     use std::os::unix::fs::MetadataExt;
     assert_eq!(
         fs::metadata(dst.join("deckard-watch.rc")).unwrap().ino(),
@@ -146,12 +146,12 @@ fn removed_property_is_retracted_and_hardlinks_are_preserved() {
     fs::write(paths.share.join("waydroid.prop"), "").unwrap();
     fs::write(paths.share.join("whiteouts"), "").unwrap();
     sync(&paths).unwrap();
-    let cfg = fs::read_to_string(paths.waydroid.join("waydroid.cfg")).unwrap();
+    let cfg = fs::read_to_string(paths.work.join("waydroid.cfg")).unwrap();
     assert!(!cfg.contains("ro.product.cpu.abilist"));
     assert!(!cfg.contains("ro.lmk.use_new_strategy"));
     assert!(cfg.contains("keep.me = yes"));
     assert_eq!(
-        fs::read_to_string(paths.waydroid.join("deckard-props.list")).unwrap(),
+        fs::read_to_string(paths.work.join("deckard-props.list")).unwrap(),
         ""
     );
 }
@@ -165,28 +165,24 @@ fn absent_source_is_noop_and_unsafe_old_list_is_rejected() {
     )
     .unwrap();
     sync(&paths).unwrap();
-    assert!(!paths.waydroid.join("overlay").exists());
+    assert!(!paths.work.join("overlay").exists());
     fs::rename(
         paths.share.join("removed-overlay"),
         paths.share.join("overlay"),
     )
     .unwrap();
-    fs::write(
-        paths.waydroid.join("deckard-overlay.list"),
-        "../../escape\n",
-    )
-    .unwrap();
+    fs::write(paths.work.join("deckard-overlay.list"), "../../escape\n").unwrap();
     assert_eq!(sync(&paths).unwrap_err().kind(), io::ErrorKind::InvalidData);
 }
 
 #[test]
 fn refuses_symlinked_overlay_parent() {
     let (_root, paths) = setup();
-    let outside = paths.waydroid.join("outside");
+    let outside = paths.work.join("outside");
     fs::create_dir_all(&outside).unwrap();
-    fs::create_dir_all(paths.waydroid.join("overlay")).unwrap();
-    fs::create_dir_all(paths.waydroid.join("overlay/system")).unwrap();
-    symlink(&outside, paths.waydroid.join("overlay/system/other")).unwrap();
+    fs::create_dir_all(paths.work.join("overlay")).unwrap();
+    fs::create_dir_all(paths.work.join("overlay/system")).unwrap();
+    symlink(&outside, paths.work.join("overlay/system/other")).unwrap();
     fs::write(paths.share.join("whiteouts"), "system/other/file\n").unwrap();
     assert_eq!(sync(&paths).unwrap_err().kind(), io::ErrorKind::InvalidData);
     assert_eq!(fs::read_dir(outside).unwrap().count(), 0);

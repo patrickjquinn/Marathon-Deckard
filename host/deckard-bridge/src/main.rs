@@ -31,7 +31,7 @@ use deckard_core::json;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
 use deckard_core::validate;
-use deckard_host_tools::shared_folders;
+use deckard_host_tools::{names, shared_folders};
 use deckard_mpris::MprisAdapter;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::future;
@@ -250,10 +250,12 @@ fn bind_app(
 fn main() -> Result<(), Error> {
     let home = dirs::home_dir().ok_or("HOME is missing")?;
     let data_home = dirs::data_dir().ok_or("no XDG data directory")?;
-    let data = env::var_os("DECKARD_WAYDROID_DATA")
-        .map_or_else(|| data_home.join("waydroid/data"), PathBuf::from);
+    let data = env::var_os("DECKARD_DATA").map_or_else(
+        || data_home.join(names::USER_STATE).join("data"),
+        PathBuf::from,
+    );
     if !data.is_dir() {
-        return Err(format!("Waydroid data directory missing: {}", data.display()).into());
+        return Err(format!("Android data directory missing: {}", data.display()).into());
     }
     let state = dirs::state_dir()
         .ok_or("no XDG state directory")?
@@ -261,10 +263,8 @@ fn main() -> Result<(), Error> {
     let cache = dirs::cache_dir()
         .ok_or("no XDG cache directory")?
         .join("deckard/icons");
-    let cgroup = env::var_os("DECKARD_CGROUP").map_or_else(
-        || PathBuf::from("/sys/fs/cgroup/lxc.payload.waydroid"),
-        PathBuf::from,
-    );
+    let cgroup =
+        env::var_os("DECKARD_CGROUP").map_or_else(|| PathBuf::from(names::CGROUP), PathBuf::from);
     let applications = data_home.join("applications");
     let runtime = Runtime::new(
         state.join("settings.json"),
