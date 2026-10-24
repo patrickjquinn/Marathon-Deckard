@@ -10,9 +10,11 @@ use std::time::Duration;
 
 use async_io::Timer;
 use deckard_core::ids::PackageName;
+use deckard_core::keel;
 use deckard_core::sync;
 use deckard_core::validate;
 use futures_lite::future;
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use zbus::zvariant::{OwnedValue, Str};
 
@@ -28,35 +30,37 @@ pub const MAX_WAITING: usize = 8;
 const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const ANSWERS: [&str; 4] = ["allow", "once", "deny", "cancel"];
 
+/// A `perm_ask`; absent text is empty and absent flags false.
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct Ask<'a> {
+    id: &'a str,
+    pkg: &'a str,
+    kind: &'a str,
+    accuracy: &'a str,
+    once: bool,
+    precise_default: bool,
+    perms: Option<Vec<&'a str>>,
+}
+
 /// The Shell's `PromptAndroid` arguments for a `perm_ask`: app id,
 /// Marathon permission and options. `None` when Marathon can't draw it.
 #[must_use]
 pub fn prompt(ask: &Map<String, Value>) -> Option<(String, &'static str, VariantMap)> {
-    let text = |key| match ask.get(key) {
-        None => Some(""),
-        Some(value) => value.as_str(),
-    };
-    let flag = |key| match ask.get(key) {
-        None => Some(false),
-        Some(value) => value.as_bool(),
-    };
-    let (pkg, kind, accuracy) = (text("pkg")?, text("kind")?, text("accuracy")?);
-    PackageName::try_from(pkg).ok()?;
-    if !["foreground", "background", "precise"].contains(&kind)
-        || !["", "choice", "approximate"].contains(&accuracy)
+    let ask = Ask::deserialize(ask).ok()?;
+    PackageName::try_from(ask.pkg).ok()?;
+    if !["foreground", "background", "precise"].contains(&ask.kind)
+        || !["", "choice", "approximate"].contains(&ask.accuracy)
     {
         return None;
     }
-    let (once, precise_default) = (flag("once")?, flag("preciseDefault")?);
-    let perms = ask.get("perms").and_then(Value::as_array)?;
+    let perms = ask.perms?;
     if perms.is_empty() || perms.len() > 16 {
         return None;
     }
     let mut name = None;
     for permission in perms {
-        let mapped = permission
-            .as_str()
-            .and_then(contract::marathon_permission)?;
+        let mapped = contract::marathon_permission(permission)?;
         if name.is_some_and(|name| name != mapped) {
             return None;
         }
@@ -64,13 +68,13 @@ pub fn prompt(ask: &Map<String, Value>) -> Option<(String, &'static str, Variant
     }
     let str = |value: &str| OwnedValue::from(Str::from(value.to_owned()));
     let options = VariantMap::from([
-        ("request".to_owned(), str(text("id")?)),
-        ("kind".to_owned(), str(kind)),
-        ("once".to_owned(), once.into()),
-        ("accuracy".to_owned(), str(accuracy)),
-        ("preciseDefault".to_owned(), precise_default.into()),
+        ("request".to_owned(), str(ask.id)),
+        ("kind".to_owned(), str(ask.kind)),
+        ("once".to_owned(), ask.once.into()),
+        ("accuracy".to_owned(), str(ask.accuracy)),
+        ("preciseDefault".to_owned(), ask.precise_default.into()),
     ]);
-    Some((format!("waydroid.{pkg}"), name?, options))
+    Some((keel::app_id(ask.pkg), name?, options))
 }
 
 fn is_id(id: &str) -> bool {
@@ -109,14 +113,10 @@ impl PermissionPrompts {
 
     /// Takes `perm_ask` and `perm_cancel`; other messages are ignored.
     pub fn handle(&self, message: &Map<String, Value>) {
-        let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
-        let Some(id) = message
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| is_id(id))
-        else {
+        let (kind, id) = (keel::string(message, "t"), keel::string(message, "id"));
+        if !is_id(id) {
             return;
-        };
+        }
         if kind == "perm_cancel" {
             if self.waiting().ids.remove(id).is_some() {
                 self.cancel(id.to_owned());
@@ -142,12 +142,8 @@ impl PermissionPrompts {
             }
         };
         let Some((generation, (app_id, permission, options))) = accepted else {
-            let pkg = message.get("pkg").and_then(Value::as_str).unwrap_or("");
-            let count = message
-                .get("perms")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            let pkg = validate::clean_text(pkg, 255);
+            let pkg = validate::clean_text(keel::string(message, "pkg"), 255);
+            let count = keel::array(message, "perms").len();
             eprintln!("deckard-bridge: left to Android: {pkg} {count} permissions");
             self.answer(id, "unsupported", false);
             return;
