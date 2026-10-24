@@ -1,15 +1,15 @@
 use std::env;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use deckard_bridge::Outbound;
 use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
-use deckard_bridge::app_channel::{AppChannel, ChannelEvent, ChannelHandle};
+use deckard_bridge::app_channel::{self, AppChannel, ChannelEvent, ChannelHandle};
 use deckard_bridge::audio::{self, AudioWake};
 use deckard_bridge::ime;
 use deckard_bridge::intents::Intents;
@@ -39,7 +39,6 @@ use zbus::fdo::{RequestNameFlags, RequestNameReply};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-const READ_POLL: Duration = Duration::from_millis(100);
 const SYSTEM_QUEUE: usize = 64;
 
 fn emit_runtime(bus: &Connection, runtime: &Runtime) {
@@ -116,39 +115,17 @@ impl System {
 }
 
 fn serve_system(
-    mut session: BridgeSession,
+    session: BridgeSession,
     generation: u64,
     outgoing: async_channel::Receiver<Map<String, Value>>,
     system: &System,
 ) {
-    let writer = session.set_read_timeout(Some(READ_POLL));
-    if let Ok(mut writer) = writer.and_then(|()| session.writer()) {
-        // Manage closes the queue when a new DeckardSystem connects.
-        thread::spawn(move || {
-            while let Ok(message) = outgoing.recv_blocking() {
-                if let Err(error) = writer.send_message(&message) {
-                    eprintln!("deckard-bridge: system bridge write failed: {error}");
-                    break;
-                }
-            }
-            writer.close();
-        });
-        loop {
-            match session.read_message() {
-                Ok(Some(message)) => system.handle(generation, &message),
-                Ok(None) => break,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                    ) => {}
-                Err(error) => {
-                    eprintln!("deckard-bridge: system bridge read failed: {error}");
-                    break;
-                }
-            }
-        }
-    }
+    // Manage closes the queue when a new DeckardSystem connects.
+    let outgoing = move || outgoing.recv_blocking().ok();
+    app_channel::pump(session, outgoing, &AtomicBool::new(false), |message| {
+        system.handle(generation, &message);
+        true
+    });
     system.disconnected(generation);
 }
 
