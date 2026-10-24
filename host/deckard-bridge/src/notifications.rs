@@ -87,7 +87,7 @@ impl NotificationBridge {
     /// # Errors
     /// The Hub refused a call, or state or an icon could not be saved.
     pub fn handle(&self, message: &Map<String, Value>) -> Result<()> {
-        match message.get("t").and_then(Value::as_str).unwrap_or("") {
+        match keel::string(message, "t") {
             "post" => {
                 if let Ok(post) = messages::post(message) {
                     self.adapter.post(&post)?;

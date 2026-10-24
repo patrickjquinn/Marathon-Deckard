@@ -379,15 +379,15 @@ impl MprisAdapter {
     /// The session is malformed, over the player limit, or its player could
     /// not be registered, updated or given its art.
     pub fn handle(&mut self, message: &Map<String, Value>) -> zbus::Result<()> {
-        match message.get("t").and_then(Value::as_str) {
-            Some("media_gone") => {
+        match keel::string(message, "t") {
+            "media_gone" => {
                 let sid = message.get("sid").and_then(Value::as_i64).unwrap_or(0);
                 if let Ok(sid) = i32::try_from(sid) {
                     self.players.remove(&sid);
                 }
                 Ok(())
             }
-            Some("media") => {
+            "media" => {
                 let media = messages::media(message).map_err(|error| {
                     zbus::Error::Failure(format!("invalid media message: {error:?}"))
                 })?;

@@ -27,6 +27,7 @@ use deckard_bridge::shell_sync;
 use deckard_bridge::storage::SharedStorage;
 use deckard_bridge::watchdog::{self, BootWatchdog};
 use deckard_core::ids::PackageName;
+use deckard_core::keel;
 use deckard_core::runtime_state::UnitCall;
 use deckard_core::transport::{BridgeListener, BridgeSession};
 use deckard_core::validate;
@@ -106,7 +107,7 @@ impl System {
         let Ok(reply) = future::block_on(self.manage.request("info", Map::new())) else {
             return;
         };
-        let release = reply.get("release").and_then(Value::as_str).unwrap_or("");
+        let release = keel::string(&reply, "release");
         if self.manage.is_generation(generation)
             && self.runtime.set_version(&validate::clean_text(release, 16))
         {
@@ -176,7 +177,7 @@ struct App {
 
 impl App {
     fn handle(&mut self, message: &Map<String, Value>) {
-        let kind = message.get("t").and_then(Value::as_str).unwrap_or("");
+        let kind = keel::string(message, "t");
         let what = "app event failed";
         match kind {
             "location_request" => {
@@ -184,10 +185,7 @@ impl App {
                     location.handle(message);
                 }
             }
-            "pick_done" => {
-                let id = message.get("id").and_then(Value::as_str).unwrap_or("");
-                self.intents.pick_done(id);
-            }
+            "pick_done" => self.intents.pick_done(keel::string(message, "id")),
             _ if KeelApps::handles(kind) => self.keel.handle(BridgeRoute::User, message),
             _ if kind.starts_with("media") => {
                 deckard_bridge::report(what, self.media.handle(message))

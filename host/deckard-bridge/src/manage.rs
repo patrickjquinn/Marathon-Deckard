@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use async_channel::Sender;
 use async_io::Timer;
+use deckard_core::keel;
 use deckard_core::sync;
 use deckard_core::validate;
 use futures_lite::future;
@@ -122,12 +123,10 @@ impl Manage {
 
     /// Takes `managed` replies from DeckardSystem `generation`.
     pub fn handle(&self, generation: u64, message: &Map<String, Value>) {
-        if message.get("t").and_then(Value::as_str) != Some("managed") {
+        if keel::string(message, "t") != "managed" {
             return;
         }
-        let Some(id) = message.get("id").and_then(Value::as_str) else {
-            return;
-        };
+        let id = keel::string(message, "id");
         let mut inner = self.inner();
         if inner.generation != generation {
             return;
@@ -138,7 +137,7 @@ impl Manage {
         let result = if message.get("ok").and_then(Value::as_bool) == Some(true) {
             Ok(message.clone())
         } else {
-            let error = message.get("error").and_then(Value::as_str).unwrap_or("");
+            let error = keel::string(message, "error");
             Err(validate::clean_text(error, 256))
         };
         let _ = pending.try_send(result);

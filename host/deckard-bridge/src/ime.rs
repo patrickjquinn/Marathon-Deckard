@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use deckard_core::ids::PackageName;
-use deckard_core::keel::APP_ID_PREFIX;
+use deckard_core::keel::{self, APP_ID_PREFIX};
 use deckard_core::runtime_state::SHELL_BUS_NAME;
 use deckard_core::sync;
 use deckard_core::text;
@@ -62,13 +62,12 @@ impl ImeState {
         &mut self,
         message: &Map<String, Value>,
     ) -> (Option<ShellCall>, Option<Map<String, Value>>) {
-        let kind = message.get("t").and_then(Value::as_str);
-        if kind == Some("start") {
-            let package = message.get("package").and_then(Value::as_str);
-            let Some(package) = package.and_then(|name| PackageName::try_from(name).ok()) else {
+        let kind = keel::string(message, "t");
+        if kind == "start" {
+            let Ok(package) = PackageName::try_from(keel::string(message, "package")) else {
                 return (None, None);
             };
-            let app_id = format!("{APP_ID_PREFIX}{}", package.as_str());
+            let app_id = keel::app_id(package.as_str());
             let purpose = u32::try_from(qt_int(message.get("purpose")));
             let purpose = purpose.ok().filter(|purpose| *purpose <= 13).unwrap_or(0);
             let hints = qt_int(message.get("hints")).cast_unsigned() & HINT_MASK;
@@ -80,8 +79,8 @@ impl ImeState {
             return (None, None);
         };
         let call = match kind {
-            Some("state") => {
-                let value = message.get("text").and_then(Value::as_str).unwrap_or("");
+            "state" => {
+                let value = keel::string(message, "text");
                 if !bounded(value) {
                     return (None, None);
                 }
@@ -90,9 +89,9 @@ impl ImeState {
                 let (cursor, anchor) = (offset("cursor"), offset("anchor"));
                 ShellCall::SetSurroundingText(app_id, value.to_owned(), cursor, anchor)
             }
-            Some("show") => ShellCall::ShowPanel(app_id),
-            Some("hide") => ShellCall::HidePanel(app_id),
-            Some("finish") => {
+            "show" => ShellCall::ShowPanel(app_id),
+            "hide" => ShellCall::HidePanel(app_id),
+            "finish" => {
                 self.app_id = None;
                 ShellCall::ClearEditor(app_id)
             }
