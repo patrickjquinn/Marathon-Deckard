@@ -4,7 +4,7 @@
   bench.py startup LABEL system|session BUSNAME PEERS 'START COMMAND'
       Runs the command and times, from just before it: the bus name's
       owner, PEERS accepted bridge sockets (0 skips) and, when BUSNAME is
-      id.waydro.Session, Android's sys.boot_completed.
+      org.marathonos.Deckard.Session, Android's sys.boot_completed.
   bench.py latency LABEL mpris|notify|ime COUNT
       mpris:  Seek on the Notify Test player until the bridge's Seeked.
       notify: Notify Test's post (logcat time) until the bridge's Notify.
@@ -27,9 +27,9 @@ import threading
 import time
 
 BUS = "unix:path=/run/user/1000/bus"
-LXC = ["lxc-attach", "-n", "waydroid", "-P", "/var/lib/waydroid/lxc", "--"]
+LXC = ["lxc-attach", "-n", "deckard", "-P", "/var/lib/deckard/lxc", "--"]
 TEST = "org.marathonos.deckard.notifytest"
-SOCKETS = "/home/user/.local/share/waydroid/data/deckard/"
+SOCKETS = "/home/user/.local/share/deckard/data/deckard/"
 KEY_A = os.environ.get("KEY_A", "38 490").split()
 KEY_BACKSPACE = os.environ.get("KEY_BACKSPACE", "665 563").split()
 HEADER = re.compile(r"^(signal|method call|method return) time=([\d.]+) (.*)")
@@ -123,11 +123,11 @@ def startup(label, bus, name, want_peers, command):
                                  capture_output=True, text=True).stdout.split()
             if pid and peers(pid[0]) >= want_peers:
                 peered = time.time()
-        if name == "id.waydro.Session" and booted is None:
+        if name == "org.marathonos.Deckard.Session" and booted is None:
             if android("getprop", "sys.boot_completed").strip() == "1":
                 booted = time.time()
         if owned and returned and (peered or not want_peers) and (
-                booted or name != "id.waydro.Session"):
+                booted or name != "org.marathonos.Deckard.Session"):
             break
         time.sleep(0.05)
     monitor.stop()
@@ -143,7 +143,7 @@ def mpris(label, count):
     names = subprocess.run(user("busctl", "--user", "list", "--no-legend"),
                            capture_output=True, text=True).stdout
     player = next(n.split()[0] for n in names.splitlines()
-                  if n.startswith("org.mpris.MediaPlayer2.waydroid_org_marathonos_deckard_notifytest"))
+                  if n.startswith("org.mpris.MediaPlayer2.deckard_org_marathonos_deckard_notifytest"))
     monitor = Monitor("session", [
         "type=method_call,interface=org.mpris.MediaPlayer2.Player,member=Seek",
         "type=signal,interface=org.mpris.MediaPlayer2.Player,member=Seeked"])
