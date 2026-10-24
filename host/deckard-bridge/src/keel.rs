@@ -17,7 +17,7 @@ use async_executor::{Executor, Task};
 use async_io::Timer;
 use deckard_core::json;
 use deckard_core::keel::{self, APP_ID_PREFIX, App, Manifest, Shortcut};
-use deckard_core::validate::truncate;
+use deckard_core::validate;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::{StreamExt, future};
 use serde_json::{Map, Value, json};
@@ -802,7 +802,10 @@ impl Shared {
         user_initiated: bool,
         host: Host,
     ) -> Result<Value, Error> {
-        let unknown = || Error::UnknownAction(format!("no action named {}", truncate(action, 64)));
+        let unknown = || {
+            let name = validate::truncate(action, 64);
+            Error::UnknownAction(format!("no action named {name}"))
+        };
         let (tool, search, shortcut, snapshot) = {
             let state = locked(&self.state);
             let entry = state
@@ -950,7 +953,8 @@ impl Provider {
 }
 
 fn no_entity(entity_type: &str) -> Error {
-    Error::UnknownAction(format!("no entity type {}", truncate(entity_type, 64)))
+    let name = validate::truncate(entity_type, 64);
+    Error::UnknownAction(format!("no entity type {name}"))
 }
 
 #[zbus::interface(name = "org.shipwright.Keel.Actions")]
