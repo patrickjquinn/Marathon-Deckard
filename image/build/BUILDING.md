@@ -43,6 +43,33 @@ Google publishes no arm64 clang 21, so clang 22 builds everything;
 
 ## Patches
 
+`DGX` marks patches from jetbee's lineage-24.0 set (author kept), `port`
+those that needed changes for 23.2.
+
+| Project | Patch | Origin |
+|---|---|---|
+| bionic | kernel header cleaner finds the arm64 libclang | DGX |
+| build/make | aarch64 host: HOST_ARCH=arm64, linux-arm64 prebuilts, HOST_OUT linux_musl-arm64 | DGX, port |
+| build/soong | aarch64 host: RUSTC_BOOTSTRAP, no second host arch, musl loader in sbox | DGX, port |
+| build/soong | clang version checks honour LLVM_PREBUILTS_VERSION; clang-22 warning flags | new |
+| external/jemalloc_new | LG_PAGE 16 on aarch64 hosts | new |
+| external/pulseaudio | link libsndfile_linux | new |
+| external/rust/android-crates-io | aarch64-paging arm64 variant for the device only | DGX |
+| frameworks/libs/binary_translation | dummy riscv64-to-x86_64 intrinsics generator on arm64 hosts | new (DGX's needs 24.0 defaults) |
+| hardware/interfaces | 2.7 external camera provider prefer32 | new |
+| prebuilts/build-tools | bison, flex, m4, make for the arm64 host | DGX |
+| prebuilts/clang/host/linux-x86 | llvm build tools from the arm64 clang | DGX, port |
+| prebuilts/jdk/jdk21 | arm64 javap and friends | DGX |
+| prebuilts/rust | prebuilt musl std on a native arm64 host | DGX, port (code is in prebuilts/rust/soong on 23.2) |
+| prebuilts/tools-lineage | arm64 mogrify | DGX |
+| system/core | Waydroid's ashmem EPERM fallback, refreshed | Waydroid, port |
+| system/sepolicy | getopt() results in an int (char is unsigned on arm64) | DGX |
+
+Not taken from the DGX set: vendor/lineage kernel host tools (Waydroid
+builds no kernel), system/librustutils no_std (no such module on 23.2),
+the bison wrapper (Soong 23.2 already sets BISON_PKGDATADIR), and the
+x86-only cflag filter (not needed so far).
+
 ## Failures and fixes
 
 In the order they appeared.
@@ -93,6 +120,21 @@ In the order they appeared.
     would abort like the ninja prebuilt. aarch64 hosts now use `LG_PAGE 16`
     (64K), which runs on 4K, 16K and 64K kernels
     (`patches/external_jemalloc_new`).
+11. **clang 22 warnings: `-Werror,-Wunterminated-string-initialization` in
+    external/musl.** Soong turns that off for clang ≥ r574158, but its
+    version check read only the release flag (r563880c), not
+    `LLVM_PREBUILTS_VERSION`. `ClangVersion()`/`ClangShortVersion()` now
+    honour the overrides, and the flags lineage-24.0 adds for r584948 and
+    r596125 are included (`patches/build_soong`).
+12. **clang 22: `-Werror,-Wunnecessary-virtual-specifier` in ICU's
+    `uniset.h`** (clang 21 added it to `-Wextra`; r563880c predates that, and
+    lineage-24.0's newer ICU no longer trips it). Turned off with the clang-22
+    set.
+
+Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
+adds `-Wno-everything` and drops the version-gated flags.
+`m -k` (keep going) collects independent failures in one pass, which
+matters because each Soong change costs about 25 minutes of re-analysis.
 
 ## Timings
 

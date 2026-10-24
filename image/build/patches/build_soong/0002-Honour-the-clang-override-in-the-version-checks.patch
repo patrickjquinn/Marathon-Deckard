@@ -15,19 +15,22 @@ same version checks.
 
 Change-Id: I5ab57905d647c368abdac5fc972d59312f4537c8
 ---
- cc/config/global.go | 15 +++++++++++++++
- 1 file changed, 15 insertions(+)
+ cc/config/global.go | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
 
 diff --git a/cc/config/global.go b/cc/config/global.go
-index 4d7bd3c..86211c4 100644
+index 4d7bd3c..57096b8 100644
 --- a/cc/config/global.go
 +++ b/cc/config/global.go
-@@ -504,6 +504,15 @@ func init() {
+@@ -504,6 +504,18 @@ func init() {
  			flags = append(flags, "-Wno-preferred-type-bitfield-enum-conversion")
  			flags = append(flags, "-Wno-implicit-enum-enum-cast")
  		}
-+		// New clang-22 warnings, as lineage-24.0 lists them.
++		// New clang-22 warnings, as lineage-24.0 lists them, plus
++		// -Wunnecessary-virtual-specifier (in -Wextra since clang 21), which
++		// 23.2's ICU headers trip.
 +		if ClangVersionAtLeast(ctx, 584948) {
++			flags = append(flags, "-Wno-unnecessary-virtual-specifier")
 +			flags = append(flags, "-Wno-character-conversion")
 +			flags = append(flags, "-Wno-error=uninitialized-const-pointer")
 +		}
@@ -38,7 +41,7 @@ index 4d7bd3c..86211c4 100644
  		if ctx.Config().IsEnvTrue("LLVM_NEXT") {
  			flags = append(noOverrideGlobalCflags, llvmNextExtraCommonGlobalCflags...)
  			IllegalFlags = []string{} // Don't fail build while testing a new compiler.
-@@ -612,10 +621,16 @@ func clangPath(ctx android.PathContext) android.SourcePath {
+@@ -612,10 +624,16 @@ func clangPath(ctx android.PathContext) android.SourcePath {
  }
  
  func ClangVersion(ctx android.PathContext) string {
