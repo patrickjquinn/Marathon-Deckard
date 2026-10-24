@@ -14,17 +14,23 @@ use serde_json::{Map, Value};
 pub const MAX_PENDING: usize = 32;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-struct Pending {
-    generation: u64,
-    sender: Sender<Result<Map<String, Value>, String>>,
-}
+type Reply = Result<Map<String, Value>, String>;
 
+/// Every pending request belongs to the current generation.
 #[derive(Default)]
 struct Inner {
     next: u64,
     generation: u64,
     outbound: Option<Sender<Map<String, Value>>>,
-    pending: HashMap<String, Pending>,
+    pending: HashMap<String, Sender<Reply>>,
+}
+
+impl Inner {
+    fn fail_pending(&mut self) {
+        for (_, pending) in self.pending.drain() {
+            let _ = pending.try_send(Err("Android stopped".into()));
+        }
+    }
 }
 
 /// The DeckardSystem connection and its requests in flight; cheap to clone.
@@ -41,9 +47,7 @@ impl Manage {
     pub fn connect(&self, sender: Sender<Map<String, Value>>) -> u64 {
         let mut inner = self.inner();
         inner.generation = inner.generation.wrapping_add(1);
-        for (_, pending) in inner.pending.drain() {
-            let _ = pending.sender.try_send(Err("Android stopped".into()));
-        }
+        inner.fail_pending();
         inner.outbound = Some(sender);
         inner.generation
     }
@@ -55,9 +59,7 @@ impl Manage {
             return;
         }
         inner.outbound = None;
-        for (_, pending) in inner.pending.drain() {
-            let _ = pending.sender.try_send(Err("Android stopped".into()));
-        }
+        inner.fail_pending();
     }
 
     /// Whether a DeckardSystem is connected.
@@ -102,10 +104,7 @@ impl Manage {
             args.insert("t".into(), Value::String("manage".into()));
             args.insert("id".into(), Value::String(id.clone()));
             args.insert("op".into(), Value::String(op.into()));
-            let generation = inner.generation;
-            inner
-                .pending
-                .insert(id.clone(), Pending { generation, sender });
+            inner.pending.insert(id.clone(), sender);
             if outbound.try_send(args).is_err() {
                 inner.pending.remove(&id);
                 return Err("Android stopped".into());
@@ -136,16 +135,13 @@ impl Manage {
         let Some(pending) = inner.pending.remove(id) else {
             return;
         };
-        if pending.generation != generation {
-            return;
-        }
         let result = if message.get("ok").and_then(Value::as_bool) == Some(true) {
             Ok(message.clone())
         } else {
             let error = message.get("error").and_then(Value::as_str).unwrap_or("");
             Err(validate::clean_text(error, 256))
         };
-        let _ = pending.sender.try_send(result);
+        let _ = pending.try_send(result);
     }
 }
 
