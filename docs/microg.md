@@ -109,7 +109,7 @@ Instead Android's network provider is Marathon's location:
 app → LocationManager / microG's FusedLocationProviderClient
     → Android's "network" provider = DeckardBridge NetworkLocation
     → bridge.sock: location_request {on, interval}
-    → deckardd LocationSync → GeoClue (system bus) → the shell's GeoClue agent
+    → deckard-bridge LocationSync → GeoClue (system bus) → the shell's GeoClue agent
     ← location {lat, lon, acc, time, …} ← LocationUpdated
 ```
 
@@ -125,7 +125,7 @@ app → LocationManager / microG's FusedLocationProviderClient
   all the time; Android's own fused provider runs in system_server. microG's
   geocoder has no backend here anyway (its Nominatim default is off), so
   `Geocoder.isPresent()` stays false as before.
-- deckardd runs one GeoClue client only while Android has a request, with
+- deckard-bridge runs one GeoClue client only while Android has a request, with
   GeoClue's accuracy level exact and `TimeThreshold` from the request's
   interval, and stops it when the request ends or the bridge drops.
 - Who may locate stays with Android's runtime permission, which Marathon's
@@ -142,7 +142,7 @@ app → LocationManager / microG's FusedLocationProviderClient
   services on or off (`setApplicationEnabledSetting` on GmsCore and
   Companion), push messages (microG's `gcm_enable_mcs_service`, connecting or
   disconnecting at once), the Google accounts with microG's sign-in, and
-  microG's self-check. deckardd's `GetGoogleServices`, `SetGoogleServices`,
+  microG's self-check. deckard-bridge's `GetGoogleServices`, `SetGoogleServices`,
   `OpenGoogleServices` (protocol/bridge.md), done by DeckardSystem's
   `GoogleServices` as the system uid, since microG's settings provider is
   signature-protected.
@@ -166,7 +166,7 @@ session restart.
 | Self-check | PASS: "System spoofs signature", microG Services installed with the correct signature, Companion (`com.android.vending`, microG's certificate) installed with the correct signature, location (precise, approximate, background), accounts and notifications granted. Unticked by choice: GsfProxy, storage, phone, SMS, overlay |
 | Check-in and push | PASS: check-in got an Android ID; `GmsGcmMcsSvc` connected to mtalk.google.com:5228 over TLS and logged in |
 | Push with a real app | PASS: Element `im.vector.app` 1.6.66 gplay (official GitHub asset, SHA-256 `9c605d17…a0675d66d`, cert `f3ff38d2…2deabf5f` = Element's `assetlinks.json`), launched only, nothing signed into. Firebase asked microG to register (sender 912726360885) and Google returned an FCM token (`…:APA91b…`). Then uninstalled; microG's `gcmstatus` database has no apps or registrations left; APK deleted on both sides |
-| Location | PASS: Android's `network` provider is `org.marathonos.deckard.bridge/.NetworkLocation`; a throwaway test app (uninstalled afterwards) got `Location[network 53.2439,-6.1331 hAcc=25000]` from both the `network` and `fused` providers: GeoClue's BeaconDB fix through deckardd, with the request off again afterwards. Not tested: an app calling microG's FusedLocationProviderClient (no such app installed) |
+| Location | PASS: Android's `network` provider is `org.marathonos.deckard.bridge/.NetworkLocation`; a throwaway test app (uninstalled afterwards) got `Location[network 53.2439,-6.1331 hAcc=25000]` from both the `network` and `fused` providers: GeoClue's BeaconDB fix through deckard-bridge, with the request off again afterwards. Not tested: an app calling microG's FusedLocationProviderClient (no such app installed) |
 | Settings | PASS: the Google services (microG) section; push off closes the MCS connection and on reconnects within a second; Google services off disables GmsCore and Companion and hides the rest of the section; self-check opens in front. Sign-in: Android starts microG's `LoginActivity`, but while another microG task (the self-check) has a window, Marathon shows that one instead (a second Android task of the same package; see below) |
 | Store | PASS: with microG off, the handler's `android-device.json` has `"gms":false`; on, `"gms":true`, so the warning clears |
 | No launcher icon | PASS: Waydroid writes `waydroid.com.google.android.gms.desktop` with `NoDisplay=true` (microG is one of its system apps), so no icon in the grid, and Marathon can still show microG's windows |

@@ -2,7 +2,9 @@ Deckard
 
 Android runtime for Marathon OS. Technical design.
 
-Draft, 18 October 2026. Status: proposal.
+Draft, 18 October 2026. Status: the design Deckard was built from. The host
+components it describes in C++ and Python were later written in Rust; the
+README lists them as they are.
 
 Repository: https://github.com/patrickjquinn/Marathon-Deckard
 

@@ -17,7 +17,7 @@ app: requestPermissions([CAMERA])
   └▶ PermissionController GrantPermissionsActivity      (Android decides what to ask)
        mViewHandler = MarathonGrantView                  (patched in; draws nothing)
          └ call("ask") ▶ DeckardSystem PermissionPrompts  (system uid, provider)
-              └ perm_ask ▶ deckardd PermissionPrompts     (system.sock)
+              └ perm_ask ▶ deckard-bridge PermissionPrompts     (system.sock)
                    └ Permissions1.PromptAndroid ▶ shell PermissionDialog
                    ◀ {answer, precise}
               ◀ perm_answer
@@ -87,7 +87,7 @@ dialog, until the patch is redone for it.
 
 | Android | `perm_ask` | Marathon's prompt |
 |---|---|---|
-| The group's platform permissions the app asks for (`Utils.getPlatformPermissionNamesOfGroup` ∩ the manifest) | `perms` | deckardd names them with `PermissionMap::marathon` (the table Settings uses); the shell takes the label and description from Marathon's vocabulary. Permissions that map to no name, or to two, go back to Android's dialog. |
+| The group's platform permissions the app asks for (`Utils.getPlatformPermissionNamesOfGroup` ∩ the manifest) | `perms` | deckard-bridge names them with `PermissionMap::marathon` (the table Settings uses); the shell takes the label and description from Marathon's vocabulary. Permissions that map to no name, or to two, go back to Android's dialog. |
 | `ALLOW_ONE_TIME` offered (camera, microphone, location) | `once` | An "Only this time" switch |
 | Location accuracy radio group (fine requested with coarse) | `accuracy: choice`, `preciseDefault` | A "Precise location" switch, on by Android's default |
 | Coarse only | `accuracy: approximate` | "…your approximate location" |
@@ -105,7 +105,7 @@ The answer maps back to the button Android offered:
 | Allow, only this time | `GRANTED_ONE_TIME`: Android's one-time session; the grant goes when the app has been in the background for a while |
 | Deny | `DENIED_DO_NOT_ASK_AGAIN` when Android offered "don't allow" in its second-time form (the group was denied before, `USER_SET`), else `DENIED`. Android 11+ semantics: the second denial is final (`USER_FIXED`) and the app's `shouldShowRequestPermissionRationale` follows. |
 | Dismissed (back, Home, another app in front, the shell gone) | `CANCELED`, as Android's back: no flags change and the app may ask again |
-| deckardd can't ask (no shell method, refused, unknown permission, too many waiting) | Android's own dialog is shown, restyled by DeckardPermissionControllerRes |
+| deckard-bridge can't ask (no shell method, refused, unknown permission, too many waiting) | Android's own dialog is shown, restyled by DeckardPermissionControllerRes |
 
 Nothing is granted without the person: every result comes from their
 answer, and every failure falls back to Android asking them.
@@ -131,7 +131,7 @@ system can start it).
     moves on.
   - Dismissed, it returns nothing, and GrantPermissionsActivity applies
     Android's own rule for leaving the page.
-  - Without deckardd it opens PermissionController's page and passes the
+  - Without deckard-bridge it opens PermissionController's page and passes the
     result back.
 - **From anywhere else**, it opens the app's page in Marathon Settings.
 
@@ -143,8 +143,8 @@ while using".
 ## The shell
 
 `org.marathonos.Shell.Permissions1` gains two methods. Only a declared
-session service holding `android-permissions` may call them; deckardd's
-declaration (`deckardd.service.json`) now lists it.
+session service holding `android-permissions` may call them; deckard-bridge's
+declaration (`deckard-bridge.service.json`) now lists it.
 
 - `PromptAndroid(s appId, s permission, a{sv} options) → a{sv}`: the reply
   is delayed until the person answers: `{answer: allow|once|deny|cancel,
@@ -184,12 +184,12 @@ isn't a privacy switch. So there is nothing for the prompt to defer to yet.
   - qmllint clean.
   - Rendered offscreen at 540 × 1140 and looked at: camera with "Only this
     time"; location with both switches; background location.
-- **deckardd**: `test_permissionprompts`, a fake shell on a private bus.
+- **deckard-bridge**: `test_permissionprompts`, a fake shell on a private bus.
   Requests become prompts with the right app id, name and options. Answers
   go back. Unsupported requests go back to Android without reaching the
   shell. With no shell, Android asks. Android's cancels and a lost channel
   reach the shell. The waiting list is bounded and a repeated id is
-  ignored. All 17 deckardd tests pass.
+  ignored. All 17 deckard-bridge tests pass.
 - **overlay sync**: the PermissionController APK is installed only for
   `system_datetime 1790477549` (`host/deckard-overlay-sync/tests/overlay_sync.rs`).
 - **Patch**: the patched `classes.dex` disassembles to the intended
@@ -210,4 +210,4 @@ isn't a privacy switch. So there is nothing for the prompt to defer to yet.
    (POST_NOTIFICATIONS).
 4. Dismissing a prompt (back, Home) gives CANCELED, and the flags stay
    unchanged.
-5. With deckardd stopped, Android's dialog and permission page are shown.
+5. With deckard-bridge stopped, Android's dialog and permission page are shown.

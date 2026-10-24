@@ -14,13 +14,13 @@ Version 1.
 
 - A Unix stream socket at `/data/deckard/bridge.sock` inside Android. Waydroid
   bind-mounts the user's `~/.local/share/waydroid/data` as Android's `/data`,
-  so deckardd creates it at `~/.local/share/waydroid/data/deckard/bridge.sock`.
+  so deckard-bridge creates it at `~/.local/share/waydroid/data/deckard/bridge.sock`.
   No TCP and no `waydroid0` address is involved; the container's network
   namespace doesn't matter for a socket on the filesystem.
-- deckardd listens and DeckardBridge connects, reconnecting with backoff
+- deckard-bridge listens and DeckardBridge connects, reconnecting with backoff
   (0.5 s doubling to 10 s) whenever the socket is missing or drops.
 - The directory is `0755` and the socket `0777`: the bridge runs under its own
-  Android app uid. deckardd authenticates every connection with `SO_PEERCRED`.
+  Android app uid. deckard-bridge authenticates every connection with `SO_PEERCRED`.
   The peer's uid must be the uid `/data/system/packages.list` gives
   `org.marathonos.deckard.bridge`; anything else is closed at once. One
   connection at a time: a new authenticated connection replaces the old one.
@@ -34,7 +34,7 @@ of UTF-8 JSON. The JSON is an object with a string field `t`, the message type.
 
 - `N` must be 1 to 1,048,576. A larger or zero length, invalid JSON, a
   non-object or a missing `t` closes the connection.
-- deckardd accepts a burst of 200 messages and then 50 per second (token
+- deckard-bridge accepts a burst of 200 messages and then 50 per second (token
   bucket). Excess messages are dropped and counted; after 1,000 drops the
   connection is closed.
 - Unknown types are ignored, in both directions.
@@ -50,7 +50,7 @@ field before it reaches a Marathon service (`host/deckard-core/src/validate.rs`)
 | `key` | 1 to 512 characters, no control characters |
 | text | truncated (label 128, title 256, body 4,096, action label 64, message 1,024 characters); control and format characters except `\n` and `\t` removed |
 | action ids | `default` or `a0` to `a99`; at most 5 action buttons |
-| images | base64 PNG only: icon 256 KiB, notification image 512 KiB, album art 768 KiB; at most 4096 x 4096; decoded, scaled and re-encoded by deckardd, never passed through |
+| images | base64 PNG only: icon 256 KiB, notification image 512 KiB, album art 768 KiB; at most 4096 x 4096; decoded, scaled and re-encoded by deckard-bridge, never passed through |
 | numbers | clamped (urgency 0 to 2, progress 0 to 100, media times 0 to 10^11 ms, speed -16 to 16) |
 | counts | at most 200 notifications and 8 media players tracked |
 
@@ -61,10 +61,10 @@ The body is HTML-escaped because the Hub advertises `body-markup`.
 | `t` | Fields | Meaning |
 |---|---|---|
 | `hello` | `v` | Sent first after connecting. |
-| `icon` | `pkg`, `png` | The app's icon (96 px PNG, base64). Sent once per package per connection, before its first notification. deckardd stores it as `~/.cache/deckard/icons/<pkg>.png`. |
+| `icon` | `pkg`, `png` | The app's icon (96 px PNG, base64). Sent once per package per connection, before its first notification. deckard-bridge stores it as `~/.cache/deckard/icons/<pkg>.png`. |
 | `post` | see below | A notification was posted or updated. |
 | `remove` | `key` | Android removed a notification (the app cancelled it, or it was dismissed). |
-| `sync` | `keys` | After the initial `post`s on every connection: the keys of all active notifications. deckardd closes any notification it tracks that isn't listed. |
+| `sync` | `keys` | After the initial `post`s on every connection: the keys of all active notifications. deckard-bridge closes any notification it tracks that isn't listed. |
 | `media` | see below | A media session appeared or changed. |
 | `media_gone` | `sid` | A media session ended. |
 | `inspect_result` | `id`, `ok`, `message`, `pkg`, `label`, `versionName`, `versionCode`, `minSdk`, `targetSdk`, `permissions`, `icon`, `installedVersionCode`, `installedVersionName`, and what it needs: `features` (required `uses-feature`), `libraries` (required `uses-library`, from its manifest), `gms` (Play services' `com.google.android.gms.version` meta-data or library), `abis` (the `lib/<abi>/` folders) | An `inspect` answered from `PackageManager.getPackageArchiveInfo`. |
@@ -73,8 +73,8 @@ The body is HTML-escaped because the Hub advertises `body-markup`.
 | `packages_result` | `id`, `packages: [{pkg, label, versionName, versionCode, system, launchable}]` | Every installed package; `launchable` is whether it has a launcher activity. |
 | `device_result` | `id`, `features`, `libraries`, `abis`, `sdk`, `gms` | This phone's Android, for `device` (host to Android, `id`): `getSystemAvailableFeatures`, `getSystemSharedLibraryNames`, `Build.SUPPORTED_ABIS`, the SDK level and whether `com.google.android.gms` (microG) is installed and enabled. `Packages.DeviceProfile() → a{sv}` answers with it; the Store compares each app's needs with it (compatibility). |
 | `package_changed` | `pkg`, `change` | `installed`, `updated` or `removed`, from ACTION_PACKAGE_ADDED/REMOVED (a replace is one `updated`). |
-| `location_request` | `on`, `interval` (ms) | Android's network location provider (DeckardBridge's `NetworkLocation`) has a request (`on`) or none. Sent on every change and on connect. deckardd then runs one GeoClue client (system bus, `DesktopId` `org.marathonos.Deckard`, accuracy level exact, `TimeThreshold` the interval in seconds) or stops it. `interval` is clamped to 0–24 h. |
-| `toast` | `pkg`, `label`, `text` | An app showed a toast (from the bridge's accessibility service: `TYPE_NOTIFICATION_STATE_CHANGED` with class `android.widget.Toast`). deckardd posts a silent banner (`urgency` 0, `transient`, `suppress-sound`, `x-marathon-toast`, `expire_timeout` 3500, summary = the text, `app_name` = the label) and closes it after 4 s. At most one per package per 500 ms; text up to 512 characters. |
+| `location_request` | `on`, `interval` (ms) | Android's network location provider (DeckardBridge's `NetworkLocation`) has a request (`on`) or none. Sent on every change and on connect. deckard-bridge then runs one GeoClue client (system bus, `DesktopId` `org.marathonos.Deckard`, accuracy level exact, `TimeThreshold` the interval in seconds) or stops it. `interval` is clamped to 0–24 h. |
+| `toast` | `pkg`, `label`, `text` | An app showed a toast (from the bridge's accessibility service: `TYPE_NOTIFICATION_STATE_CHANGED` with class `android.widget.Toast`). deckard-bridge posts a silent banner (`urgency` 0, `transient`, `suppress-sound`, `x-marathon-toast`, `expire_timeout` 3500, summary = the text, `app_name` = the label) and closes it after 4 s. At most one per package per 500 ms; text up to 512 characters. |
 
 `post`:
 
@@ -124,11 +124,11 @@ Android system noise (`android` package channels `PHYSICAL_KEYBOARD`,
 | `reply` | `key`, `action`, `text` | Fill the action's `RemoteInput` with `text` (`SOURCE_FREE_FORM_INPUT`) and send its `PendingIntent`. |
 | `dismiss` | `key` | `cancelNotification(key)`. Android ignores it for ongoing notifications. |
 | `media_cmd` | `sid`, `cmd`, `position` | `play`, `pause`, `playpause`, `stop`, `next`, `previous`, or `seek` to `position` ms, through the session's `TransportControls`. |
-| `inspect` | `id`, `path` | Read an APK deckardd staged at `/data/deckard/install/<random>.apk`. |
+| `inspect` | `id`, `path` | Read an APK deckard-bridge staged at `/data/deckard/install/<random>.apk`. |
 | `install` | `id`, `path` | Install it through a PackageInstaller session (the bridge holds INSTALL_PACKAGES, so Android asks nothing). |
 | `packages` | `id` | List installed packages. |
-| `location` | `lat`, `lon`, `acc` (m), `time` (ms since the epoch), optional `alt` (m), `speed` (m/s), `heading` (degrees) | A GeoClue fix while a request is on (`src/location.cpp`): latitude −90–90, longitude −180–180, accuracy above 0, GeoClue's "unknown" altitude, speed and heading left out. The provider reports it as a `network` location; Android decides which apps get it and coarsens it for apps with approximate access. GeoClue asks the shell's agent, which lets `org.marathonos.Deckard` locate, since Android asks for each app. |
-| `audio` | `quiet`, `alarm` | Marathon's sound state, sent on connect and on every change. `quiet` is true when Marathon's profile is silent or vibrate or Do Not Disturb is on; the bridge then requests `INTERRUPTION_FILTER_ALARMS` (Marathon's own alarms ring through all three), otherwise `INTERRUPTION_FILTER_ALL`. Either way Android's notification, ring and system streams stay at 0 (the Hub plays Marathon's notification sound, which follows the profile), the music stream is at its maximum under Marathon's output volume, and the alarm stream is `alarm` (0 to 1) of its maximum. deckardd reads these from `org.marathonos.Shell.Settings1.GetState` (`audioProfile`, `dndEnabled`, `alarmVolume`) and re-reads on `Audio1.StateChanged`, `Settings1.PropertyChanged` and a shell restart. |
+| `location` | `lat`, `lon`, `acc` (m), `time` (ms since the epoch), optional `alt` (m), `speed` (m/s), `heading` (degrees) | A GeoClue fix while a request is on (`host/deckard-bridge/src/location.rs`): latitude −90–90, longitude −180–180, accuracy above 0, GeoClue's "unknown" altitude, speed and heading left out. The provider reports it as a `network` location; Android decides which apps get it and coarsens it for apps with approximate access. GeoClue asks the shell's agent, which lets `org.marathonos.Deckard` locate, since Android asks for each app. |
+| `audio` | `quiet`, `alarm` | Marathon's sound state, sent on connect and on every change. `quiet` is true when Marathon's profile is silent or vibrate or Do Not Disturb is on; the bridge then requests `INTERRUPTION_FILTER_ALARMS` (Marathon's own alarms ring through all three), otherwise `INTERRUPTION_FILTER_ALL`. Either way Android's notification, ring and system streams stay at 0 (the Hub plays Marathon's notification sound, which follows the profile), the music stream is at its maximum under Marathon's output volume, and the alarm stream is `alarm` (0 to 1) of its maximum. deckard-bridge reads these from `org.marathonos.Shell.Settings1.GetState` (`audioProfile`, `dndEnabled`, `alarmVolume`) and re-reads on `Audio1.StateChanged`, `Settings1.PropertyChanged` and a shell restart. |
 
 ## Mapping to Marathon
 
@@ -137,7 +137,7 @@ Notifications go to `org.freedesktop.Notifications` on the session bus:
 | freedesktop | From |
 |---|---|
 | `app_name` | `label` |
-| `replaces_id` | The id deckardd got for this `key` |
+| `replaces_id` | The id deckard-bridge got for this `key` |
 | `app_icon` | `file://~/.cache/deckard/icons/<pkg>.png` |
 | `summary`, `body` | `title`, `text` (escaped) |
 | `actions` | `default` ("Open") if `content`; `inline-reply` if `reply`; then the action buttons |
@@ -159,7 +159,7 @@ re-sent, so updates that change nothing visible make no new banner or sound.
 From the Hub: `ActionInvoked` becomes `invoke`; `NotificationReplied` becomes
 `reply`; `NotificationClosed` with reason 2 (dismissed by the user) becomes
 `dismiss`, except within 3 s of a tap on a notification that doesn't
-auto-cancel (the Hub closes a tapped row; Android keeps it). deckardd keeps
+auto-cancel (the Hub closes a tapped row; Android keeps it). deckard-bridge keeps
 `key` → id in `~/.local/state/deckard/notifications.json`, so a restart
 neither duplicates nor orphans Hub rows.
 
@@ -186,9 +186,9 @@ This is the app id Waydroid gives the app's window and desktop file, and the
 one the shell's `apps.list` reports. keel-mcp finds these names by calling
 `Describe` on each name it sees (there is no installed manifest for them).
 keel-mcp describes a name again only when its owner changes. So when an
-app's manifest changes, deckardd releases the name and takes it again on a
+app's manifest changes, deckard-bridge releases the name and takes it again on a
 new connection. The catalogue is kept in `~/.local/state/deckard/apps.json`,
-so the names are back as soon as deckardd starts, before Android is up.
+so the names are back as soon as deckard-bridge starts, before Android is up.
 
 `Invoke` and `GetContext` are served only to `/usr/bin/keel-mcp` and
 `/usr/bin/pilotd`, compared by file (device and inode of
@@ -203,7 +203,7 @@ while the phone is locked (`org.marathonos.shell` `shell.state`).
 |---|---|---|
 | `app_info` | `pkg`, `label`, `links`, `share`, `search` | One launchable app. Sent for every app after each connect, and again when the package changes. `links`: `[{s, h}]`, the scheme and host of each `VIEW` + `BROWSABLE` intent filter of an exported activity, read from the app's compiled `AndroidManifest.xml` (at most 16). `share`: an activity takes `ACTION_SEND` `text/plain`. `search`: `gms` for `com.google.android.gms.actions.SEARCH_ACTION` (the assistant's search intent), `android` for `ACTION_SEARCH`, or `""`. |
 | `app_gone` | `pkg` | The app was removed or has no launcher activity left. |
-| `app_list` | `pkgs` | After the `app_info`s of a connect: every app. deckardd withdraws any app not listed. |
+| `app_list` | `pkgs` | After the `app_info`s of a connect: every app. deckard-bridge withdraws any app not listed. |
 | `launched` | `req`, `ok`, `error` | The answer to `launch`. |
 | `screen` | `req`, `ok`, `error`, `pkg`, `snap`, `title`, `nodes` | The answer to `screen_read`. `snap` is a snapshot number (1 to 2^31-1). `nodes` are in tree order, at most 300: `{i, d, c, t, cd, h, v, f}` = index in this snapshot, depth among the nodes sent, class name, text, content description, hint, view id, flags. Flags: 1 clickable, 2 long-clickable, 4 editable, 8 checkable, 16 checked, 32 selected, 64 disabled, 128 focused, 256 scrollable, 512 password, 1024 heading. A node is sent when it is visible and has text, a description, a hint, or one of flags 1, 2, 4, 8, 256 or 512. A password field never has `t`. |
 | `ui_done` | `req`, `ok`, `error` | The answer to `ui_act`. |
@@ -224,7 +224,7 @@ The screen comes from DeckardBridge's `ScreenReader` accessibility service
 minutes after the last request. The window it reads is the `TYPE_APPLICATION`
 window whose root belongs to `pkg`, the focused one if there are several.
 
-deckardd waits up to 15 s for a reply, then fails the call. A request made
+deckard-bridge waits up to 15 s for a reply, then fails the call. A request made
 while the bridge is down is sent when the bridge connects, within the same
 15 s; requests already sent fail when the bridge drops. Bounds: label 128
 characters; shortcut ids 1 to 128 without control characters (taken as
@@ -245,9 +245,9 @@ and may take the window manager's dump.
 |---|---|---|---|
 | host to Android | `keel` | `req`, `op`, `pkg`, `id` | `op` `shortcuts`: the app's launcher shortcuts. `start`: `LauncherApps.startShortcut(pkg, id)`. `secure`: whether a window of `pkg` that has a surface is `FLAG_SECURE` (`dumpsys window windows`: the `fl=` list of each window block whose `package=` is `pkg` and that has `mHasSurface=true`). |
 | Android to host | `keel_done` | `req`, `ok`, `error`, `shortcuts`, `secure` | The answer. `shortcuts`: `[{id, label, long}]`, the manifest shortcuts and then the dynamic ones, each in rank order, at most 15. A `secure` query that finds no window of the app fails. |
-| Android to host | `keel_changed` | `pkg` | `LauncherApps.Callback.onShortcutsChanged`: deckardd asks for that app's shortcuts again. |
+| Android to host | `keel_changed` | `pkg` | `LauncherApps.Callback.onShortcutsChanged`: deckard-bridge asks for that app's shortcuts again. |
 
-deckardd asks for every app's shortcuts when the system channel connects
+deckard-bridge asks for every app's shortcuts when the system channel connects
 and after each `app_info`. The last list it got is kept with the app, in
 `apps.json` too.
 
@@ -256,7 +256,7 @@ and after each `app_info`. The last list it got is kept with the app, in
 `Describe` returns a Keel manifest (`version` 1, `appId` `waydroid.<pkg>`,
 `context` `keel://waydroid.<pkg>/context`) with these tools:
 
-| Action | Arguments | Hints | What deckardd does |
+| Action | Arguments | Hints | What deckard-bridge does |
 |---|---|---|---|
 | `app.show` | `link` (only if the app declares links; up to 2,048 characters) | idempotent, not destructive | Without a link: `org.marathonos.shell` `app.launch {id}`. With a link: `launch` `view`, then the shell's `app.launch` once the app's window is filed (below). The description lists up to 8 of the app's link schemes and hosts. |
 | `share.text` | `text` (20,000), `subject` (200) | open world | `launch` `send`. The app's share screen opens; the person sends from there. |
@@ -277,7 +277,7 @@ keel-mcp reads it only for a request Pilot says the person started.
 
 **Secure windows and the shell.** On the shell's
 `Navigation1.ForegroundAppChanged(appId)` for a `waydroid.*` app, and after
-every `secure` answer, deckardd tells the shell
+every `secure` answer, deckard-bridge tells the shell
 `Navigation1.SetAppWindowSecure(appId, secure)` when that changes. The shell
 then keeps the app's windows off its card and out of screenshots. A window
 still starting is not in the dump yet, so a failed check is retried once
@@ -285,26 +285,26 @@ after 2 s.
 
 **Bringing the window forward.** An activity that Android starts for an
 action maps a window nobody launched from Marathon, and the shell files
-such a window as a card. Before the `launch` (or `keel` `start`), deckardd
+such a window as a card. Before the `launch` (or `keel` `start`), deckard-bridge
 calls `org.marathonos.Shell` `Navigation1.ExpectAppWindow(appId) -> b`
 (shell 24c813f2). When it answers true, the shell shows the app's window
 now, and a new window of the app (an activity in a new task) takes the front
-as a launch would. When the call fails (a shell without it), deckardd falls
+as a launch would. When the call fails (a shell without it), deckard-bridge falls
 back. It polls the shell's `apps.running` every 250 ms, for up to 15 s,
 until `waydroid.<pkg>` is listed, then calls `app.launch`, which shows the
 window the shell already has. Launching through the shell first would race
 Waydroid's launcher intent against the action's. When Android is not
-running, deckardd calls `app.launch` first, which starts the session, and
+running, deckard-bridge calls `app.launch` first, which starts the session, and
 sends the request when the channel connects.
 
 ## Ambience palette
 
-Not a socket message. deckardd writes `/data/deckard/palette`
+Not a socket message. deckard-bridge writes `/data/deckard/palette`
 (`~/.local/share/waydroid/data/deckard/palette`), one `system_<palette>_<shade>
 #aarrggbb` line for each of Android's 65 system colours. It writes the file
 whenever Marathon's ambience highlight changes (`Ambience1.AmbienceChanged`,
 `GetAmbience`), with the same generator as DeckardPalette's gen-palette.py
-(`palette.cpp`, checked against it in `tests/test_palette.cpp`). Android's
+(`host/deckard-core/src/palette.rs`, checked against it in its tests). Android's
 `deckard-watch` service (`inotifyd` on `/data/deckard`, user system) runs
 `deckard-palette.jar` under `app_process`. That registers one fabricated
 overlay `android:deckard_ambience` on `android` with those colours and enables
@@ -338,7 +338,7 @@ nothing is converted.
 | `hide` | | Android hid the keyboard (`hideWindow`). |
 | `finish` | | The editor lost input (`onFinishInput`). |
 
-deckardd checks `package` against the package-name rule, clamps `purpose` to 0–13,
+deckard-bridge checks `package` against the package-name rule, clamps `purpose` to 0–13,
 masks `hints` to `0x3ff`, drops `state` over 4,096 characters and clamps the
 offsets. It ignores everything but `start` until a valid `start`.
 
@@ -400,7 +400,7 @@ grant: it opens the files up for DeckardBridge's uid (they keep the modes of
 their originals) and asks `Handoff` (`call("grant")`, from the system uid
 only) to grant the app read access, plus write for a save and persistable for
 `ACTION_OPEN_DOCUMENT`/`CREATE_DOCUMENT`. A save's file is closed through
-`Handoff`, which sends `pick_done` on the bridge channel. deckardd removes
+`Handoff`, which sends `pick_done` on the bridge channel. deckard-bridge removes
 transfers older than 30 days at start.
 
 ### Android to host
@@ -411,7 +411,7 @@ transfers older than 30 days at start.
 | `open` | `kind`, then per kind | Show something in a Marathon app. `url`: `uri` (http or https). `tel`: `uri`. `sms`: `uri`, `body`. `mailto`: `uri`, `to`, `cc` (arrays), `subject`, `body`. `geo`: `uri`. `settings`: `action` (the Android settings action), `pkg` (the app it is about, optional). |
 | `pick` | `id`, `mode`, `mime`, `multiple`, `name`, `kind` | A file or camera request. `id` is 16 lowercase hex digits, chosen by DeckardSystem. `mode` `open` (ACTION_OPEN_DOCUMENT, ACTION_GET_CONTENT; `mime` the accepted types, `multiple`), `save` (ACTION_CREATE_DOCUMENT; `name` the suggested file name) or `capture` (ACTION_IMAGE_CAPTURE, ACTION_VIDEO_CAPTURE; `kind` `image` or `video`). |
 | `pick_done` | `id` | The app closed a file it wrote for a `save`; copy it to where the person chose. Sent on every close. |
-| `pick_cancel` | `id` | The app or the person gave up; deckardd forgets the request. |
+| `pick_cancel` | `id` | The app or the person gave up; deckard-bridge forgets the request. |
 | `reclaimed` | `id`, `ok`, `killed` (`[{pid, process}]`) or `error` | The answer to a `reclaim`. |
 | `install_result` | `id`, `ok`, `pkg`, `message` | The answer to an `uninstall`, as DeckardBridge's. |
 
@@ -421,10 +421,10 @@ transfers older than 30 days at start.
 |---|---|---|
 | `hello` | `v` | |
 | `picked` | `id`, `ok`, `files` | The answer to a `pick`. For `open` and `capture`, `files` (`[{name, size}]`) are in `xfer/<id>/`. For `save`, one `{name}`: DeckardSystem creates the empty file there and gives the app write access. `ok` false: cancelled or failed. |
-| `focus` | `pkg` | Marathon has `waydroid.<pkg>` in front (deckardd follows `org.marathonos.Shell.Navigation1.ForegroundAppChanged`; sent on every change and on connect). Android's focus normally follows the hwcomposer's `wl_keyboard.enter`; when that never came, DeckardSystem calls `setFocusedTask` on the package's top visible task, 150 ms later, unless Android already has it focused. |
+| `focus` | `pkg` | Marathon has `waydroid.<pkg>` in front (deckard-bridge follows `org.marathonos.Shell.Navigation1.ForegroundAppChanged`; sent on every change and on connect). Android's focus normally follows the hwcomposer's `wl_keyboard.enter`; when that never came, DeckardSystem calls `setFocusedTask` on the package's top visible task, 150 ms later, unless Android already has it focused. |
 | `uninstall` | `id`, `pkg` | `Packages.UninstallPackage`: remove an app the person installed, through `PackageInstaller.uninstall` as the system uid, so with no confirmation whoever installed it. System apps and Deckard's own are refused. |
 | `media_scan` | `paths` (at most 64) | Folders of Marathon's shared storage, as Android sees them (`/storage/emulated/0/<Documents, Download, Pictures, Music, Movies or DCIM>[/…]`), that changed on the host. DeckardSystem calls `MediaStore.scanFile` on each; other paths are ignored. |
-| `reclaim` | `id`, `count` (1–8), `reason` | Memory is short: end up to `count` cached app processes, least recently used first. Only processes ActivityManager ranks `IMPORTANCE_CACHED`, with an app uid (10000 and up) and not Deckard's own, are candidates; each goes through `killPids` without `secure`, which re-checks its adj and spares one that came forward. deckardd sends it when the container's `memory.events` `high` or `max` counter rises, on a PSI trigger on the container's `memory.pressure` (`some 1000000 10000000`, 10 % of 10 s) or the phone's `/proc/pressure/memory` (`some 2000000 10000000`, the shell's avg10 High level), with `count` 2, at most once every 2 s, or 10 s after a reclaim that found nothing. |
+| `reclaim` | `id`, `count` (1–8), `reason` | Memory is short: end up to `count` cached app processes, least recently used first. Only processes ActivityManager ranks `IMPORTANCE_CACHED`, with an app uid (10000 and up) and not Deckard's own, are candidates; each goes through `killPids` without `secure`, which re-checks its adj and spares one that came forward. deckard-bridge sends it when the container's `memory.events` `high` or `max` counter rises, on a PSI trigger on the container's `memory.pressure` (`some 1000000 10000000`, 10 % of 10 s) or the phone's `/proc/pressure/memory` (`some 2000000 10000000`, the shell's avg10 High level), with `count` 2, at most once every 2 s, or 10 s after a reclaim that found nothing. |
 
 ### Where each goes
 
@@ -439,7 +439,7 @@ transfers older than 30 days at start.
 | `pick` `open` / `save` | `org.freedesktop.portal.FileChooser` `OpenFile` / `SaveFile`, with a MIME filter unless the app accepts `*/*` |
 | `pick` `capture` | Keel `org.marathonos.camera` `camera.capture {mode}` (`photo` or `video`), which answers once the person has shot, with `{path, mode}`, and minimises the camera (the call waits up to 10 minutes). The file must be in `~/Pictures/Marathon` and of the kind asked for, or the pick fails. `Cancelled` (the person left the camera), `NotAvailable` or `Timeout` fail it too. A `pick_cancel` drops the request; the camera stays for the person. |
 
-deckardd's checks (`tests/test_intents.cpp`): `uri` at most 4,096 characters
+deckard-bridge's checks (`host/deckard-bridge/tests/intents_contract.rs`): `uri` at most 4,096 characters
 and of the kind's scheme; a URL needs a host and at most 2,048 characters;
 numbers keep only digits, `+*#,;pw` and at most 64 of them (anything else and
 the app opens without one); addresses have no spaces, commas, `<>"`, at most
@@ -467,14 +467,14 @@ anyone else gets `AccessDenied`):
 | Method | |
 |---|---|
 | `ShareTargets(s mimeType) → aa{sv}` | The activities that take `ACTION_SEND` for that type: `{id, pkg, label, icon, multiple}`. `id` is `<pkg>/<activity class>` (at most 256 characters), `icon` a `data:image/png` URI (96 px) or `""`, `multiple` whether the activity also takes `ACTION_SEND_MULTIPLE`. At most 64; never Deckard's own. Empty while Android is not running; it is not started just to answer. |
-| `Share(s id, a{sv} configuration) → ()` | The shell's request, as the sheet received it: `mimeType`, `title`, `resources` (at most 32; text of 1 to 65,536 characters; files as regular-file descriptors, 1 GiB in all). deckardd copies each file to `xfer/<tid>/<name>` (`tid` 16 hex digits, names reduced to a base name and made unique), calls `Navigation1.ExpectAppWindow("waydroid.<pkg>")` so the window Android opens takes the front, and sends `share` on the system channel. Replies once Android started the activity; `org.marathonos.Deckard1.Error.Failed` otherwise (15 s at most), `InvalidArgs` for a bad request. |
+| `Share(s id, a{sv} configuration) → ()` | The shell's request, as the sheet received it: `mimeType`, `title`, `resources` (at most 32; text of 1 to 65,536 characters; files as regular-file descriptors, 1 GiB in all). deckard-bridge copies each file to `xfer/<tid>/<name>` (`tid` 16 hex digits, names reduced to a base name and made unique), calls `Navigation1.ExpectAppWindow("waydroid.<pkg>")` so the window Android opens takes the front, and sends `share` on the system channel. Replies once Android started the activity; `org.marathonos.Deckard1.Error.Failed` otherwise (15 s at most), `InvalidArgs` for a bad request. |
 
 System channel:
 
 | `t` | Direction | Fields | Meaning |
 |---|---|---|---|
 | `share_targets` | host to Android | `id`, `mime` | DeckardSystem queries `ACTION_SEND` and `ACTION_SEND_MULTIPLE` activities (exported, default category). |
-| `share_targets_result` | Android to host | `id`, `targets` (`[{pkg, activity, label, icon, multiple}]`, `icon` base64 PNG) | deckardd checks each: package and class names, Android label rules, the icon decoded and re-encoded. |
+| `share_targets_result` | Android to host | `id`, `targets` (`[{pkg, activity, label, icon, multiple}]`, `icon` base64 PNG) | deckard-bridge checks each: package and class names, Android label rules, the icon decoded and re-encoded. |
 | `share` | host to Android | `id`, `target`, `mime`, `title`, `text`, `files` (names in `xfer/<id>/`) | DeckardSystem starts `target` with `ACTION_SEND` (`EXTRA_TEXT`, `EXTRA_SUBJECT` from `title`, `EXTRA_STREAM`) or, for several files, `ACTION_SEND_MULTIPLE`, the streams being `Handoff` document URIs (`content://org.marathonos.deckard.bridge.files/document/<id>%2F<name>`), granted to the target's package for reading through `Handoff` before the start, and in the `ClipData`. |
 | `shared` | Android to host | `id`, `ok`, `error` | |
 
@@ -497,7 +497,7 @@ must pass `checkUriPermission` for the app's uid; others are dropped, as are
 
 | `t` | Fields | Meaning |
 |---|---|---|
-| `share_out` | `id`, `pkg`, `mime`, `title`, `text`, `files` | Android to host. deckardd opens each file in `xfer/<id>/` (regular files only, no links, base names only) and calls `org.sailfishos.share.share(a{sv})` with `resources` (each file as `{name, fileDescriptor}`, then `text` as `{name: title, data}`), `mimeType`, `title` and `source` `waydroid.<pkg>`. |
+| `share_out` | `id`, `pkg`, `mime`, `title`, `text`, `files` | Android to host. deckard-bridge opens each file in `xfer/<id>/` (regular files only, no links, base names only) and calls `org.sailfishos.share.share(a{sv})` with `resources` (each file as `{name, fileDescriptor}`, then `text` as `{name: title, data}`), `mimeType`, `title` and `source` `waydroid.<pkg>`. |
 
 Two shell changes come with this: the sheet accepts `{name, fileDescriptor}`
 resources from any caller (a descriptor is its own proof of access; today
@@ -517,24 +517,24 @@ system channel:
 
 | `t` | Direction | Fields | Meaning |
 |---|---|---|---|
-| `perm_ask` | Android to host | `id` (16 hex digits, DeckardSystem's), `pkg`, `perms` (the Android permissions asked for, 1 to 16), `kind` (`foreground`, `background`, `precise`), `once` (offer "only this time"), `accuracy` (`""`, `choice`, `approximate`), `preciseDefault` | One question. deckardd names `perms` with `PermissionMap::marathon`; all must have the same name. A repeated `id` is ignored. |
+| `perm_ask` | Android to host | `id` (16 hex digits, DeckardSystem's), `pkg`, `perms` (the Android permissions asked for, 1 to 16), `kind` (`foreground`, `background`, `precise`), `once` (offer "only this time"), `accuracy` (`""`, `choice`, `approximate`), `preciseDefault` | One question. deckard-bridge names `perms` with `PermissionMap::marathon`; all must have the same name. A repeated `id` is ignored. |
 | `perm_answer` | host to Android | `id`, `answer` (`allow`, `once`, `deny`, `cancel`, `unsupported`), `precise` | The person's answer. `cancel`: dismissed, as Android's back. `unsupported`: Marathon can't ask (a bad or unnamed request, more than 8 waiting, no shell or an older one); Android shows its own dialog. |
-| `perm_cancel` | Android to host | `id` | GrantPermissionsActivity went away; deckardd withdraws the prompt and sends no answer. |
+| `perm_cancel` | Android to host | `id` | GrantPermissionsActivity went away; deckard-bridge withdraws the prompt and sends no answer. |
 
-deckardd asks the shell with `org.marathonos.Shell` `/org/marathonos/Shell/Permissions`
+deckard-bridge asks the shell with `org.marathonos.Shell` `/org/marathonos/Shell/Permissions`
 `org.marathonos.Shell.Permissions1.PromptAndroid(s appId, s permission,
 a{sv} options) → a{sv}`, where `appId` is `waydroid.<pkg>`, `permission` is
 the Marathon name and `options` are `request` (= `id`), `kind`, `once`,
-`accuracy` and `preciseDefault`. The reply waits for the person (deckardd
+`accuracy` and `preciseDefault`. The reply waits for the person (deckard-bridge
 waits up to 10 minutes, then answers `cancel`) and is `{answer, precise}`.
 `CancelAndroidPrompt(s request)` withdraws one. Both need the caller to be a
 declared session service with `android-permissions`. When the system
-channel drops, deckardd withdraws every waiting prompt; DeckardSystem then
+channel drops, deckard-bridge withdraws every waiting prompt; DeckardSystem then
 lets Android ask.
 
 ## Settings API
 
-How Marathon's Settings shows and changes Android apps. deckardd exports
+How Marathon's Settings shows and changes Android apps. deckard-bridge exports
 `org.marathonos.Deckard1` on `/org/marathonos/Deckard` (bus name
 `org.marathonos.Deckard`, session bus); the install methods live beside it as
 `org.marathonos.Deckard1.Packages`. Settings lists apps with
@@ -543,9 +543,9 @@ How Marathon's Settings shows and changes Android apps. deckardd exports
 ### Callers
 
 `GetRuntime`, `AppIcon` and the signals are open to the session. Every other
-method needs the caller to be Settings: deckardd asks the bus for the sender's
+method needs the caller to be Settings: deckard-bridge asks the bus for the sender's
 pid and the shell's `Navigation1.AppIdForPid` for that pid and up to seven of
-its ancestors (`src/callers.cpp`), as the shell resolves its own callers;
+its ancestors (`host/deckard-bridge/src/auth.rs`), as the shell resolves its own callers;
 the first app id found must be `settings`. Anything else gets
 `org.freedesktop.DBus.Error.AccessDenied` and nothing reaches Android.
 Arguments are checked first (`InvalidArgs`): package names by the package rule,
@@ -558,8 +558,8 @@ failure in Android is `org.marathonos.Deckard1.Error.Failed` with its message.
 |---|---|
 | `GetRuntime() → a{sv}` | `state` (`stopped`, `starting`, `running`, `stopping`), `memoryBytes` (the container cgroup's `memory.current`, `/sys/fs/cgroup/lxc.payload.waydroid`), `androidVersion`, `uptimeSeconds`, `startAtLogin`, `hasApps` |
 | `Start()`, `Stop()`, `Restart()` | `StartUnit`/`StopUnit`/`RestartUnit` of `marathon-waydroid.service` |
-| `SetStartAtLogin(b)` | Kept in `~/.local/state/deckard/settings.json`. Unset, it is on when Waydroid has a desktop entry without `NoDisplay=true` (an app the person installed). deckardd starts the session once per login when it is on. |
-| `AppIcon(s pkg) → s` | A `data:image/png` URI of `<waydroid data>/icons/<pkg>.png` or deckardd's notification icon, decoded and re-encoded at most 192 px; `""` if none |
+| `SetStartAtLogin(b)` | Kept in `~/.local/state/deckard/settings.json`. Unset, it is on when Waydroid has a desktop entry without `NoDisplay=true` (an app the person installed). deckard-bridge starts the session once per login when it is on. |
+| `AppIcon(s pkg) → s` | A `data:image/png` URI of `<waydroid data>/icons/<pkg>.png` or deckard-bridge's notification icon, decoded and re-encoded at most 192 px; `""` if none |
 | `GetApp(s pkg) → a{sv}` | `pkg`, `label`, `versionName`, `versionCode`, `appBytes`, `dataBytes` (with cache), `cacheBytes`, `notifications`, `links`, `domains` (as), `battery` (`unrestricted`/`optimized`), `permissions` (av of `{name, granted, fixed}`, `name` a Marathon permission; granted if any of its Android permissions is, fixed only if all are) |
 | `SetPermission(s pkg, s permission, b granted)` | `permission` a Marathon permission name: grants or revokes its Android runtime permissions that the app asks for, marked user-set (the app may ask again); `notifications` sets Android's notification switch |
 | `GetPermissionApps(s permission) → aa{sv}` | The person's apps that ask for it: `{pkg, label, granted, fixed}` (Settings' App permissions) |
@@ -620,7 +620,7 @@ through DeckardSystem) and per-app language.
 
 ### Management channel
 
-deckardd sends the requests to DeckardSystem on the system channel, which
+deckard-bridge sends the requests to DeckardSystem on the system channel, which
 runs as Android's system uid, so Android's own checks admit them
 (`image/apps/DeckardSystem/.../Manage.java`).
 
@@ -631,9 +631,9 @@ runs as Android's system uid, so Android's own checks admit them
 
 DeckardSystem refuses every per-app op on packages with `FLAG_SYSTEM`, so
 only apps the person installed are changed; the `gms` ops act on microG
-alone (`GoogleServices.java`). deckardd answers a request with
+alone (`GoogleServices.java`). deckard-bridge answers a request with
 an error after 30 s without a reply or when the channel drops, keeps at most
-32 waiting, and cleans each answer (`ManageCheck`, `tests/test_settingsapi.cpp`):
+32 waiting, and cleans each answer (`host/deckard-bridge/src/manage.rs`):
 labels at most 128 characters, sizes 0 to 2^50, only known groups and kinds,
 at most 50 well-formed domains and 500 apps.
 
@@ -642,7 +642,7 @@ at most 50 well-formed domains and 500 apps.
 `host/packaging/deckard-reset`, root, through pkexec only (it takes the user
 from `PKEXEC_UID` and refuses root). It removes everything in that user's
 `~/.local/share/waydroid/data` (Android's `/data`) except `deckard/`, where
-deckardd's sockets live, and removes `deckard/xfer` and `deckard/install`
+deckard-bridge's sockets live, and removes `deckard/xfer` and `deckard/install`
 and Waydroid's `waydroid.*.desktop` entries. Waydroid's images in
 `/var/lib/waydroid` and Deckard's overlay stay. It stops
 `deckard-container.service` first and touches nothing if that fails, and

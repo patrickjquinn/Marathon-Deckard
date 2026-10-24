@@ -15,7 +15,7 @@ Android app ──notify()──▶ NotificationManagerService
                               │ /data/deckard/bridge.sock
                               │ (= ~/.local/share/waydroid/data/deckard/bridge.sock)
                               ▼
-                    deckardd (host, user 1000)
+                    deckard-bridge (host, user 1000)
                 ┌─────────────┼─────────────────────┐
      org.freedesktop.     org.mpris.MediaPlayer2.   org.marathonos.Shell
      Notifications (Hub)  waydroid_<pkg>.instanceN  Settings1/Audio1 (sound state)
@@ -27,7 +27,7 @@ Android app ──notify()──▶ NotificationManagerService
   (`android:persistent`, priv-app), and binds it as a listener once the init
   rc has run `cmd notification allow_listener`.
 - **deckard-bridge** (`host/deckard-bridge`, Rust, Apache-2.0; it replaced the
-  C++/Qt deckardd) owns the socket, the
+  deckard-bridge) owns the socket, the
   Hub client, the MPRIS players and the audio sync. The keyboard agent's IME
   channel runs on a second socket in the same daemon.
 
@@ -40,19 +40,19 @@ network namespace.
 
 - **SELinux:** `getenforce` in the container says `Disabled` (the host kernel
   has no SELinux), so no policy is involved.
-- **Authentication:** deckardd checks `SO_PEERCRED` on every connection. The
+- **Authentication:** deckard-bridge checks `SO_PEERCRED` on every connection. The
   peer's uid must be the uid `packages.list` gives
   `org.marathonos.deckard.bridge` (10126 on this device). There is no user
   namespace, so Android uids are host uids. A connection from any other uid
-  is closed at once (`tests/test_bridge.cpp`).
+  is closed at once (`host/deckard-core/src/transport.rs`).
 - **Limits:** frames are 1 MiB at most. The rate limit is a 200-message burst,
   then 50 per second; after 1,000 drops the connection is closed. At most 200
   notifications and 8 players are tracked. Every field is bounded and cleaned
-  (`validate.cpp`, `tests/test_validate.cpp`). Every image is decoded,
+  (`host/deckard-core/src/validate.rs`). Every image is decoded,
   bounded to 4096 x 4096, scaled and re-encoded on the host.
 - **Reconnects:** the bridge retries with backoff (0.5 s doubling to 10 s). On
   every connect it re-sends all active notifications, then a `sync` with their
-  keys. deckardd keeps key → Hub id in `~/.local/state/deckard/notifications.json`,
+  keys. deckard-bridge keeps key → Hub id in `~/.local/state/deckard/notifications.json`,
   so a restart of either side neither duplicates nor orphans Hub rows.
 
 ## Notifications in the Hub
@@ -64,7 +64,7 @@ Checked on the device:
 | Name and icon | `app_name` is the Android label ("Download Manager", "Notify Test"). The app's icon is exported to `~/.cache/deckard/icons/<pkg>.png` and passed as `app_icon` (`file://`). Download Manager showed its real icon. The large icon travels as `image-data`. The Hub shows the app as "Waydroid.<package>": r479's registry doesn't know the `waydroid.<pkg>` desktop entries (see *What the shell must change*). |
 | Grouping | `desktop-entry` = `waydroid.<pkg>`. The Hub's filter chips group by it ("Waydroid.com.android.providers.downloads 2"). |
 | Body | HTML-escaped: "Two actions & a <tag>" rendered literally. |
-| Actions | Tapping "First" in the Hub logged `event first` in the app. The Hub then closed the row (not resident), and because the notification auto-cancels, deckardd cancelled it on Android (0 left in `dumpsys notification`). |
+| Actions | Tapping "First" in the Hub logged `event first` in the app. The Hub then closed the row (not resident), and because the notification auto-cancels, deckard-bridge cancelled it on Android (0 left in `dumpsys notification`). |
 | Inline reply | `inline-reply` action plus `x-kde-reply-placeholder-text` ("Message Ann"). `NotificationReplied(26, "See you at 9, bringing rope")` reached the app's `RemoteInput` (`event reply reply="See you at 9, bringing rope"`). The app re-posted with the reply appended, and the Hub row was replaced (id 26 → 27). The reply was sent through the Hub's own `InvokeReply`: the Hub list has no reply field, only the banner does (see *What the shell must change*). |
 | MessagingStyle | `x-marathon-conversation` carries `{title, self, group, messages[]}` (the last 10). The Hub doesn't render it yet. |
 | Progress | `value` = percent. The Hub's ongoing row showed a bar at 50 % that moved in place each second, then "Done" when the app finished (ongoing cleared). |
@@ -74,7 +74,7 @@ Checked on the device:
 | Real system app | A DownloadManager download (12.6 MB over HTTPS, done in 2.6 s) produced Download Manager's "Download complete." in the Hub. The failed cleartext attempt before it produced "Download unsuccessful.". The download was too short for DownloadProvider to post an in-progress notification. |
 | Latency | From the app's `notify()` to the Hub's `Notify` call, 10 posts: **median 4 ms** (3–5 ms). With Android's notification assistant enabled it was 205 ms (204–209 ms): NotificationManagerService holds every post for `DELAY_FOR_ASSISTANT_TIME` (200 ms). The rc turns the assistant off. |
 | Not forwarded | MediaStyle notifications (they are MPRIS players), group summaries that have children, the bridge's own notifications, and `android` package noise (`PHYSICAL_KEYBOARD`, `DEVELOPER`, `DEVELOPER_IMPORTANT`, `USB`, `FOREGROUND_SERVICE`). The "Configure physical keyboard" rows still in the Hub date from Waydroid's own forwarder, before Deckard. |
-| Unchanged updates | Not re-posted: deckardd compares a digest of everything the Hub shows. That digest leaves out `suppress-sound`, because Android marks repeats `FLAG_ONLY_ALERT_ONCE` (1bf05f8). |
+| Unchanged updates | Not re-posted: deckard-bridge compares a digest of everything the Hub shows. That digest leaves out `suppress-sound`, because Android marks repeats `FLAG_ONLY_ALERT_ONCE` (1bf05f8). |
 
 Android draws nothing: `heads_up_notifications_enabled` is 0, and Waydroid's own
 forwarder (`notification_manager.py`, which posted every notification a second
@@ -87,7 +87,7 @@ Checked with the test app's media session, which plays nothing (no audible
 tests tonight):
 
 - `org.mpris.MediaPlayer2.waydroid_org_marathonos_deckard_notifytest.instance1`
-  appeared, owned by deckardd on its own connection, with `Identity` "Notify
+  appeared, owned by deckard-bridge on its own connection, with `Identity` "Notify
   Test", `PlaybackStatus` "Playing", and `Metadata` (`xesam:title`,
   `xesam:artist`, `xesam:album`, `mpris:length` 200000000, `mpris:trackid`,
   `mpris:artUrl` file:///home/user/.cache/deckard/art/1-1.png). `Position`
@@ -106,7 +106,7 @@ Android played its own notification, touch and alarm sounds straight into
 PulseAudio, whatever Marathon's profile was. On the night of the 18th that was
 a chime through a Bluetooth speaker while Marathon was silent. Now:
 
-- deckardd reads `audioProfile`, `dndEnabled` and `alarmVolume` from
+- deckard-bridge reads `audioProfile`, `dndEnabled` and `alarmVolume` from
   `org.marathonos.Shell.Settings1.GetState`, re-reads them on
   `Audio1.StateChanged`, `Settings1.PropertyChanged` and a shell restart, and
   sends `{t: audio, quiet, alarm}`.
@@ -134,9 +134,9 @@ Android's 65 `system_accent*`/`system_neutral*` colours track Marathon's
 ambience highlight at runtime. DeckardPalette (the chrome agent's static RRO)
 stays the boot default.
 
-- **deckardd** reads `/desktop/jolla/theme/color/highlight` from
+- **deckard-bridge** reads `/desktop/jolla/theme/color/highlight` from
   `Ambience1.GetAmbience`, again on `AmbienceChanged` and on a shell restart. It
-  generates the colours with `palette.cpp`, a port of gen-palette.py: all 65
+  generates the colours with `deckard-core`'s `palette.rs`, a port of gen-palette.py: all 65
   are identical to DeckardPalette for #7df0d4 (`test_palette`, which also
   drives a fake Ambience1 on a private dbus-daemon). It writes them to
   `/data/deckard/palette` when they change.
@@ -152,14 +152,14 @@ stays the boot default.
   - Writing a palette for #ff8a3d turned Clock's FAB, selected tab, dialog
     buttons and icons orange.
   - Changing the wallpaper from Meridian to Indigo Dusk gave highlight
-    #84e8da. deckardd rewrote the palette and Android resolved
+    #84e8da. deckard-bridge rewrote the palette and Android resolved
     `system_accent1_100` to #ff84e8da.
   - Contour brought #7df0d4 back through the watcher, live, without a restart
     (the app_process run started 4 s after the tap). Meridian is restored.
   - Every built-in wallpaper derives a teal highlight, so on stock ambiences
     the change is subtle.
 - **Found on the way:** toybox inotifyd reports a file renamed into a watched
-  directory as `y`, not `m` (deckardd's atomic write is temp file plus rename).
+  directory as `y`, not `m` (deckard-bridge's atomic write is temp file plus rename).
   Also, a configuration change from an overlay relaunches activities; Waydroid
   then recreates the task's window, and Clock's card closed once (shell r479).
 - **Open:**
@@ -170,7 +170,7 @@ stays the boot default.
 
 ## Installing Android apps the Marathon way
 
-Android's installer never shows. deckardd's `org.marathonos.Deckard1.Packages`
+Android's installer never shows. deckard-bridge's `org.marathonos.Deckard1.Packages`
 (protocol/bridge.md) stages the APK in `/data/deckard/install/`, and
 DeckardBridge, which holds INSTALL_PACKAGES and DELETE_PACKAGES through its
 privapp file, installs it through a PackageInstaller session. Only Settings,
@@ -271,7 +271,7 @@ and it is a `critical` service. So it now runs without pressure monitors
 nothing, and still sets the adj: cached calendar 915, settings 955, the
 foreground app 0.
 
-The killing moved to Marathon. deckardd's `Reclaimer` asks DeckardSystem to
+The killing moved to Marathon. deckard-bridge's `Reclaimer` asks DeckardSystem to
 end the two least recently used cached app processes (protocol/bridge.md,
 `reclaim`) when the container goes over `memory.high` or `memory.max`
 (`memory.events`, watched with inotify), when Android stalls on memory (a
@@ -345,7 +345,7 @@ enabled service asks for, so this is the only event type they generate.
 `deckard-toasts` appends the service to `enabled_accessibility_services` at
 boot, keeping any others.
 
-deckardd posts the toast with summary = the text, `app_name` = the app label,
+deckard-bridge posts the toast with summary = the text, `app_name` = the app label,
 the app's icon, `urgency` 0, `transient`, `suppress-sound`,
 `x-marathon-toast` and a 3.5 s timeout, and closes it after 4 s; at most one
 per app per 500 ms. The shell (6f89be4b+) draws `x-marathon-toast` as a
@@ -390,7 +390,7 @@ their toasts themselves, and ToastWatcher still reports those.
   namespace (kernel work). Freezing app cgroups from the host without binder
   freeze would hang their binder peers. The DeviceConfig value is left true;
   it has no effect.
-- **Doze → deviceidle.** deckardd writes `/data/deckard/doze` (1 or 0) when
+- **Doze → deviceidle.** deckard-bridge writes `/data/deckard/doze` (1 or 0) when
   the shell's `Power1.StateChanged` carries `dozing`. The shell doesn't
   publish Doze yet (queued with the shell agent). `deckard-watch` then runs
   `cmd deviceidle force-idle deep` or `unforce` as system. Checked by
@@ -407,14 +407,14 @@ their toasts themselves, and ToastWatcher still reports those.
 ## Sharing
 
 Android apps take part in Marathon's share sheet both ways
-(protocol/bridge.md, Share). As targets, the shell asks deckardd's
+(protocol/bridge.md, Share). As targets, the shell asks deckard-bridge's
 `Deckard1.Share.ShareTargets` for the activities that take the type and
-hands the chosen one the request with `Share`; deckardd copies the files
+hands the chosen one the request with `Share`; deckard-bridge copies the files
 into `xfer/` and DeckardSystem starts the activity with `Files` URIs. As
 sources, DeckardSystem's `Chooser` sits above Android's chooser and sends
-what the app shares to deckardd, which opens the sheet with the files as
-descriptors and the app as `source`. Host tests cover deckardd's half
-(`tests/test_share.cpp`, with a fake sheet on a private bus); not yet run on
+what the app shares to deckard-bridge, which opens the sheet with the files as
+descriptors and the app as `source`. Host tests cover deckard-bridge's half
+(`host/deckard-bridge/tests/sharing_contract.rs`, with a fake sheet on a private bus); not yet run on
 the device, and the sheet needs the shell's half.
 
 ## Shared storage
@@ -475,18 +475,18 @@ still Android's). `deckard-storage` (an overlay rc service, started at
 too; the mount point is shared, so the binds reach every app's namespace,
 MediaProvider's included.
 
-**Permissions both ways, nothing world-writable.** deckardd gives each
+**Permissions both ways, nothing world-writable.** deckard-bridge gives each
 folder an access ACL with group media_rw rwx and a default ACL with
 media_rw rwx and the user rwx, and once (the first time it runs) the same to
 everything inside that the user owns (`SharedStorage`, written as the
 kernel's `system.posix_acl_*` xattrs). Files the user's apps create inherit
 read and write for MediaProvider; files MediaProvider creates (owned by its
 uid) inherit read and write for the user. New entries made on the host get
-the ACL as deckardd sees them. A file whose mode a program narrows with
+the ACL as deckard-bridge sees them. A file whose mode a program narrows with
 `chmod` loses the group's write (the mask), and stays readable.
 
 **Indexing.** Files added or removed on the host bypass the FUSE daemon, so
-MediaProvider doesn't see them. deckardd watches each folder and its
+MediaProvider doesn't see them. deckard-bridge watches each folder and its
 subfolders and, 3 s after a change, sends DeckardSystem `media_scan` with
 the folders' Android paths; DeckardSystem calls `MediaStore.scanFile` on
 each, which indexes new files and forgets gone ones. When Android comes up,
@@ -505,7 +505,7 @@ Android's files, refusing links and data outside the home) and
 
 On the HackberryPi (deckard a5362f4 with the hook, `deckard-storage` and the
 ACLs staged by hand, scans triggered with `content call … scan_file` in
-place of the newer deckardd): MediaProvider is u0_a29 (10029) with media_rw
+place of the newer deckard-bridge): MediaProvider is u0_a29 (10029) with media_rw
 among its groups, and Android's own `/data/media/0` folders already carry
 the same media_rw ACLs. All six folders were bound in `/data/media/0` and
 in vold's view; Markor's folder and the `.thumbnails` folders moved to the
@@ -526,19 +526,19 @@ had connected to Marathon's Wayland server but never registered, so
 SurfaceFlinger waited for it and system_server looped in its watchdog. One
 session stop and start fixed it, as it did the transient hang at 01:42.
 
-deckardd's `BootWatchdog` follows the session unit. Android's init writes
+deckard-bridge's `BootWatchdog` follows the session unit. Android's init writes
 `/data/deckard/booted` at `sys.boot_completed` (`deckard-watch.rc`, removed
 again at `post-fs-data`). If that file is not newer than the unit's
-activation 60 s later, deckardd runs `pkexec /usr/libexec/deckard-boot-evidence`.
-Its output goes to deckardd's journal (`deckard.boot`): the container's
+activation 60 s later, deckard-bridge runs `pkexec /usr/libexec/deckard-boot-evidence`.
+Its output goes to deckard-bridge's journal (`deckard.boot`): the container's
 freezer state, the boot properties, and for the composer HAL and
 SurfaceFlinger their state, Unix sockets (`ss -xp` in the container's network
-namespace, the Wayland link among them) and `debuggerd -b` stacks. deckardd
+namespace, the Wayland link among them) and `debuggerd -b` stacks. deckard-bridge
 then restarts the session once. If the restarted session stalls as well, it
 is only reported; a completed boot re-arms the restart.
 
 Checked on the device by putting a directory where the marker goes, so init
-could neither remove nor write it: 60 s after the start deckardd logged the
+could neither remove nor write it: 60 s after the start deckard-bridge logged the
 stall, pkexec ran the helper with no prompt from the user service, and the
 journal got the freezer state (not frozen), the boot properties, both
 processes' sockets and full `debuggerd -b` stacks (the composer in
@@ -563,8 +563,8 @@ The bridge installed as `flags=[ SYSTEM HAS_CODE PERSISTENT ]` with all its
 permissions granted, and was bound as a listener 10 s after boot.
 
 On this device the install is by hand until an image carries 0044: the overlay
-files are in `/var/lib/waydroid/overlay`, deckardd runs from
-`/home/user/.local/deckard` as `deckardd-test.service`, and the session runs
+files are in `/var/lib/waydroid/overlay`, deckard-bridge runs from
+`/home/user/.local/deckard` as `deckard-bridge-test.service`, and the session runs
 through `~/.config/systemd/user/marathon-waydroid.service.d/deckard-test.conf`.
 
 ## Where the spec's approach is still needed

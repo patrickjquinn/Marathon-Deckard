@@ -31,7 +31,7 @@ shipwright-open export e37941bc that the `keel-mcp` aport builds.
 - The context resource `keel://<app>/context` is read only for a trusted
   client with `userInitiated`, and never for `--external`.
 
-So deckardd owns `waydroid.<pkg>`, the shell's app id for the app, once per
+So deckard-bridge owns `waydroid.<pkg>`, the shell's app id for the app, once per
 app on a bus connection of its own. Its `Describe` answers that app's
 manifest. A changed manifest (a new dynamic shortcut, an update) moves to a
 new connection, so the name gets a new owner and keel-mcp describes it again.
@@ -41,14 +41,14 @@ new connection, so the name gets a new owner and keel-mcp describes it again.
 - **Only keel-mcp and pilotd are served.** `Invoke` and `GetContext` are
   served only to callers whose `/proc/<pid>/exe` is `/usr/bin/keel-mcp` or
   `/usr/bin/pilotd`, compared by device and inode as Keel's
-  `KeelCallerTrust` does. A Marathon app calling deckardd directly gets
+  `KeelCallerTrust` does. A Marathon app calling deckard-bridge directly gets
   `AccessDenied`.
 - **Only the app in front.** `screen.read` and the context answer only when
   the shell's `shell.state` says the screen is on, the phone is unlocked and
   `foregroundApp` is that app. Android reads only that package's
   `TYPE_APPLICATION` window: no other app, and not the keyboard or system
   windows.
-- **No passwords.** Android never sends `isPassword()` text, and deckardd
+- **No passwords.** Android never sends `isPassword()` text, and deckard-bridge
   drops it again if it does. A password field is rendered as
   `field password (hidden)`, and `ui.type` refuses one.
 - **No paired computers.** A keel-mcp started with `--external` gets no
@@ -59,10 +59,10 @@ new connection, so the name gets a new owner and keel-mcp describes it again.
   model.
 - **Acting needs a person.** `ui.tap` and `ui.type` are `confirm` and
   destructive. keel-mcp gives them only to Pilot, Pilot shows its card for
-  each one, and deckardd also requires `userInitiated`. Shortcuts whose
+  each one, and deckard-bridge also requires `userInitiated`. Shortcuts whose
   label acts at once (call, send, pay, delete, record...) are `confirm` too.
 - **On demand, never streaming.** The `ScreenReader` accessibility service
-  subscribes to no events. It is enabled only when deckardd asks for a read
+  subscribes to no events. It is enabled only when deckard-bridge asks for a read
   or an action, and disabled two minutes after the last one, so no app
   builds an accessibility tree for it the rest of the time.
 - **Never a secure window.** Accessibility does not report `FLAG_SECURE`,
@@ -81,11 +81,11 @@ new connection, so the name gets a new owner and keel-mcp describes it again.
   last segment of the id).
 - **Android starts the activity; the shell expects its window.** An
   Android window that nobody launched from Marathon is filed as a card
-  (b05f45a9, c05a728d). Before `launch`, deckardd calls
+  (b05f45a9, c05a728d). Before `launch`, deckard-bridge calls
   `Navigation1.ExpectAppWindow(appId)`, a call proposed to the shell. With
   it, the shell shows the app at once, and a window of a new task (an
   activity started with its own affinity, or a document) takes the front
-  as a launch would. Without it, deckardd waits for `apps.running` to list
+  as a launch would. Without it, deckard-bridge waits for `apps.running` to list
   the app and calls `app.launch`, which shows the window the shell already
   has, but not one of a new task. Launching through the shell first would
   start `waydroid app launch`'s launcher intent alongside the action's, and
@@ -110,12 +110,12 @@ shortcut host: the default launcher, the assistant, or a holder of
 protection level is `0x6000002`, that is `signature|role|recents`, not
 `privileged`. DeckardBridge is signed with Deckard's key, so it is not a
 host. DeckardSystem runs as `android.uid.system`, which holds every
-permission. So DeckardSystem's `AppActions` answers deckardd's shortcut
+permission. So DeckardSystem's `AppActions` answers deckard-bridge's shortcut
 queries and starts shortcuts, over the system channel. It returns the
 manifest and the dynamic shortcuts, so recent chats and "Navigate home"
 come too. `startShortcut` starts a shortcut as the app that published it,
 so non-exported targets work as they do from a launcher.
-`onShortcutsChanged` tells deckardd to ask again. DeckardBridge is not
+`onShortcutsChanged` tells deckard-bridge to ask again. DeckardBridge is not
 re-signed.
 
 ## Pilot's on-screen context
@@ -128,7 +128,7 @@ for any other process the patch now asks `Navigation1.GetForegroundApp()`
 (being added to the shell). When the answer is a `waydroid.<pkg>` id, Pilot
 takes it as the app on screen and names it from Waydroid's desktop entry
 (`$XDG_DATA_HOME/applications/waydroid.<pkg>.desktop`). Pilot then reads
-`keel://waydroid.<pkg>/context`, which deckardd serves (`GetContext`: the
+`keel://waydroid.<pkg>/context`, which deckard-bridge serves (`GetContext`: the
 screen text, at most 4,000 characters, or nothing for a secure window), and
 puts that app's tools first, as it does for Marathon apps.
 
@@ -173,7 +173,7 @@ puts that app's tools first, as it does for Marathon apps.
     DeckardSystem started it, and its own stub then sent Android's battery
     page to Marathon Settings (`foregroundApp` `settings`,
     [settings-battery-shortcut.png](pilot/settings-battery-shortcut.png)).
-  - **app.show** of Android Settings: deckardd's call succeeded and
+  - **app.show** of Android Settings: deckard-bridge's call succeeded and
     `foregroundApp` became `waydroid.com.android.settings`. Android
     Settings itself never mapped a window: the shell showed "Settings
     couldn't open". That is outside Keel (slim stages). `screen.read` then
@@ -208,5 +208,5 @@ puts that app's tools first, as it does for Marathon apps.
     not consent for them. So `ui.tap`, `ui.type` and the context read
     through Pilot are untested on the device. pilotd there is r2, without
     patch 0003's Android mapping.
-  - **Not on the device yet:** deckardd telling the shell about secure
+  - **Not on the device yet:** deckard-bridge telling the shell about secure
     windows (`SetAppWindowSecure`; tested on the host).

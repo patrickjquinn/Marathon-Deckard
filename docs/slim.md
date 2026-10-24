@@ -238,7 +238,7 @@ Native services from `init` and the vendor rc files, PSS at idle:
 
 `image/apps/DeckardSystem` (package `org.marathonos.deckard.system`,
 `android:sharedUserId="android.uid.system"`, persistent, built by its
-`build.sh` with the platform key, 40 KB). It talks to deckardd over a new
+`build.sh` with the platform key, 40 KB). It talks to deckard-bridge over a new
 socket of the bridge protocol, `system.sock` (protocol/bridge.md, *System
 channel*), the way DeckardIme has `ime.sock`; DeckardBridge is untouched.
 
@@ -254,8 +254,8 @@ channel*), the way DeckardIme has `ime.sock`; DeckardBridge is untouched.
 | CREATE_DOCUMENT | `Pick` | portal SaveFile; the app writes the transfer file, and every close copies it to the chosen place |
 | IMAGE_CAPTURE, VIDEO_CAPTURE | `Pick` | Camera `camera.open`; the next new file in `~/Pictures/Marathon` is written to the app's `EXTRA_OUTPUT` (or returned as a thumbnail / a content URI) |
 
-deckardd's side is `host/deckardd/src/intents.cpp` with
-`tests/test_intents.cpp` (all 4 test programs pass on the host build). The
+deckard-bridge's side is `host/deckard-bridge/src/intents.rs` with
+`tests/intents_contract.rs`. The
 same app also carries `WindowFit`, deckard-wm's logic in-process (both may
 run at once: each only fixes a task that isn't already full-display
 freeform).
@@ -263,7 +263,7 @@ freeform).
 Limits of the stubs:
 
 - **Camera.** Marathon Camera has no "capture and return" mode
-  (`camera.open` "takes no photo itself"), so deckardd waits for the next
+  (`camera.open` "takes no photo itself"), so deckard-bridge waits for the next
   file in Camera's folder. A real `camera.capture` Keel action in the shell's
   camera app would be cleaner.
 - **Share.** No Marathon share sheet (see *The chooser*). Protocol room is
@@ -275,7 +275,7 @@ Limits of the stubs:
   with") have no handler once Gallery and the stock apps are gone. Forwarding
   them to Marathon would copy the file out and `xdg-open` it: not done.
 - **OPEN_DOCUMENT_TREE** (folder access) has no answer: a tree needs a
-  DocumentsProvider that lists a host folder through deckardd.
+  DocumentsProvider that lists a host folder through deckard-bridge.
 
 ### Window fit and the Contacts → Clock report
 
@@ -302,7 +302,7 @@ repeats the launch (Jelly in front, then Contacts) after S9 and reads
 ## Follow-up: Marathon Settings pages
 
 Android Settings stays installed only for the per-app grants Marathon
-Settings has no page for. Each needs a Marathon page (deckardd can grant them
+Settings has no page for. Each needs a Marathon page (deckard-bridge can grant them
 through `appops`/`cmd` as Android's system uid) before Settings can go:
 
 | Grant | Android action | Granted by |
@@ -346,7 +346,7 @@ through `appops`/`cmd` as Android's system uid) before Settings can go:
   pressure event under the 6.12 kernel (`/proc/zoneinfo parse error`,
   `Failed to get free memory!`, every 10 ms while memory is short) and never
   kills. The image runs it without pressure monitors (`image/waydroid.prop`)
-  so it only sets each app's `oom_score_adj`, and deckardd's reclaimer ends
+  so it only sets each app's `oom_score_adj`, and deckard-bridge's reclaimer ends
   cached apps instead (bridge.md). A rebuilt lmkd that parses this kernel's
   zoneinfo could take that job back.
 
@@ -499,7 +499,7 @@ Fixed on the way:
   whole path works: OPEN_DOCUMENT from Android showed Marathon's chooser,
   the picked `~/Documents` file landed in `/data/deckard/xfer/<id>/`, and
   `content read` of DeckardSystem's document URI returned its contents.
-  deckardd also closes the portal request when the app gives up.
+  deckard-bridge also closes the portal request when the app gives up.
 
 Rolled back:
 
@@ -587,12 +587,12 @@ boot image.
 - **Share sheet.** Android shares stay in Android's chooser until Marathon
   has a share sheet (the shell's old one was removed in c0d1f559).
 - **Camera.** A "capture and return" Keel action in Marathon Camera would
-  replace deckardd's watch on `~/Pictures/Marathon`.
+  replace deckard-bridge's watch on `~/Pictures/Marathon`.
 - **Messages and Maps.** A message body in Messages' route, and a Keel
   action that shows a place search.
 - **Settings.** Marathon pages for Android apps' grants (*Follow-up:
   Marathon Settings pages*), after which Android Settings can go.
-- **Foreground signal.** `Navigation1.ForegroundAppChanged` for deckardd's
+- **Foreground signal.** `Navigation1.ForegroundAppChanged` for deckard-bridge's
   focus fallback (requested; the shell's keyboard-enter fix made it
   rarely needed).
 

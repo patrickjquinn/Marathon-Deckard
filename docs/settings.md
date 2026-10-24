@@ -9,10 +9,10 @@ access. The API is in [../protocol/bridge.md](../protocol/bridge.md)
 
 | Where | What |
 |---|---|
-| deckardd `src/settingsapi.*` | `org.marathonos.Deckard1` on `/org/marathonos/Deckard`, an adaptor on the shared root beside `Deckard1.Packages` |
-| deckardd `src/callers.*` | The caller check: sender pid, then the shell's `Navigation1.AppIdForPid` up the process tree. Everything but `GetRuntime` and `AppIcon` needs `settings`. |
-| deckardd `src/runtime.*` | Session state from systemd (`marathon-waydroid.service`), the system channel and `lxc.payload.waydroid/memory.current`; start at login in `~/.local/state/deckard/settings.json` |
-| deckardd `src/manage.*` | `manage`/`managed` requests to DeckardSystem, with timeouts and cleaned answers |
+| deckard-bridge `src/settingsapi.*` | `org.marathonos.Deckard1` on `/org/marathonos/Deckard`, an adaptor on the shared root beside `Deckard1.Packages` |
+| deckard-bridge `src/callers.*` | The caller check: sender pid, then the shell's `Navigation1.AppIdForPid` up the process tree. Everything but `GetRuntime` and `AppIcon` needs `settings`. |
+| deckard-bridge `src/runtime.*` | Session state from systemd (`marathon-waydroid.service`), the system channel and `lxc.payload.waydroid/memory.current`; start at login in `~/.local/state/deckard/settings.json` |
+| deckard-bridge `src/manage.*` | `manage`/`managed` requests to DeckardSystem, with timeouts and cleaned answers |
 | DeckardSystem `Manage.java` | Does the work as the system uid; refuses Android's own packages |
 | Marathon-Shell `apps/settings` | `AndroidApps` (C++ singleton over D-Bus), `AndroidPage`, `AndroidAppsPage`, `AndroidAccessListPage`, `AndroidAccessPage`, `AndroidResetDialog`, `AndroidAppDetails` in `AppInfoPage`, Android rows in `AppManagerPage` |
 
@@ -22,15 +22,15 @@ The first three are Keel pages of `app.show`.
 
 ## Decisions
 
-- deckardd now runs for the whole login (`graphical-session.target`),
+- deckard-bridge now runs for the whole login (`graphical-session.target`),
   not `PartOf=marathon-waydroid.service`: Settings shows Android stopped
   and starts it. Start at login defaults to on once Waydroid has a desktop
   entry without `NoDisplay=true`, and runs once per login
-  (`$XDG_RUNTIME_DIR/deckard-login`), not on every deckardd restart.
-- Reset Android is a real wipe: deckardd stops the session and runs
+  (`$XDG_RUNTIME_DIR/deckard-login`), not on every deckard-bridge restart.
+- Reset Android is a real wipe: deckard-bridge stops the session and runs
   `pkexec /usr/libexec/deckard-reset`, which removes Android's `/data`
   (`~/.local/share/waydroid/data`, root-owned files included) but keeps
-  `deckard/` (deckardd's sockets), Waydroid's images and the overlay. The
+  `deckard/` (deckard-bridge's sockets), Waydroid's images and the overlay. The
   next start sets Android up again. Android isn't started again after a
   reset.
 - Default apps and per-app language are left out: Marathon answers links,
@@ -40,7 +40,7 @@ The first three are Keel pages of `app.show`.
 
 ## Verified
 
-- deckardd: `tests/test_settingsapi.cpp` on a private bus with a fake shell
+- deckard-bridge: `host/deckard-bridge/tests/` on a private bus with a fake shell
   and a fake Android: access denied for non-Settings callers (nothing
   reaches Android or systemd), argument checks, request/answer matching,
   `AppChanged`, Android's failures, runtime states, start-at-login policy,
@@ -67,7 +67,7 @@ logcat:
 | Clear cache, clear data (remorse), force stop | done by Android (`clearApplicationUserData`, `Force stopping … from pid` DeckardSystem) |
 | Special access, all 12 kinds | load without errors; install other apps granted (`REQUEST_INSTALL_PACKAGES: allow`); alarms shows the default grant |
 | Caller check | Settings passes; busctl from the user's shell is refused |
-| Reset Android | pkexec from deckardd (a user service) is allowed by polkit; Android's data gone except `deckard/`; container restarted; Settings shows Stopped |
+| Reset Android | pkexec from deckard-bridge (a user service) is allowed by polkit; Android's data gone except `deckard/`; container restarted; Settings shows Stopped |
 | Uninstall from Installed apps | **fails**: Packages.UninstallPackage reports "Android asked for a confirmation" (DeckardBridge has DELETE_PACKAGES granted). Bridge agent's. |
 
 After the reset, the first session start hung: the composer HAL connected

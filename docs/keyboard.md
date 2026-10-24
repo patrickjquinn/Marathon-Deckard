@@ -21,7 +21,7 @@ draws the keyboard. In multi-window mode its window becomes a separate
 So the spec's design is used, without rebuilding the image: an Android IME that
 draws nothing, reporting to the host. The spec routes it through binder and a
 forked hwcomposer acting as a text-input-v3 client. Here it goes through
-deckardd and a shell D-Bus interface instead, because the hwcomposer can't be
+deckard-bridge and a shell D-Bus interface instead, because the hwcomposer can't be
 changed without an image build. The shell end keeps text-input-v3's model
 (content purpose and hints, surrounding text, commit, delete-surrounding), so
 moving it into a forked hwcomposer later only changes the transport.
@@ -34,7 +34,7 @@ Marathon keyboard ──QInputMethodEvent / keys──▶ focused Android surfac
 shell  org.marathonos.Shell.TextInput1 ◀─────────┘
    │  SetEditor / SetSurroundingText / ShowPanel / HidePanel / ClearEditor
    │  ▲ CommitString / Key / PanelChanged (targeted signals)
-deckardd  Ime  (host/deckardd/src/ime.cpp)
+deckard-bridge  ime  (host/deckard-bridge/src/ime.rs)
    │  length-prefixed JSON, /data/deckard/ime.sock, SO_PEERCRED = DeckardIme's uid
 DeckardIme  (image/apps/DeckardIme, InputMethodService, no visible window)
    │  InputConnection
@@ -77,7 +77,7 @@ Wire format: [protocol/bridge.md, "IME channel"](../protocol/bridge.md#ime-chann
   privileged permission, so no privapp XML). `method.xml` sets `isDefault`.
 
 **Host side.**
-- deckardd's `Ime` validates everything (package rule, purpose 0–13, hints
+- deckard-bridge's `Ime` validates everything (package rule, purpose 0–13, hints
   masked to `0x3ff`, text at most 4,096 characters, offsets clamped, key
   names allowlisted). It talks to the shell only once a valid `start` has
   arrived, and keeps the last `panel` per app so it can replay it when an
@@ -122,7 +122,7 @@ up. The nav bar's keyboard button still opens it, and then the inset follows.
 | Check | Result | Evidence |
 |---|---|---|
 | Defaults after `deckard-overlay-sync` and a session restart | `pm path` = `/system/app/DeckardIme/DeckardIme.apk`, LatinIME disabled, `default_input_method` = DeckardIme | coordinator's check, 23:45 |
-| deckardd registers with the shell | The packaged `/usr/bin/deckardd` in `deckardd.service` is admitted. The earlier test instance (`deckardd-test.service`, `~/.local/...`) was refused with "Needs the text-input permission", as designed | journal |
+| deckard-bridge registers with the shell | The packaged `/usr/bin/deckard-bridge` in `deckard-bridge.service` is admitted. The earlier test instance (`deckard-bridge-test.service`, `~/.local/...`) was refused with "Needs the text-input permission", as designed | journal |
 | Editor reaches the shell | Tapping Jelly's address bar gave `SetEditor(waydroid.org.lineageos.jelly, 5 url, 0)`, `SetSurroundingText("https://www.google.com/", 23, 0)`, `ShowPanel` | `busctl monitor` |
 | IME inset follows Marathon's keyboard | Keyboard opened from the nav bar: `PanelChanged(355, 628)`. Android's IME source became `[0,273][720,628]`, exactly the 355 px the keyboard covers, and `mInputShown=true`. Android's own window was never resized (no hot-plug) | dumpsys |
 | No double resize | Keyboard over Clock, Jelly and Notify Test: their windows keep their size and sit under the keyboard | screenshots `osk1`, `osk4`, `p3`, `p4` |
@@ -173,7 +173,7 @@ Blockers found while testing (not keyboard code):
   restarted the session.
 
 Unit tests: Marathon-Shell `Shell_RemoteTextInput` (16 cases), Marathon-Deckard
-`host/deckardd` `ime` (5 cases) and `ContentTypeTest` (17 input types, runs in
+`host/deckard-bridge` `ime` tests and `ContentTypeTest` (17 input types, runs in
 `image/apps/DeckardIme/build.sh`).
 
 ## Where the spec's approach is still needed
@@ -183,5 +183,5 @@ Unit tests: Marathon-Shell `Shell_RemoteTextInput` (16 cases), Marathon-Deckard
   `requestCursorUpdates`).
 - Preedit (composing text) isn't used: Marathon's keyboard commits directly.
 - A forked hwcomposer speaking text-input-v3 per surface (spec §9) would remove
-  the deckardd hop and the package-to-window mapping (`waydroid.<package>`),
+  the deckard-bridge hop and the package-to-window mapping (`waydroid.<package>`),
   and would tie the editor to the exact surface rather than the package.
