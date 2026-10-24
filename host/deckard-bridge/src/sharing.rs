@@ -262,8 +262,7 @@ impl Sharing {
             let guess = guess.map(|guess| guess.first_or_octet_stream().essence_str().to_owned());
             mime = guess.unwrap_or_else(|| "text/plain".into());
         }
-        let pkg = id.split('/').next().unwrap_or("");
-        let app = format!("waydroid.{pkg}");
+        let app = keel::app_id(id.split('/').next().unwrap_or(""));
         intents::expect_window(&self.bus, &app, Duration::from_secs(2)).await;
         let message = json!({
             "t": "share", "target": id, "mime": mime, "title": title, "text": joined, "files": files,

@@ -25,6 +25,7 @@ use crate::manage::Manage;
 use crate::runtime::{self, Runtime};
 
 pub use deckard_packages::{BUS_NAME, OBJECT_PATH};
+/// The Settings interface.
 pub const INTERFACE: &str = "org.marathonos.Deckard1";
 const SYSTEMD: Endpoint<'static> = (
     "org.freedesktop.systemd1",
