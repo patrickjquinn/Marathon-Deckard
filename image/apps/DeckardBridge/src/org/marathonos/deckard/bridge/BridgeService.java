@@ -39,7 +39,8 @@ public class BridgeService extends NotificationListenerService implements Link.L
     private static final int MAX_IMAGE = 128;
     private static final int MAX_MESSAGES = 10;
     private static final Set<String> SYSTEM_NOISE = new HashSet<>(Arrays.asList(
-            "PHYSICAL_KEYBOARD", "DEVELOPER", "DEVELOPER_IMPORTANT", "USB", "FOREGROUND_SERVICE"));
+            "PHYSICAL_KEYBOARD", "VIRTUAL_KEYBOARD", "DEVELOPER", "DEVELOPER_IMPORTANT", "USB",
+            "FOREGROUND_SERVICE"));
 
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final Map<String, StatusBarNotification> mForwarded = new HashMap<>();
