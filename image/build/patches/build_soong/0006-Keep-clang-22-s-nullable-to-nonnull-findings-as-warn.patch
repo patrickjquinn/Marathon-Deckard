@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sun, 25 Oct 2026 00:08:24 +0100
+Subject: [PATCH] Keep clang 22's nullable-to-nonnull findings as warnings
+
+clang 22 reports 'p ? string_view(p) : string_view()' in abseil's
+string_view.h as a nullable-to-nonnull conversion, which DnsResolver
+turns into an error. Report it without failing the build when the clang is
+r596125 or newer.
+
+Change-Id: Ia6186c2319b7a7a7dd81f3a5ca4ef3760b5f3f0c
+---
+ cc/config/global.go | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/cc/config/global.go b/cc/config/global.go
+index 41b05ee..9275fd4 100644
+--- a/cc/config/global.go
++++ b/cc/config/global.go
+@@ -518,6 +518,9 @@ func init() {
+ 			// clang 22 checks acquired_before/after ordering under plain
+ 			// -Wthread-safety; 23.2's ART is not annotated for it.
+ 			flags = append(flags, "-Wno-error=thread-safety-analysis")
++			// clang 22 also flags nullable ternaries (abseil's string_view.h
++			// under DnsResolver's -Wnullable-to-nonnull-conversion).
++			flags = append(flags, "-Wno-error=nullable-to-nonnull-conversion")
+ 		}
+ 		if ctx.Config().IsEnvTrue("LLVM_NEXT") {
+ 			flags = append(noOverrideGlobalCflags, llvmNextExtraCommonGlobalCflags...)

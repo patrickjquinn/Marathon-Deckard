@@ -168,6 +168,10 @@ In the order they appeared.
     prebuilts/build-tools/path/linux-arm64. `build.sh` sets
     `CCACHE_DISABLE=1`, since meson picks up /usr/bin/ccache by itself.
 
+19. **clang 22: `-Werror,-Wnullable-to-nonnull-conversion` in abseil's
+    `string_view.h`** (from DnsResolver's flags). Kept as a warning for
+    clang ≥ r596125.
+
 Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
 adds `-Wno-everything` and drops the version-gated flags.
 `m -k` (keep going) collects independent failures in one pass, which
