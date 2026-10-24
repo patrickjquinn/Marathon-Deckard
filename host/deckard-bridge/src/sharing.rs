@@ -265,9 +265,8 @@ impl Sharing {
             mime = guess.unwrap_or_else(|| "text/plain".into());
         }
         let pkg = id.split('/').next().unwrap_or("");
-        let expect = (format!("waydroid.{pkg}"),);
-        let wait = Duration::from_secs(2);
-        let _ = intents::call(&self.bus, NAVIGATION, "ExpectAppWindow", &expect, wait).await;
+        let app = format!("waydroid.{pkg}");
+        intents::expect_window(&self.bus, &app, Duration::from_secs(2)).await;
         let message = json!({
             "t": "share", "target": id, "mime": mime, "title": title, "text": joined, "files": files,
         });
