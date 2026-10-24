@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::ops::ControlFlow;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
@@ -20,11 +19,12 @@ use deckard_core::{json, sync, validate};
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
-use zbus::fdo::{DBusProxy, RequestNameFlags, RequestNameReply};
+use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::message::Header;
 use zbus::zvariant::{OwnedValue, Value as Variant};
 use zbus::{Connection, DBusError, connection, interface};
 
+use crate::auth;
 use crate::intents::{self, NAVIGATION};
 
 const PATH: &str = "/org/shipwright/Keel/Actions";
@@ -171,22 +171,8 @@ struct Shared {
     _stop: async_channel::Sender<()>,
 }
 
-fn ok(reply: &Map<String, Value>) -> bool {
-    reply.get("ok").and_then(Value::as_bool) == Some(true)
-}
-
 fn keel_op(op: &str, pkg: &str) -> Value {
     json!({"t": "keel", "op": op, "pkg": pkg})
-}
-
-fn runs_one_of(pid: u32, paths: &[PathBuf]) -> bool {
-    let Ok(exe) = fs::metadata(format!("/proc/{pid}/exe")) else {
-        return false;
-    };
-    let same = |path: &PathBuf| {
-        fs::metadata(path).is_ok_and(|file| file.dev() == exe.dev() && file.ino() == exe.ino())
-    };
-    pid > 0 && paths.iter().any(same)
 }
 
 /// At most `limit` bytes of the file at `path`.
@@ -312,7 +298,7 @@ async fn refresher(shared: Weak<Shared>, pkgs: async_channel::Receiver<String>) 
         };
         let ask = keel_op("shortcuts", &pkg);
         let reply = shared.request(BridgeRoute::System, ask).await;
-        if let Some(reply) = reply.ok().filter(ok) {
+        if let Some(reply) = reply.ok().filter(|reply| json::boolean(reply, "ok")) {
             let shortcuts = keel::shortcuts(json::array(&reply, "shortcuts"));
             shared.change(Change::Shortcuts(pkg, shortcuts));
         }
@@ -631,7 +617,7 @@ impl Shared {
 
     async fn launched(&self, route: BridgeRoute, launch: Value) -> Result<(), Error> {
         let reply = self.request(route, launch).await.map_err(unavailable)?;
-        if ok(&reply) {
+        if json::boolean(&reply, "ok") {
             return Ok(());
         }
         let why = json::text(&reply, "error", 256);
@@ -669,7 +655,7 @@ impl Shared {
         let ask = json!({"t": "screen_read", "pkg": pkg});
         let reply = self.request(BridgeRoute::User, ask).await;
         let reply = reply.map_err(unavailable)?;
-        if !ok(&reply) {
+        if !json::boolean(&reply, "ok") {
             let why = json::text(&reply, "error", 256);
             let why = Some(why).filter(|why| !why.is_empty());
             let why = why.as_deref().unwrap_or("the screen cannot be read");
@@ -695,7 +681,10 @@ impl Shared {
             return None;
         }
         let reply = self.request(BridgeRoute::System, keel_op("secure", pkg));
-        let reply = reply.await.ok().filter(ok)?;
+        let reply = reply
+            .await
+            .ok()
+            .filter(|reply| json::boolean(reply, "ok"))?;
         Some(reply.get("secure").and_then(Value::as_bool))
     }
 
@@ -875,10 +864,11 @@ impl Provider {
     ) -> Result<(Arc<Shared>, Host), Error> {
         let shared = self.shared()?;
         let denied = || Error::AccessDenied(format!("only keel-mcp and Pilot may {what}"));
-        let sender = header.sender().ok_or_else(denied)?.clone();
-        let pid = DBusProxy::new(connection).await?;
-        let pid = pid.get_connection_unix_process_id(sender.into()).await;
-        let pid = pid.ok().filter(|pid| runs_one_of(*pid, &shared.trusted));
+        let sender = header.sender().ok_or_else(denied)?;
+        let pid = auth::pid(connection, sender.as_str()).await;
+        let pid = pid
+            .ok()
+            .filter(|pid| auth::runs_one_of(*pid, &shared.trusted));
         let pid = pid.ok_or_else(denied)?;
         let cmdline = read_at_most(format!("/proc/{pid}/cmdline"), MAX_CMDLINE);
         let host = match cmdline.is_ok_and(|line| keel::is_external_host(&line)) {

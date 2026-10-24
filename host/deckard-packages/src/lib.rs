@@ -216,7 +216,10 @@ impl Packages {
             return Ok(());
         }
         let pkg = Some(json::string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
-        let (ok, why) = (flag(message, "ok"), json::text(message, "message", 512));
+        let (ok, why) = (
+            json::boolean(message, "ok"),
+            json::text(message, "message", 512),
+        );
         self.emit("Finished", &(id, ok, pkg.unwrap_or(""), why))
     }
 
@@ -404,7 +407,7 @@ impl PackagesInterface {
             service.query(Kind::Inspect, message, Some(staged)).await
         };
         Ok(match asked.await {
-            Ok(reply) if flag(&reply, "ok") => inspect(&reply),
+            Ok(reply) if json::boolean(&reply, "ok") => inspect(&reply),
             Ok(reply) => failure(json::text(&reply, "message", 512)),
             Err(error) => failure(error.description().unwrap_or("").to_owned()),
         })
@@ -485,10 +488,6 @@ fn reap_stale(directory: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn flag(message: &Map<String, Value>, key: &str) -> bool {
-    message.get(key).and_then(Value::as_bool) == Some(true)
-}
-
 /// A JSON number, or 0; callers cast it, saturating.
 fn number(message: &Map<String, Value>, key: &str) -> f64 {
     message.get(key).and_then(Value::as_f64).unwrap_or(0.0)
@@ -532,7 +531,7 @@ fn hardware(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 
         ("features", names(message, "features", 64, dotted)),
         ("libraries", names(message, "libraries", 64, dotted)),
         ("abis", names(message, "abis", 16, abi)),
-        ("gms", flag(message, "gms").into()),
+        ("gms", json::boolean(message, "gms").into()),
     ]
 }
 
@@ -560,7 +559,7 @@ fn packages(message: &Map<String, Value>) -> Vec<VariantMap> {
         }
         let launchable = entry.get("launchable").and_then(Value::as_bool);
         let more = [
-            ("system", flag(entry, "system").into()),
+            ("system", json::boolean(entry, "system").into()),
             ("launchable", launchable.unwrap_or(true).into()),
         ];
         list.push(dict(identity(entry).into_iter().chain(more)));

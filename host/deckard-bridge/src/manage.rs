@@ -132,7 +132,7 @@ impl Manage {
         let Some(pending) = inner.pending.remove(id) else {
             return;
         };
-        let result = if message.get("ok").and_then(Value::as_bool) == Some(true) {
+        let result = if json::boolean(message, "ok") {
             Ok(message.clone())
         } else {
             let error = json::string(message, "error");

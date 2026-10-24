@@ -269,7 +269,7 @@ impl Sharing {
         });
         let reply = self.request(Kind::Share, tid.clone(), intents::object(message));
         let failure = match reply.await {
-            Ok(reply) if reply.get("ok").and_then(Value::as_bool) == Some(true) => return Ok(()),
+            Ok(reply) if json::boolean(&reply, "ok") => return Ok(()),
             Ok(reply) => json::text(&reply, "error", 512),
             Err(error) => error,
         };

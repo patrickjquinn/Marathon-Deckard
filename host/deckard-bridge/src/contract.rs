@@ -65,10 +65,6 @@ pub fn marathon_permission(android: &str) -> Option<&'static str> {
     found.map(|(name, _)| *name)
 }
 
-fn flag(value: &Map<String, Value>, key: &str) -> bool {
-    value.get(key).and_then(Value::as_bool) == Some(true)
-}
-
 fn number(value: &Map<String, Value>, key: &str, max: i64) -> i64 {
     let number = value.get(key).and_then(Value::as_f64).unwrap_or(0.0);
     number.clamp(0.0, max as f64) as i64
@@ -100,12 +96,15 @@ pub fn app(value: &Map<String, Value>) -> VariantMap {
         ),
         ("versionName", version.into()),
         ("versionCode", number(value, "versionCode", 1 << 53).into()),
-        ("system", flag(value, "system").into()),
+        ("system", json::boolean(value, "system").into()),
         ("appBytes", number(value, "appBytes", 1 << 50).into()),
         ("dataBytes", number(value, "dataBytes", 1 << 50).into()),
         ("cacheBytes", number(value, "cacheBytes", 1 << 50).into()),
-        ("notifications", flag(value, "notifications").into()),
-        ("links", flag(value, "links").into()),
+        (
+            "notifications",
+            json::boolean(value, "notifications").into(),
+        ),
+        ("links", json::boolean(value, "links").into()),
         ("domains", domains(value).into()),
         ("battery", battery.into()),
         ("permissions", permissions(value).into()),
@@ -139,8 +138,8 @@ fn permissions(value: &Map<String, Value>) -> Vec<VariantMap> {
         let name = marathon_permission(json::string(entry, "name"));
         if let Some(name) = name.filter(|name| *name != "notifications") {
             let state = states.entry(name).or_insert((false, true));
-            state.0 |= flag(entry, "granted");
-            state.1 &= flag(entry, "fixed");
+            state.0 |= json::boolean(entry, "granted");
+            state.1 &= json::boolean(entry, "fixed");
         }
     }
     let mut out = Vec::new();
@@ -173,10 +172,10 @@ pub fn apps(value: &Map<String, Value>, fixed: Fixed) -> Vec<VariantMap> {
                 "label",
                 validate::label(json::string(item, "label"), pkg).into(),
             ),
-            ("granted", flag(item, "granted").into()),
+            ("granted", json::boolean(item, "granted").into()),
         ]);
         if fixed == Fixed::Shown {
-            map.insert("fixed".into(), flag(item, "fixed").into());
+            map.insert("fixed".into(), json::boolean(item, "fixed").into());
         }
         out.push(map);
         if out.len() == 500 {
@@ -198,11 +197,11 @@ pub fn google(value: &Map<String, Value>) -> VariantMap {
             accounts.push(account.to_owned());
         }
     }
-    let enabled = flag(value, "enabled");
+    let enabled = json::boolean(value, "enabled");
     deckard_packages::dict([
-        ("installed", flag(value, "installed").into()),
+        ("installed", json::boolean(value, "installed").into()),
         ("enabled", enabled.into()),
-        ("push", (enabled && flag(value, "push")).into()),
+        ("push", (enabled && json::boolean(value, "push")).into()),
         ("accounts", accounts.into()),
     ])
 }
