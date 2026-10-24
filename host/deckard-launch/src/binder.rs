@@ -224,7 +224,6 @@ impl Platform {
     }
 
     /// Every app Android lists; absent entries are skipped.
-    ///
     pub fn apps(&self) -> Result<Vec<AppInfo>> {
         let mut reply = self.call(3, |_| Ok(()))?;
         let length = count(&mut reply, MAX_APPS)?;
@@ -236,7 +235,6 @@ impl Platform {
     }
 
     /// One package, or `None` when Android has no entry for it.
-    ///
     pub fn app(&self, package: &str) -> Result<Option<AppInfo>> {
         read_app(&mut self.call(4, |data| data.write(package))?)
     }
@@ -255,7 +253,6 @@ impl Platform {
     }
 
     /// The package that handles the intent, or empty.
-    ///
     pub fn launch_intent(&self, action: &str, uri: &str) -> Result<String> {
         string(&mut self.call(13, |data| {
             data.write(action)?;

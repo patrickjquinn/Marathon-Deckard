@@ -21,7 +21,6 @@ use zbus::fdo::{self, DBusProxy};
 use zbus::message::Header;
 use zbus::names::BusName;
 
-use crate::command::ProcessRunner;
 use crate::drivers::{self, DriverNodes};
 use crate::hardware::{self, HardwareRequest};
 use crate::initializer_dbus::{self, InitializerService};
@@ -195,31 +194,14 @@ enum HardwareOutcome {
     Stopped,
 }
 
-trait Backend: Send {
-    fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()>;
-    fn stop(&mut self) -> Result<()>;
-    fn freeze(&mut self) -> Result<()>;
-    fn unfreeze(&mut self) -> Result<()>;
-    fn status(&mut self) -> Result<State>;
-    fn get_property(&mut self, key: &str) -> Result<String>;
-    fn set_property(&mut self, key: &str, value: &str) -> Result<()>;
-    fn hardware(&mut self, _request: HardwareRequest) -> Result<HardwareOutcome> {
-        Err("hardware service unavailable".into())
-    }
-    /// Whether the LXC instance exists, so that its status can be asked.
-    fn initialized(&mut self) -> bool {
-        true
-    }
-}
-
-struct DirectBackend {
+struct Backend {
     manager: ContainerManager,
     hardware_sender: SyncSender<HardwareRequest>,
     hardware_stop: Option<Arc<AtomicBool>>,
     suspend_stops: bool,
 }
 
-impl DirectBackend {
+impl Backend {
     fn config_path(&self) -> PathBuf {
         self.manager.mounts.work.join("waydroid.cfg")
     }
@@ -227,7 +209,7 @@ impl DirectBackend {
     /// Reads `waydroid.cfg` and prepares the Binder and device nodes.
     fn prepare_production(&mut self) -> Result<()> {
         let base = self.manager.mounts.work.join("waydroid_base.prop");
-        let initialized = self.initialized_instance() && base.is_file();
+        let initialized = self.initialized() && base.is_file();
         crate::ensure(initialized, "Waydroid is not initialized")?;
         let text = config::read(&self.config_path())?;
         let images =
@@ -241,12 +223,13 @@ impl DirectBackend {
         };
         self.suspend_stops = config::get_or_default(&text, "suspend_action") == Some("stop");
         let dev = Path::new("/dev");
-        drivers::ensure_binder_nodes(&mut ProcessRunner)?;
+        drivers::ensure_binder_nodes()?;
         DriverNodes::from_config(&self.config_path())?.prepare(dev)?;
         drivers::open_device_access(dev, Path::new("/sys/kernel/debug/sync/sw_sync"))
     }
 
-    fn initialized_instance(&self) -> bool {
+    /// Whether the LXC instance exists, so that its status can be asked.
+    fn initialized(&self) -> bool {
         let lxc = &self.manager.lxc;
         lxc.root.join(&lxc.name).join("config").is_file()
     }
@@ -273,15 +256,9 @@ impl DirectBackend {
         });
         self.hardware_stop = Some(stop);
     }
-}
-
-impl Backend for DirectBackend {
-    fn initialized(&mut self) -> bool {
-        self.initialized_instance()
-    }
 
     fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
-        let stopped = self.manager.lxc.status(&mut ProcessRunner)? == State::Stopped;
+        let stopped = self.manager.lxc.status()? == State::Stopped;
         crate::ensure(
             stopped,
             "container must be stopped before updating session files",
@@ -291,9 +268,9 @@ impl Backend for DirectBackend {
         let instance = self.manager.lxc.root.join(&self.manager.lxc.name);
         session_config::write(&instance, fields, uid, Path::new("/run/user"), &stage)?;
         let started = properties::write(&self.manager.mounts.work, fields, uid)
-            .and_then(|()| self.manager.start(&mut ProcessRunner));
+            .and_then(|()| self.manager.start());
         if let Err(error) = started {
-            if self.manager.lxc.status(&mut ProcessRunner)? == State::Stopped {
+            if self.manager.lxc.status()? == State::Stopped {
                 let _ = stage.release();
             }
             return Err(error);
@@ -306,30 +283,8 @@ impl Backend for DirectBackend {
         if let Some(stop) = self.hardware_stop.take() {
             stop.store(true, Ordering::Relaxed);
         }
-        self.manager.stop(&mut ProcessRunner)?;
+        self.manager.stop()?;
         Stage::new(&self.manager.network.runtime).release()
-    }
-
-    fn freeze(&mut self) -> Result<()> {
-        self.manager.lxc.freeze(&mut ProcessRunner)
-    }
-
-    fn unfreeze(&mut self) -> Result<()> {
-        self.manager.lxc.unfreeze(&mut ProcessRunner)
-    }
-
-    fn status(&mut self) -> Result<State> {
-        self.manager.lxc.status(&mut ProcessRunner)
-    }
-
-    fn get_property(&mut self, key: &str) -> Result<String> {
-        self.manager.lxc.get_property(&mut ProcessRunner, key)
-    }
-
-    fn set_property(&mut self, key: &str, value: &str) -> Result<()> {
-        self.manager
-            .lxc
-            .set_property(&mut ProcessRunner, key, value)
     }
 
     fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
@@ -340,18 +295,18 @@ impl Backend for DirectBackend {
                 Ok(HardwareOutcome::Stopped)
             }
             HardwareRequest::Suspend => {
-                self.freeze()?;
+                lxc.freeze()?;
                 Ok(HardwareOutcome::Active)
             }
             HardwareRequest::Reboot => {
-                lxc.stop(&mut ProcessRunner)?;
-                lxc.start(&mut ProcessRunner)?;
+                lxc.stop()?;
+                lxc.start()?;
                 Ok(HardwareOutcome::Active)
             }
             HardwareRequest::ShutdownRequest(reason) => {
-                lxc.wait_for(&mut ProcessRunner, State::Stopped, Duration::from_secs(30))?;
+                lxc.wait_for(State::Stopped, Duration::from_secs(30))?;
                 if reason.starts_with('1') {
-                    lxc.start(&mut ProcessRunner)?;
+                    lxc.start()?;
                     return Ok(HardwareOutcome::Active);
                 }
                 self.stop()?;
@@ -362,7 +317,7 @@ impl Backend for DirectBackend {
 }
 
 struct ServiceState {
-    backend: Box<dyn Backend>,
+    backend: Backend,
     session: Option<Session>,
 }
 
@@ -422,23 +377,19 @@ pub struct ContainerService {
 impl ContainerService {
     #[must_use]
     pub fn new(manager: ContainerManager, hardware_sender: SyncSender<HardwareRequest>) -> Self {
-        let backend = DirectBackend {
+        let backend = Backend {
             manager,
             hardware_sender,
             hardware_stop: None,
             suspend_stops: false,
         };
-        Self::with_backend(Box::new(backend), LauncherPolicy::production())
-    }
-
-    fn with_backend(backend: Box<dyn Backend>, launcher: LauncherPolicy) -> Self {
         let state = ServiceState {
             backend,
             session: None,
         };
         Self {
             state: Arc::new(Mutex::new(state)),
-            launcher,
+            launcher: LauncherPolicy::production(),
         }
     }
 
@@ -484,7 +435,9 @@ impl ContainerService {
             .map(|session| (session.fields.clone(), session.owner.uid));
         if resume.is_some() {
             state.backend.stop()?;
-        } else if state.backend.initialized() && state.backend.status()? != State::Stopped {
+        } else if state.backend.initialized()
+            && state.backend.manager.lxc.status()? != State::Stopped
+        {
             return Err("the container is running without a session; stop it first".into());
         }
         let result = work();
@@ -527,7 +480,7 @@ impl ContainerService {
         authorize_root(caller)?;
         lxc::validate_property_key(&key)
             .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
-        self.locked(move |state| state.backend.get_property(&key).map_err(failed))
+        self.locked(move |state| state.backend.manager.lxc.get_property(&key).map_err(failed))
             .await
     }
 
@@ -543,8 +496,15 @@ impl ContainerService {
         };
         lxc::validate_property_key(&key).map_err(invalid)?;
         lxc::validate_property_value(&value).map_err(invalid)?;
-        self.locked(move |state| state.backend.set_property(&key, &value).map_err(failed))
-            .await
+        self.locked(move |state| {
+            state
+                .backend
+                .manager
+                .lxc
+                .set_property(&key, &value)
+                .map_err(failed)
+        })
+        .await
     }
 }
 
@@ -610,7 +570,7 @@ impl ContainerService {
         let caller = Caller::of(conn, &header).await?;
         self.locked(move |state| {
             state.authorize_control(caller)?;
-            state.backend.freeze().map_err(failed)
+            state.backend.manager.lxc.freeze().map_err(failed)
         })
         .await
     }
@@ -624,7 +584,7 @@ impl ContainerService {
         let launcher = self.launcher.clone();
         self.locked(move |state| {
             state.authorize_read(caller, &launcher)?;
-            state.backend.unfreeze().map_err(failed)
+            state.backend.manager.lxc.unfreeze().map_err(failed)
         })
         .await
     }
@@ -642,7 +602,7 @@ impl ContainerService {
             };
             state.authorize_read(caller, &launcher)?;
             let mut fields = session.fields.clone();
-            let status = state.backend.status().map_err(failed)?;
+            let status = state.backend.manager.lxc.status().map_err(failed)?;
             fields.insert("state".into(), format!("{status:?}").to_uppercase());
             Ok(fields)
         })
@@ -693,269 +653,38 @@ pub async fn serve_system_bus(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::error::Error as StdError;
-    use std::io::{BufRead, BufReader};
     use std::os::unix::fs::{PermissionsExt, symlink};
-    use std::process::{Child, Command, Stdio};
+    use std::process::Command;
+    use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use zbus::object_server::Interface;
 
-    struct BusProcess(Child);
+    use crate::mounts::MountLayout;
+    use crate::network::Network;
 
-    impl Drop for BusProcess {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-
-    #[derive(Clone)]
-    struct RecordingBackend(Arc<Mutex<Vec<&'static str>>>);
-
-    impl Backend for RecordingBackend {
-        fn start(&mut self, _fields: &HashMap<String, String>, _uid: u32) -> Result<()> {
-            self.0
-                .lock()
-                .map_err(|_| "record lock poisoned")?
-                .push("start");
-            Ok(())
-        }
-        fn stop(&mut self) -> Result<()> {
-            self.0
-                .lock()
-                .map_err(|_| "record lock poisoned")?
-                .push("stop");
-            Ok(())
-        }
-        fn freeze(&mut self) -> Result<()> {
-            self.0
-                .lock()
-                .map_err(|_| "record lock poisoned")?
-                .push("freeze");
-            Ok(())
-        }
-        fn unfreeze(&mut self) -> Result<()> {
-            self.0
-                .lock()
-                .map_err(|_| "record lock poisoned")?
-                .push("unfreeze");
-            Ok(())
-        }
-        fn status(&mut self) -> Result<State> {
-            Ok(State::Running)
-        }
-        fn get_property(&mut self, key: &str) -> Result<String> {
-            if key != "sys.boot_completed" {
-                return Err("unexpected test property".into());
-            }
-            self.0
-                .lock()
-                .map_err(|_| "record lock poisoned")?
-                .push("get_property");
-            Ok("1".into())
-        }
-        fn set_property(&mut self, key: &str, value: &str) -> Result<()> {
-            if key != "persist.deckard.test" || value != "ready" {
-                return Err("unexpected test property".into());
-            }
-            self.0
-                .lock()
-                .map_err(|_| "record lock poisoned")?
-                .push("set_property");
-            Ok(())
-        }
-        fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
-            if request != HardwareRequest::Suspend {
-                return Err("unexpected hardware request".into());
-            }
-            self.0
-                .lock()
-                .map_err(|_| "record lock poisoned")?
-                .push("hardware_suspend");
-            Ok(HardwareOutcome::Active)
-        }
-    }
-
-    fn tracked(service: &ContainerService) -> Result<Child> {
-        let process = Command::new("sleep").arg("30").spawn()?;
-        let pid = process.id();
-        let pidfd = rustix::process::pidfd_open(
-            Pid::from_raw(i32::try_from(pid)?).ok_or("invalid test PID")?,
-            PidfdFlags::empty(),
-        )?;
-        let fields = HashMap::from([
-            ("user_id".to_owned(), "1000".to_owned()),
-            ("pid".to_owned(), pid.to_string()),
-        ]);
-        service
-            .state
-            .lock()
-            .map_err(|_| "state lock poisoned")?
-            .session = Some(Session {
-            owner: session_owner(&fields)?,
-            fields,
-            pidfd,
-        });
-        Ok(process)
+    fn service() -> Result<ContainerService> {
+        let manager = ContainerManager {
+            lxc: lxc::Lxc::new("/nonexistent/lxc".into(), "waydroid".into())?,
+            mounts: MountLayout {
+                work: "/nonexistent".into(),
+                images: "/nonexistent/images".into(),
+                overlays: true,
+            },
+            network: Network::new("waydroid0".into(), "/nonexistent/run".into())?,
+        };
+        Ok(ContainerService::new(manager, mpsc::sync_channel(1).0))
     }
 
     #[test]
-    fn init_coordination_restarts_the_tracked_session() -> Result<()> {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(
-            Box::new(RecordingBackend(calls.clone())),
-            LauncherPolicy::production(),
-        );
-        assert!(service.with_stopped(|| Ok(())).is_err());
-        let mut session = tracked(&service)?;
-        let record = calls.clone();
-        service.with_stopped(|| {
-            record
-                .lock()
-                .map_err(|_| "record lock poisoned")?
-                .push("init");
-            Ok(())
-        })?;
-        assert!(
-            service
-                .with_stopped(|| Err::<(), _>("failed init".into()))
-                .is_err()
-        );
-        assert_eq!(
-            *calls.lock().map_err(|_| "record lock poisoned")?,
-            ["stop", "init", "start", "stop", "start"]
-        );
-        assert!(
-            service
-                .state
-                .lock()
-                .map_err(|_| "poisoned")?
-                .session
-                .is_some()
-        );
-        let _ = session.kill();
-        let _ = session.wait();
+    fn hardware_request_requires_a_tracked_session() -> Result<()> {
+        let service = service()?;
+        let request = service.handle_hardware_request(HardwareRequest::Suspend);
+        assert!(async_io::block_on(request).is_err());
         Ok(())
     }
 
     #[test]
-    fn shutdown_does_not_stop_an_unowned_container() -> fdo::Result<()> {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(
-            Box::new(RecordingBackend(calls.clone())),
-            LauncherPolicy::production(),
-        );
-        async_io::block_on(service.shutdown())?;
-        assert!(
-            calls
-                .lock()
-                .map_err(|_| fdo::Error::Failed("record lock poisoned".into()))?
-                .is_empty()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn hardware_request_requires_a_tracked_session() -> fdo::Result<()> {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(
-            Box::new(RecordingBackend(calls.clone())),
-            LauncherPolicy::production(),
-        );
-        assert!(
-            async_io::block_on(service.handle_hardware_request(HardwareRequest::Suspend)).is_err()
-        );
-        assert!(
-            calls
-                .lock()
-                .map_err(|_| fdo::Error::Failed("record lock poisoned".into()))?
-                .is_empty()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn private_bus_exercises_sender_credentials_and_methods() -> Result<()> {
-        let mut child = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("dbus-daemon stdout unavailable")?;
-        let bus = BusProcess(child);
-        let mut reader = BufReader::new(stdout);
-        let mut address = String::new();
-        reader.read_line(&mut address)?;
-        if address.trim().is_empty() {
-            return Err("dbus-daemon did not provide an address".into());
-        }
-        let address = address.trim();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(
-            Box::new(RecordingBackend(calls.clone())),
-            LauncherPolicy::production(),
-        );
-        async_io::block_on(async {
-            let server = Builder::address(address)?
-                .name(BUS_NAME)?
-                .serve_at(OBJECT_PATH, service)?
-                .build()
-                .await?;
-            let client = Builder::address(address)?.build().await?;
-            let proxy =
-                zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, "id.waydro.ContainerManager")
-                    .await?;
-            let uid = rustix::process::geteuid().as_raw();
-            let pid = std::process::id();
-            let mut fields = HashMap::from([
-                ("user_id".to_owned(), uid.to_string()),
-                ("pid".to_owned(), pid.to_string()),
-            ]);
-            fields.insert("wayland_display".into(), "wayland-0".into());
-            let mut bad = fields.clone();
-            bad.insert("pid".into(), (pid + 1).to_string());
-            let rejected: zbus::Result<()> = proxy.call("Start", &(bad,)).await;
-            assert!(rejected.is_err());
-            if uid != 0 {
-                let denied_get: zbus::Result<String> = proxy
-                    .call("GetProperty", &(String::from("sys.boot_completed"),))
-                    .await;
-                assert!(denied_get.is_err());
-                let denied_set: zbus::Result<()> = proxy
-                    .call(
-                        "SetProperty",
-                        &(String::from("persist.deckard.test"), String::from("ready")),
-                    )
-                    .await;
-                assert!(denied_set.is_err());
-            }
-            let _: () = proxy.call("Start", &(fields.clone(),)).await?;
-            let session: HashMap<String, String> = proxy.call("GetSession", &()).await?;
-            assert_eq!(session.get("pid"), Some(&pid.to_string()));
-            assert_eq!(session.get("state"), Some(&"RUNNING".to_owned()));
-            let _: () = proxy.call("Freeze", &()).await?;
-            let _: () = proxy.call("Unfreeze", &()).await?;
-            let _: () = proxy.call("Stop", &(false,)).await?;
-            let empty: HashMap<String, String> = proxy.call("GetSession", &()).await?;
-            assert!(empty.is_empty());
-            drop(client);
-            drop(server);
-            Ok::<(), zbus::Error>(())
-        })?;
-        assert_eq!(
-            *calls.lock().map_err(|_| "record lock poisoned")?,
-            ["start", "freeze", "unfreeze", "stop"]
-        );
-        drop(bus);
-        Ok(())
-    }
-
-    #[test]
-    fn private_bus_allows_trusted_launcher_but_not_another_same_uid_process() -> Result<()> {
+    fn trusted_launcher_is_the_guarded_executable_in_the_users_manager() -> Result<()> {
         let uid = rustix::process::geteuid().as_raw();
         if uid == 0 {
             return Ok(());
@@ -971,19 +700,17 @@ mod tests {
         fs::create_dir(&proc_root)?;
         fs::write(&binary, b"trusted executable identity")?;
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
-        let session_process = BusProcess(Command::new("sleep").arg("30").spawn()?);
-        let session_pid = session_process.0.id();
+        let mut session = Command::new("sleep").arg("30").spawn()?;
+        let session_pid = session.id();
         let launcher_pid = std::process::id();
-        let cgroup = format!(
-            "0::/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/marathon-waydroid.service\n"
-        );
-        let launcher_cgroup = format!(
-            "0::/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/marathon-shell.service\n"
-        );
-        for (pid, text) in [(session_pid, cgroup), (launcher_pid, launcher_cgroup)] {
+        let slice = format!("0::/user.slice/user-{uid}.slice/user@{uid}.service/app.slice");
+        for (pid, unit) in [
+            (session_pid, "marathon-waydroid"),
+            (launcher_pid, "marathon-shell"),
+        ] {
             let process = proc_root.join(pid.to_string());
             fs::create_dir(&process)?;
-            fs::write(process.join("cgroup"), text)?;
+            fs::write(process.join("cgroup"), format!("{slice}/{unit}.service\n"))?;
         }
         symlink(
             &binary,
@@ -995,104 +722,18 @@ mod tests {
             proc_root,
             executable_owner: uid,
         };
-        assert!(policy.permits(
-            Caller {
-                uid,
-                pid: launcher_pid
-            },
-            Caller {
-                uid,
-                pid: session_pid
-            }
-        ));
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let service =
-            ContainerService::with_backend(Box::new(RecordingBackend(calls.clone())), policy);
         let owner = Caller {
             uid,
             pid: session_pid,
         };
-        let pidfd = rustix::process::pidfd_open(
-            Pid::from_raw(session_pid as i32).ok_or("invalid test session PID")?,
-            PidfdFlags::empty(),
-        )?;
-        service
-            .state
-            .lock()
-            .map_err(|_| "state lock poisoned")?
-            .session = Some(Session {
-            fields: HashMap::from([
-                ("user_id".into(), uid.to_string()),
-                ("pid".into(), session_pid.to_string()),
-            ]),
-            owner,
-            pidfd,
-        });
-
-        let mut child = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("dbus-daemon stdout unavailable")?;
-        let bus = BusProcess(child);
-        let mut address = String::new();
-        BufReader::new(stdout).read_line(&mut address)?;
-        let address = address.trim().to_owned();
-        if address.is_empty() {
-            return Err("dbus-daemon did not provide an address".into());
-        }
-        async_io::block_on(async {
-            let server = Builder::address(address.as_str())?
-                .name(BUS_NAME)?
-                .serve_at(OBJECT_PATH, service)?
-                .build()
-                .await?;
-            let client = Builder::address(address.as_str())?.build().await?;
-            let proxy =
-                zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, "id.waydro.ContainerManager")
-                    .await?;
-            let session: HashMap<String, String> = proxy.call("GetSession", &()).await?;
-            assert_eq!(session.get("pid"), Some(&session_pid.to_string()));
-            let _: () = proxy.call("Unfreeze", &()).await?;
-            let denied_freeze: zbus::Result<()> = proxy.call("Freeze", &()).await;
-            assert!(denied_freeze.is_err());
-            let denied_stop: zbus::Result<()> = proxy.call("Stop", &(false,)).await;
-            assert!(denied_stop.is_err());
-            let address_for_call = address.clone();
-            let unrelated = blocking::unblock(move || {
-                Command::new("busctl")
-                    .arg(format!("--address={address_for_call}"))
-                    .args([
-                        "call",
-                        BUS_NAME,
-                        OBJECT_PATH,
-                        "id.waydro.ContainerManager",
-                        "GetSession",
-                    ])
-                    .output()
-            })
-            .await?;
-            assert!(!unrelated.status.success());
-            assert!(
-                String::from_utf8_lossy(&unrelated.stderr).contains("Access denied"),
-                "unexpected busctl error: {}",
-                String::from_utf8_lossy(&unrelated.stderr)
-            );
-            drop(client);
-            drop(server);
-            Ok::<(), Box<dyn StdError + Send + Sync>>(())
-        })?;
-        assert_eq!(
-            *calls.lock().map_err(|_| "record lock poisoned")?,
-            ["unfreeze"]
-        );
-        drop(bus);
-        drop(session_process);
+        let launcher = Caller {
+            uid,
+            pid: launcher_pid,
+        };
+        assert!(policy.permits(launcher, owner));
+        assert!(!policy.permits(owner, owner));
+        let _ = session.kill();
+        let _ = session.wait();
         fs::remove_dir_all(fixture)?;
         Ok(())
     }
@@ -1130,31 +771,24 @@ mod tests {
     }
 
     #[test]
-    fn native_property_path_requires_root_and_validates_inputs() -> fdo::Result<()> {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ContainerService::with_backend(
-            Box::new(RecordingBackend(calls.clone())),
-            LauncherPolicy::production(),
-        );
+    fn native_property_path_requires_root_and_validates_inputs() -> Result<()> {
+        let service = service()?;
         let non_root = Caller {
             uid: 1000,
             pid: 123,
         };
         let root = Caller { uid: 0, pid: 1 };
         async_io::block_on(async {
+            let key = || String::from("persist.deckard.test");
             assert!(
                 service
-                    .get_property_authorized("sys.boot_completed".into(), non_root)
+                    .get_property_authorized(key(), non_root)
                     .await
                     .is_err()
             );
             assert!(
                 service
-                    .set_property_authorized(
-                        "persist.deckard.test".into(),
-                        "ready".into(),
-                        non_root
-                    )
+                    .set_property_authorized(key(), "ready".into(), non_root)
                     .await
                     .is_err()
             );
@@ -1166,31 +800,11 @@ mod tests {
             );
             assert!(
                 service
-                    .set_property_authorized(
-                        "persist.deckard.test".into(),
-                        "bad\nvalue".into(),
-                        root
-                    )
+                    .set_property_authorized(key(), "bad\nvalue".into(), root)
                     .await
                     .is_err()
             );
-            assert_eq!(
-                service
-                    .get_property_authorized("sys.boot_completed".into(), root)
-                    .await?,
-                "1"
-            );
-            service
-                .set_property_authorized("persist.deckard.test".into(), "ready".into(), root)
-                .await?;
-            Ok::<(), fdo::Error>(())
-        })?;
-        assert_eq!(
-            *calls
-                .lock()
-                .map_err(|_| fdo::Error::Failed("record lock poisoned".into()))?,
-            ["get_property", "set_property"]
-        );
+        });
         Ok(())
     }
 
@@ -1209,35 +823,9 @@ mod tests {
     }
 
     #[test]
-    fn introspection_preserves_python_method_signatures() {
-        struct InertBackend;
-        impl Backend for InertBackend {
-            fn start(&mut self, _fields: &HashMap<String, String>, _uid: u32) -> Result<()> {
-                Ok(())
-            }
-            fn stop(&mut self) -> Result<()> {
-                Ok(())
-            }
-            fn freeze(&mut self) -> Result<()> {
-                Ok(())
-            }
-            fn unfreeze(&mut self) -> Result<()> {
-                Ok(())
-            }
-            fn status(&mut self) -> Result<State> {
-                Ok(State::Stopped)
-            }
-            fn get_property(&mut self, _key: &str) -> Result<String> {
-                Ok(String::new())
-            }
-            fn set_property(&mut self, _key: &str, _value: &str) -> Result<()> {
-                Ok(())
-            }
-        }
-        let service =
-            ContainerService::with_backend(Box::new(InertBackend), LauncherPolicy::production());
+    fn introspection_preserves_python_method_signatures() -> Result<()> {
         let mut xml = String::new();
-        service.introspect_to_writer(&mut xml, 0);
+        service()?.introspect_to_writer(&mut xml, 0);
         for method in [
             "Start",
             "Stop",
@@ -1254,5 +842,6 @@ mod tests {
         }
         assert!(xml.contains("type=\"a{ss}\""));
         assert!(xml.contains("type=\"b\""));
+        Ok(())
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use regex::Regex;
 
@@ -28,6 +29,24 @@ const NOTO: &[Face<'static>] = &[
     (700, "italic", "NotoSans-BoldItalic.ttf"),
 ];
 
+const ALIASES: [(&str, &str, Option<u16>); 6] = [
+    ("google-sans", "sans-serif", None),
+    ("google-sans-text", "sans-serif", None),
+    ("google-sans-medium", "sans-serif", Some(500)),
+    ("google-sans-bold", "sans-serif", Some(700)),
+    ("roboto", "sans-serif", None),
+    ("roboto-medium", "sans-serif", Some(500)),
+];
+const HOST_EXTRA: [&str; 7] = [
+    "NotoSerif-Regular.ttf",
+    "NotoSerif-Bold.ttf",
+    "NotoSerif-Italic.ttf",
+    "NotoSerif-BoldItalic.ttf",
+    "NotoSansSymbols-Regular.ttf",
+    "NotoSansSymbols2-Regular.ttf",
+    "NotoSansMath-Regular.ttf",
+];
+
 pub struct Outputs {
     pub xml: String,
     pub host: String,
@@ -36,16 +55,15 @@ pub struct Outputs {
 }
 
 fn family(attributes: &str, faces: &[Face<'_>]) -> String {
-    let body: Vec<_> = faces
-        .iter()
-        .map(|(weight, style, file)| {
-            format!("        <font weight=\"{weight}\" style=\"{style}\">{file}</font>")
-        })
-        .collect();
-    format!(
-        "    <family{attributes}>\n{}\n    </family>",
-        body.join("\n")
-    )
+    let mut xml = format!("    <family{attributes}>\n");
+    for (weight, style, file) in faces {
+        let _ = writeln!(
+            xml,
+            "        <font weight=\"{weight}\" style=\"{style}\">{file}</font>"
+        );
+    }
+    xml.push_str("    </family>");
+    xml
 }
 
 fn file_names(pattern: &Regex, xml: &str) -> BTreeSet<String> {
@@ -60,6 +78,10 @@ fn list(names: impl IntoIterator<Item = String>) -> String {
     format!("{}\n", names.join("\n"))
 }
 
+/// Marathon's `fonts.xml` from Lineage's, with the font lists it needs.
+///
+/// # Errors
+/// A pattern fails to compile or the XML names a font with no source.
 pub fn generate(
     xml: &str,
     android_files: &str,
@@ -104,73 +126,46 @@ pub fn generate(
         }
         body.to_owned()
     });
-    let aliases = [
-        ("google-sans", "sans-serif", None),
-        ("google-sans-text", "sans-serif", None),
-        ("google-sans-medium", "sans-serif", Some(500)),
-        ("google-sans-bold", "sans-serif", Some(700)),
-        ("roboto", "sans-serif", None),
-        ("roboto-medium", "sans-serif", Some(500)),
-    ]
-    .into_iter()
-    .map(|(name, target, weight)| {
+    let mut aliases = String::new();
+    for (name, target, weight) in ALIASES {
         let weight = weight.map_or_else(String::new, |value| format!(" weight=\"{value}\""));
-        format!("    <alias name=\"{name}\" to=\"{target}\"{weight} />")
-    })
-    .collect::<Vec<_>>()
-    .join("\n");
-    let output = output.replacen(
-        "    <alias name=\"sans-serif-thin\"",
-        &format!("{aliases}\n    <alias name=\"sans-serif-thin\""),
-        1,
-    );
+        let _ = writeln!(
+            aliases,
+            "    <alias name=\"{name}\" to=\"{target}\"{weight} />"
+        );
+    }
+    let thin = "    <alias name=\"sans-serif-thin\"";
+    let output = output.replacen(thin, &format!("{aliases}{thin}"), 1);
     let files = Regex::new(r">\s*([\w.-]+\.(?:ttf|otf|ttc))")?;
     let named = file_names(&files, &output);
     let original = file_names(&files, xml);
-    let custom: BTreeSet<_> = file_names(&files, customization)
-        .into_iter()
-        .map(|name| format!("product/{name}"))
-        .collect();
-    let mut host: BTreeSet<_> = SANS
-        .iter()
-        .chain(MONO)
-        .chain(NOTO)
-        .map(|(_, _, file)| (*file).to_owned())
-        .collect();
-    host.extend(
-        [
-            "NotoSerif-Regular.ttf",
-            "NotoSerif-Bold.ttf",
-            "NotoSerif-Italic.ttf",
-            "NotoSerif-BoldItalic.ttf",
-            "NotoSansSymbols-Regular.ttf",
-            "NotoSansSymbols2-Regular.ttf",
-            "NotoSansMath-Regular.ttf",
-        ]
-        .into_iter()
-        .map(str::to_owned),
-    );
-    let android: BTreeSet<_> = android_files
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect();
+    let mut custom = BTreeSet::new();
+    for name in file_names(&files, customization) {
+        custom.insert(format!("product/{name}"));
+    }
+    let mut host: BTreeSet<String> = HOST_EXTRA.iter().map(|file| (*file).to_owned()).collect();
+    for (_, _, file) in [SANS, MONO, NOTO].concat() {
+        host.insert(file.to_owned());
+    }
+    let mut android = BTreeSet::new();
+    for line in android_files.lines() {
+        if !line.trim().is_empty() {
+            android.insert(line.trim().to_owned());
+        }
+    }
     let available: BTreeSet<_> = host.union(&android).cloned().collect();
     let missing: Vec<_> = named.difference(&available).collect();
     if !missing.is_empty() {
         return Err(format!("font references have no source: {missing:?}").into());
     }
-    let kept = android
-        .intersection(&named)
-        .filter(|name| !host.contains(*name))
-        .cloned();
-    let hidden = android
-        .iter()
-        .filter(|name| {
-            !named.contains(*name) && (original.contains(*name) || custom.contains(*name))
-        })
-        .cloned();
+    let (mut kept, mut hidden) = (Vec::new(), Vec::new());
+    for name in &android {
+        if named.contains(name) && !host.contains(name) {
+            kept.push(name.clone());
+        } else if !named.contains(name) && (original.contains(name) || custom.contains(name)) {
+            hidden.push(name.clone());
+        }
+    }
     Ok(Outputs {
         xml: output,
         host: list(host.iter().cloned()),

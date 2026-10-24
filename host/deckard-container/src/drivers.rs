@@ -10,7 +10,7 @@ use std::time::Duration;
 use deckard_host_tools::{cfg, files};
 
 use crate::Result;
-use crate::command::{Command, Runner};
+use crate::command::{self, Command};
 use crate::config;
 
 /// Binder node names, most preferred last (upstream's order: the last one
@@ -128,7 +128,7 @@ impl DriverNodes {
 ///
 /// # Errors
 /// binderfs is unavailable or lacks a default device.
-pub fn ensure_binder_nodes(runner: &mut impl Runner) -> Result<()> {
+pub fn ensure_binder_nodes() -> Result<()> {
     let dev = Path::new("/dev");
     if DriverNodes::discover(dev).is_ok() {
         return Ok(());
@@ -137,7 +137,7 @@ pub fn ensure_binder_nodes(runner: &mut impl Runner) -> Result<()> {
     if !binderfs_supported(&fs::read_to_string("/proc/filesystems")?) {
         let devices = format!("devices={}", defaults.join(","));
         let modprobe = Command::new(["modprobe", "binder_linux", &devices]);
-        runner.run(modprobe.timeout(Duration::from_secs(10)))?;
+        command::run(modprobe.timeout(Duration::from_secs(10)))?;
     }
     let binderfs = dev.join("binderfs");
     if !binderfs.is_dir() {

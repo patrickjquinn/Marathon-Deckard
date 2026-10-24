@@ -6,6 +6,10 @@ const PATCHED_INSTRUCTION: [u8; 4] = [0x80, 0x00, 0x80, 0x52];
 const STOCK_SHA256: &str = "017cefa35bccc2d8ac7bec92dabeb65422c777229a787ed395bdb9c1b9015247";
 const PATCHED_SHA256: &str = "42bef881c0fd2024d5438942eb3a070d8b486eebce28c5f4c9835b95eabf7ce0";
 
+/// The patched composer HAL from the stock one.
+///
+/// # Errors
+/// `stock` is not the expected build, or the result's digest is wrong.
 pub fn patch(stock: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     if format!("{:x}", Sha256::digest(stock)) != STOCK_SHA256 {
         return Err("hwcomposer: not the expected vendor build".into());

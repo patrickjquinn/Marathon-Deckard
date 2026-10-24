@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use deckard_host_tools::files;
 
 use crate::Result;
-use crate::command::{Command, Runner};
+use crate::command::{self, Command};
 
 #[derive(Clone, Debug)]
 pub struct MountLayout {
@@ -118,7 +118,7 @@ impl MountLayout {
     ///
     /// # Errors
     /// The layout is unsafe, the rootfs already holds mounts or a mount fails.
-    pub fn mount(&self, runner: &mut impl Runner) -> Result<()> {
+    pub fn mount(&self) -> Result<()> {
         let commands = self.commands()?;
         for path in [
             self.rootfs(),
@@ -139,9 +139,9 @@ impl MountLayout {
         let mut completed = Vec::new();
         for command in commands {
             let target = command.args.last().cloned().ok_or("mount target missing")?;
-            if let Err(error) = runner.run(command) {
+            if let Err(error) = command::run(command) {
                 for target in completed.into_iter().rev() {
-                    let _ = runner.run(Command::new(["umount".into(), target]));
+                    let _ = command::run(Command::new(["umount".into(), target]));
                 }
                 return Err(error);
             }
@@ -152,11 +152,11 @@ impl MountLayout {
 
     /// # Errors
     /// The work directory is unsafe or an unmount fails.
-    pub fn unmount(&self, runner: &mut impl Runner) -> Result<()> {
+    pub fn unmount(&self) -> Result<()> {
         safe_dir(&self.work)?;
         let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
         for mountpoint in mountpoints_beneath(&self.rootfs(), &mountinfo) {
-            runner.run(Command::new(["umount".into(), display(&mountpoint)]))?;
+            command::run(Command::new(["umount".into(), display(&mountpoint)]))?;
         }
         Ok(())
     }

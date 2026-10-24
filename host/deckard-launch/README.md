@@ -84,10 +84,9 @@ RUSTFLAGS='-C target-feature=-crt-static' cargo build \
 
 Run `cargo test -p deckard-launch --locked` and
 `cargo clippy -p deckard-launch --all-targets --locked -- -D warnings`.
-Unit tests use an injected backend to verify Binder operation order, intent
-return behavior, immersive policy, frozen property behavior, config parsing,
-the `getAppInfo` parcel layout and Wayland path validation. They do not prove
-device Binder round trips.
+Unit tests cover config parsing, the `getAppInfo` parcel layout, Wayland path
+validation and the user-ready check. Launch order, intent handling, the
+immersive policy and Binder round trips are checked on the device.
 
 ## Cutover gaps
 

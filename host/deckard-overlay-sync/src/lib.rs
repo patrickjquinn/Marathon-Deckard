@@ -1,7 +1,6 @@
 //! Reconcile Deckard's packaged Android overlay with Waydroid's persistent state.
 
 use std::collections::{BTreeSet, HashMap};
-use std::env;
 use std::fs::{self, File, Metadata, Permissions};
 use std::io::{self, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -39,58 +38,24 @@ pub struct Paths {
     pub waydroid: PathBuf,
 }
 
-impl Paths {
-    #[must_use]
-    pub fn from_env() -> Self {
-        let path = |name: &str, default: &str| {
-            env::var_os(name).map_or_else(|| PathBuf::from(default), PathBuf::from)
-        };
-        Self {
-            share: path("DECKARD_SHARE_DIR", "/usr/share/deckard"),
-            waydroid: path("DECKARD_WAYDROID_DIR", "/var/lib/waydroid"),
-        }
-    }
+fn is_whiteout(path: &Path) -> io::Result<bool> {
+    let whiteout = |meta: Metadata| {
+        meta.file_type().is_char_device() && meta.rdev() == rustix::fs::makedev(0, 0)
+    };
+    Ok(files::found(fs::symlink_metadata(path))?.is_some_and(whiteout))
 }
 
-/// Overlayfs whiteouts, so tests can run unprivileged.
-pub trait Whiteouts {
-    /// # Errors
-    /// The path cannot be inspected.
-    fn is_whiteout(&self, path: &Path) -> io::Result<bool>;
-    /// # Errors
-    /// The whiteout cannot be created.
-    fn create(&self, path: &Path) -> io::Result<()>;
-}
-
-pub struct DeviceWhiteouts;
-
-impl Whiteouts for DeviceWhiteouts {
-    fn is_whiteout(&self, path: &Path) -> io::Result<bool> {
-        let whiteout = |meta: Metadata| {
-            meta.file_type().is_char_device() && meta.rdev() == rustix::fs::makedev(0, 0)
-        };
-        Ok(files::found(fs::symlink_metadata(path))?.is_some_and(whiteout))
-    }
-
-    fn create(&self, path: &Path) -> io::Result<()> {
-        let (parent, name) = split(path)?;
-        let device = rustix::fs::makedev(0, 0);
-        Ok(rustix::fs::mknodat(
-            &File::open(parent)?,
-            name,
-            FileType::CharacterDevice,
-            Mode::empty(),
-            device,
-        )?)
-    }
-}
-
-/// Syncs the device's overlay, logging to stderr.
-///
-/// # Errors
-/// As for [`sync_with`].
-pub fn sync(paths: &Paths) -> io::Result<()> {
-    sync_with(paths, &DeviceWhiteouts, &mut io::stderr())
+fn create_whiteout(path: &Path) -> io::Result<()> {
+    let (parent, name) = split(path)?;
+    let device = rustix::fs::makedev(0, 0);
+    let parent = File::open(parent)?;
+    Ok(rustix::fs::mknodat(
+        &parent,
+        name,
+        FileType::CharacterDevice,
+        Mode::empty(),
+        device,
+    )?)
 }
 
 /// Copies the packaged overlay over Waydroid's, drops what the previous
@@ -100,11 +65,7 @@ pub fn sync(paths: &Paths) -> io::Result<()> {
 /// # Errors
 /// A path is unsafe (a symlinked directory or a list escaping the overlay)
 /// or a file operation fails.
-pub fn sync_with(
-    paths: &Paths,
-    whiteouts: &impl Whiteouts,
-    log: &mut impl Write,
-) -> io::Result<()> {
+pub fn sync(paths: &Paths) -> io::Result<()> {
     let src = paths.share.join("overlay");
     if !src.is_dir() {
         return Ok(());
@@ -112,7 +73,7 @@ pub fn sync_with(
     let dst = paths.waydroid.join("overlay");
     fs::create_dir_all(&dst)?;
     if fs::symlink_metadata(&dst)?.is_symlink() {
-        return Err(invalid("overlay root is a symlink"));
+        return Err(files::invalid("overlay root is a symlink"));
     }
     let list = paths.waydroid.join("deckard-overlay.list");
     for old in files::read_optional(&list)?.lines() {
@@ -130,26 +91,23 @@ pub fn sync_with(
         let have = cfg::get(&config, key).unwrap_or_default();
         if have != expected {
             remove_file(&safe_target(&dst, Path::new(path))?)?;
-            writeln!(
-                log,
+            eprintln!(
                 "deckard-overlay-sync: {path} is for {key} {expected}, not '{have}'; left out"
-            )?;
+            );
         }
     }
-    reconcile_whiteouts(paths, &dst, whiteouts, log)?;
+    reconcile_whiteouts(paths, &dst)?;
     reconcile_properties(paths)
 }
 
-fn invalid(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
-}
-
 fn split(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
-    let parent = path.parent().ok_or_else(|| invalid("missing parent"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| files::invalid("missing parent"))?;
     Ok((
         parent,
         path.file_name()
-            .ok_or_else(|| invalid("missing file name"))?,
+            .ok_or_else(|| files::invalid("missing file name"))?,
     ))
 }
 
@@ -160,11 +118,11 @@ fn relative(value: &str) -> io::Result<PathBuf> {
         match component {
             Component::Normal(part) => result.push(part),
             Component::CurDir => {}
-            _ => return Err(invalid("list contains an unsafe path")),
+            _ => return Err(files::invalid("list contains an unsafe path")),
         }
     }
     if result.as_os_str().is_empty() {
-        return Err(invalid("list contains an empty path"));
+        return Err(files::invalid("list contains an empty path"));
     }
     Ok(result)
 }
@@ -176,7 +134,7 @@ fn safe_target(dst: &Path, relative: &Path) -> io::Result<PathBuf> {
     for part in parts.into_iter().flatten() {
         parent.push(part);
         if files::found(fs::symlink_metadata(&parent))?.is_some_and(|meta| meta.is_symlink()) {
-            return Err(invalid("overlay path traverses a symlink"));
+            return Err(files::invalid("overlay path traverses a symlink"));
         }
     }
     Ok(dst.join(relative))
@@ -231,14 +189,14 @@ fn copy_tree(
             }
             let name = child
                 .to_str()
-                .ok_or_else(|| invalid("overlay path is not UTF-8"))?;
+                .ok_or_else(|| files::invalid("overlay path is not UTF-8"))?;
             files.push(format!("./{name}"));
         } else if metadata.is_symlink() {
             remove_file(&target)?;
             std::os::unix::fs::symlink(fs::read_link(&source)?, &target)?;
             preserve_metadata(&target, &metadata)?;
         } else {
-            return Err(invalid("unsupported overlay file type"));
+            return Err(files::invalid("unsupported overlay file type"));
         }
     }
     Ok(())
@@ -277,17 +235,12 @@ fn wanted(path: &Path) -> io::Result<Vec<String>> {
     Ok(lines.map(str::to_owned).collect())
 }
 
-fn reconcile_whiteouts(
-    paths: &Paths,
-    dst: &Path,
-    whiteouts: &impl Whiteouts,
-    log: &mut impl Write,
-) -> io::Result<()> {
+fn reconcile_whiteouts(paths: &Paths, dst: &Path) -> io::Result<()> {
     let wanted = wanted(&paths.share.join("whiteouts"))?;
     let list = paths.waydroid.join("deckard-whiteouts.list");
     for line in files::read_optional(&list)?.lines() {
         let path = safe_target(dst, &relative(line)?)?;
-        if !wanted.iter().any(|wanted| wanted == line) && whiteouts.is_whiteout(&path)? {
+        if !wanted.iter().any(|wanted| wanted == line) && is_whiteout(&path)? {
             remove_file(&path)?;
         }
     }
@@ -295,16 +248,13 @@ fn reconcile_whiteouts(
     for line in wanted {
         let Ok(rel) = relative(&line) else { continue };
         let path = safe_target(dst, &rel)?;
-        if !whiteouts.is_whiteout(&path)? {
+        if !is_whiteout(&path)? {
             if files::found(fs::symlink_metadata(&path))?.is_some() {
-                writeln!(
-                    log,
-                    "deckard-overlay-sync: {line} exists in the overlay; not hiding it"
-                )?;
+                eprintln!("deckard-overlay-sync: {line} exists in the overlay; not hiding it");
                 continue;
             }
             fs::create_dir_all(split(&path)?.0)?;
-            whiteouts.create(&path)?;
+            create_whiteout(&path)?;
         }
         installed.push(line);
     }
@@ -337,11 +287,12 @@ fn reconcile_properties(paths: &Paths) -> io::Result<()> {
             continue;
         }
         let content = fs::read_to_string(path)?;
-        let mut lines: Vec<String> = content
-            .lines()
-            .filter(|line| !shipped(line))
-            .map(str::to_owned)
-            .collect();
+        let mut lines = Vec::new();
+        for line in content.lines() {
+            if !shipped(&line) {
+                lines.push(line.to_owned());
+            }
+        }
         for (key, value) in &pairs {
             if path != &cfg {
                 lines.push(format!("{key}={value}"));

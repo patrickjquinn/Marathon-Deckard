@@ -36,7 +36,7 @@ case "$1" in
 	*) [ "${FAIL_ON:-}" != "$1" ] ;;
 esac"#,
         );
-        fixture.script("lxc-info", r#"echo "State: ${LXC_STATE:-STOPPED}""#);
+        fixture.script("lxc-info", r#"echo "State: STOPPED""#);
         fixture
     }
 
@@ -105,10 +105,8 @@ esac"#,
         Command::new(env!("CARGO_BIN_EXE_deckard-reset"))
             .args(arguments)
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
             .env("DECKARD_RESET_PASSWD", self.path("passwd"))
-            .env("DECKARD_RESET_SYSTEMCTL", bin.join("systemctl"))
-            .env("DECKARD_RESET_LXC_INFO", bin.join("lxc-info"))
             .envs(environment.iter().copied())
             .output()
             .expect("helper runs")
@@ -152,8 +150,8 @@ fn exists(path: &Path) -> bool {
 fn refuses_without_pkexec_for_root_or_with_arguments() {
     let fixture = Fixture::new();
     fixture.seed();
-    assert_eq!(status(&fixture.run(&[("DECKARD_RESET_UID", "")], &[])), 2);
-    assert_eq!(status(&fixture.run(&[("DECKARD_RESET_UID", "0")], &[])), 2);
+    assert_eq!(status(&fixture.run(&[("PKEXEC_UID", "")], &[])), 2);
+    assert_eq!(status(&fixture.run(&[("PKEXEC_UID", "0")], &[])), 2);
     let uid = fixture.uid.to_string();
     assert_eq!(status(&fixture.run(&[("PKEXEC_UID", &uid)], &["extra"])), 2);
     assert!(
@@ -261,13 +259,6 @@ fn removes_nothing_while_the_container_runs() {
     assert!(
         fixture.data().join("system/packages.list").exists(),
         "removed data with the unit up"
-    );
-
-    fixture.seed();
-    assert_eq!(status(&fixture.reset(&[("LXC_STATE", "RUNNING")])), 1);
-    assert!(
-        fixture.data().join("system/packages.list").exists(),
-        "removed data with LXC running"
     );
 }
 

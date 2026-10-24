@@ -152,11 +152,11 @@ Shipped (da3d580) as `image/overlay/vendor/lib64/hw/hwcomposer.waydroid.so`;
 the vendor mount's lowerdir is `/var/lib/waydroid/overlay/vendor` first.
 `deckard-image-tools hwcomposer --input <stock> --out <output>` rebuilds it from the stock file and checks
 both hashes. So that a Waydroid vendor update is never shadowed by a stale
-binary, `host/packaging/deckard-overlay-sync` (fa83c24) keeps it only while
+binary, `deckard-overlay-sync` (fa83c24, now `host/deckard-overlay-sync`) keeps it only while
 `/var/lib/waydroid/waydroid.cfg` says `vendor_datetime = 1790486210` and
 removes it otherwise, including when `waydroid.cfg` is missing (it runs
 before the image is mounted, so it can't hash the file in place). Host test:
-`host/packaging/tests/test-deckard-overlay-sync.sh` (ctest `overlay_sync`).
+`host/deckard-overlay-sync/tests/overlay_sync.rs`.
 **On the device (2026-10-19, 04:27–04:38, under the session lock):** the
 repo's deckard-overlay-sync, run against a copy of the live overlay state
 plus the patched file, changed exactly one file in

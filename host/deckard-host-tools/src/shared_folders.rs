@@ -41,7 +41,7 @@ pub struct Linux;
 impl Operations for Linux {
     fn chown(&mut self, descriptor: &OwnedFd, uid: u32, gid: u32) -> io::Result<()> {
         if uid == u32::MAX || gid == u32::MAX {
-            return Err(invalid("invalid owner"));
+            return Err(files::invalid("invalid owner"));
         }
         Ok(rustix::fs::fchown(
             descriptor,
@@ -62,13 +62,9 @@ pub struct Report {
     pub warnings: Vec<String>,
 }
 
-fn invalid(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, message)
-}
-
 fn open_directory(parent: impl AsFd, name: &OsStr) -> io::Result<OwnedFd> {
     if !files::is_component(name) {
-        return Err(invalid("invalid path component"));
+        return Err(files::invalid("invalid path component"));
     }
     Ok(rustix::fs::openat(
         parent,
@@ -144,7 +140,7 @@ fn directories_from_home(home: &OwnedFd) -> BTreeMap<String, String> {
         let config = open_directory(home, OsStr::new(".config"))?;
         let file = rustix::fs::openat(config, "user-dirs.dirs", FILE, Mode::empty())?;
         if FileType::from_raw_mode(rustix::fs::fstat(&file)?.st_mode) != FileType::RegularFile {
-            return Err(invalid(
+            return Err(files::invalid(
                 "user directories configuration is not a regular file",
             ));
         }
@@ -178,7 +174,7 @@ fn fix_tree(
     operations: &mut impl Operations,
 ) -> io::Result<()> {
     if depth > 128 {
-        return Err(invalid("shared folder nesting exceeds 128 levels"));
+        return Err(files::invalid("shared folder nesting exceeds 128 levels"));
     }
     let metadata = rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
     let (flags, bits) = match FileType::from_raw_mode(metadata.st_mode) {
@@ -189,7 +185,7 @@ fn fix_tree(
     let descriptor = rustix::fs::openat(parent, name, flags, Mode::empty())?;
     let pinned = rustix::fs::fstat(&descriptor)?;
     if (metadata.st_ino, metadata.st_dev) != (pinned.st_ino, pinned.st_dev) {
-        return Err(invalid("shared file changed while opening it"));
+        return Err(files::invalid("shared file changed while opening it"));
     }
     operations.chown(&descriptor, uid, MEDIA_RW)?;
     rustix::fs::fchmod(&descriptor, Mode::from_raw_mode(pinned.st_mode | bits))?;
@@ -241,15 +237,15 @@ pub fn share(
     let home = files::open_dir(home)?;
     let home_stat = rustix::fs::fstat(&home)?;
     if home_stat.st_uid != uid {
-        return Err(invalid("home directory has a different owner"));
+        return Err(files::invalid("home directory has a different owner"));
     }
     let data = files::open_dir(data)?;
     let data_stat = rustix::fs::fstat(&data)?;
     if data_stat.st_uid != uid {
-        return Err(invalid("Android data has a different owner"));
+        return Err(files::invalid("Android data has a different owner"));
     }
     if (data_stat.st_dev, data_stat.st_ino) == (home_stat.st_dev, home_stat.st_ino) {
-        return Err(invalid("Android data cannot be the user's home"));
+        return Err(files::invalid("Android data cannot be the user's home"));
     }
     let root = files::open_dir(rootfs)?;
     let media_rw = (MEDIA_RW, MEDIA_RW);
@@ -263,13 +259,15 @@ pub fn share(
         let mut map_folder = || -> io::Result<()> {
             let host = create_directory(&home, name, (uid, gid), 0o755, operations)?;
             if rustix::fs::fstat(&host)?.st_uid != uid {
-                return Err(invalid("shared folder has a different owner"));
+                return Err(files::invalid("shared folder has a different owner"));
             }
             let android = create_directory(&user0, android_name, media_rw, 0o770, operations)?;
             let target = open_directory(&mounted, OsStr::new(android_name))?;
             let (original, container) = (rustix::fs::fstat(&android)?, rustix::fs::fstat(&target)?);
             if (original.st_ino, original.st_dev) != (container.st_ino, container.st_dev) {
-                return Err(invalid("container data does not match the user's data"));
+                return Err(files::invalid(
+                    "container data does not match the user's data",
+                ));
             }
             migrate(&android, &host, uid, operations, &mut report.warnings)?;
             operations.bind(&host, &target)

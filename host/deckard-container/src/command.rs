@@ -35,22 +35,7 @@ impl Command {
         self.timeout = Some(timeout);
         self
     }
-
-    #[must_use]
-    pub fn program(&self) -> &str {
-        self.args.first().map_or("", String::as_str)
-    }
 }
-
-pub trait Runner {
-    /// Runs `command` to completion and returns its standard output.
-    ///
-    /// # Errors
-    /// The command cannot start, fails, times out or prints more than 8 MiB.
-    fn run(&mut self, command: Command) -> Result<String>;
-}
-
-pub struct ProcessRunner;
 
 fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<std::io::Result<Vec<u8>>> {
     thread::spawn(move || {
@@ -77,32 +62,34 @@ fn wait(child: &mut Child, timeout: Duration, program: &str) -> Result<ExitStatu
     }
 }
 
-impl Runner for ProcessRunner {
-    fn run(&mut self, command: Command) -> Result<String> {
-        let (program, args) = command.args.split_first().ok_or("empty command")?;
-        let mut child = std::process::Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
-        let status = match command.timeout {
-            Some(timeout) => wait(&mut child, timeout, program)?,
-            None => child.wait()?,
-        };
-        let stdout = stdout.join().map_err(|_| "stdout reader panicked")??;
-        let stderr = stderr.join().map_err(|_| "stderr reader panicked")??;
-        if stdout.len().max(stderr.len()) as u64 > MAX_OUTPUT_BYTES {
-            return Err(format!("{program} output exceeded {MAX_OUTPUT_BYTES} bytes").into());
-        }
-        if !status.success() {
-            let stderr = String::from_utf8_lossy(&stderr);
-            return Err(format!("{program} failed ({status}): {}", stderr.trim()).into());
-        }
-        Ok(String::from_utf8_lossy(&stdout).into_owned())
+/// Runs `command` to completion and returns its standard output.
+///
+/// # Errors
+/// The command cannot start, fails, times out or prints more than 8 MiB.
+pub fn run(command: Command) -> Result<String> {
+    let (program, args) = command.args.split_first().ok_or("empty command")?;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let status = match command.timeout {
+        Some(timeout) => wait(&mut child, timeout, program)?,
+        None => child.wait()?,
+    };
+    let stdout = stdout.join().map_err(|_| "stdout reader panicked")??;
+    let stderr = stderr.join().map_err(|_| "stderr reader panicked")??;
+    if stdout.len().max(stderr.len()) as u64 > MAX_OUTPUT_BYTES {
+        return Err(format!("{program} output exceeded {MAX_OUTPUT_BYTES} bytes").into());
     }
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
+        return Err(format!("{program} failed ({status}): {}", stderr.trim()).into());
+    }
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 #[cfg(test)]
@@ -112,7 +99,7 @@ mod tests {
     #[test]
     fn bounded_command_is_killed_on_timeout() {
         let command = Command::line("sleep 1").timeout(Duration::from_millis(40));
-        let result = ProcessRunner.run(command);
+        let result = run(command);
         assert!(result.is_err_and(|error| error.to_string().contains("timed out")));
     }
 
@@ -120,7 +107,7 @@ mod tests {
     fn command_output_does_not_block_exit() {
         let script = "head -c 1048576 /dev/zero >&2; head -c 1048576 /dev/zero";
         let command = Command::new(["sh", "-c", script]).timeout(Duration::from_millis(500));
-        let result = ProcessRunner.run(command);
+        let result = run(command);
         assert_eq!(result.map(|output| output.len()).ok(), Some(1_048_576));
     }
 }

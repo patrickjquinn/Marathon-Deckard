@@ -70,56 +70,16 @@ fn failed(context: &str, error: &io::Error) -> Error {
     Error::Failed(format!("{context}: {error}"))
 }
 
-/// The environment the helper reads; tests point every external at fakes.
-#[derive(Debug, Default, Clone)]
-pub struct Environment {
-    /// `PKEXEC_UID`, else `DECKARD_RESET_UID`.
-    pub uid: Option<String>,
-    /// A passwd file to read instead of the system's user database.
-    pub passwd: Option<PathBuf>,
-    pub systemctl: Option<PathBuf>,
-    pub lxc_info: Option<PathBuf>,
-    /// The data directory, instead of the user's own.
-    pub data: Option<PathBuf>,
-    /// The desktop entries' directory, instead of the user's own.
-    pub applications: Option<PathBuf>,
+fn systemctl(args: &[&str]) -> bool {
+    Command::new("systemctl")
+        .args(args)
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
-impl Environment {
-    #[must_use]
-    pub fn from_process() -> Self {
-        let var = |name: &str| {
-            std::env::var_os(name)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        };
-        Self {
-            uid: std::env::var("PKEXEC_UID")
-                .or_else(|_| std::env::var("DECKARD_RESET_UID"))
-                .ok(),
-            passwd: var("DECKARD_RESET_PASSWD"),
-            systemctl: var("DECKARD_RESET_SYSTEMCTL"),
-            lxc_info: var("DECKARD_RESET_LXC_INFO"),
-            data: var("DECKARD_RESET_DATA"),
-            applications: var("DECKARD_RESET_APPS"),
-        }
-    }
-
-    fn systemctl(&self, args: &[&str]) -> bool {
-        let program = self.systemctl.as_deref().unwrap_or(Path::new("systemctl"));
-        Command::new(program)
-            .args(args)
-            .status()
-            .is_ok_and(|status| status.success())
-    }
-}
-
-fn caller(environment: &Environment) -> Result<u32, Error> {
-    let uid = environment
-        .uid
-        .as_deref()
-        .and_then(|uid| uid.parse::<u32>().ok());
-    match uid {
+fn caller() -> Result<u32, Error> {
+    let uid = std::env::var("PKEXEC_UID").ok();
+    match uid.and_then(|uid| uid.parse::<u32>().ok()) {
         None => Err(Error::Usage("run through pkexec".into())),
         Some(0) => Err(Error::Usage("not for root's data".into())),
         Some(uid) => Ok(uid),
@@ -152,14 +112,11 @@ fn home_of(uid: u32, passwd: Option<&Path>) -> Result<PathBuf, Error> {
 
 /// The data directory, opened below the home without following links, and
 /// the user's own.
-fn open_data(uid: u32, home: &Path, data: Option<&Path>) -> Result<(PathBuf, OwnedFd), Error> {
-    let candidates = match data {
-        Some(data) => vec![data.to_path_buf()],
-        None => DATA.iter().map(|relative| home.join(relative)).collect(),
-    };
+fn open_data(uid: u32, home: &Path) -> Result<(PathBuf, OwnedFd), Error> {
     let no_data = |path: &Path| Error::NoData(format!("no Android data at {}", path.display()));
-    let path = candidates
-        .into_iter()
+    let path = DATA
+        .iter()
+        .map(|relative| home.join(relative))
         .find(|path| path.symlink_metadata().is_ok())
         .ok_or_else(|| no_data(&home.join(DATA[1])))?;
     if !path
@@ -196,11 +153,11 @@ fn open_data(uid: u32, home: &Path, data: Option<&Path>) -> Result<(PathBuf, Own
 }
 
 /// Stops whichever unit runs the container; the ones that were running.
-fn stop_container(environment: &Environment) -> Result<Vec<&'static str>, Error> {
-    let active = |unit: &&str| environment.systemctl(&["is-active", "--quiet", unit]);
+fn stop_container() -> Result<Vec<&'static str>, Error> {
+    let active = |unit: &&str| systemctl(&["is-active", "--quiet", unit]);
     let running: Vec<&'static str> = UNITS.into_iter().filter(active).collect();
     for unit in &running {
-        if !environment.systemctl(&["stop", unit]) {
+        if !systemctl(&["stop", unit]) {
             return Err(Error::Failed(format!("cannot stop {unit}")));
         }
     }
@@ -208,7 +165,7 @@ fn stop_container(environment: &Environment) -> Result<Vec<&'static str>, Error>
         return Err(Error::Failed(format!("{unit} is still active")));
     }
     for (name, path) in CONTAINERS {
-        if container_running(environment, name, path) {
+        if container_running(name, path) {
             return Err(Error::Failed(format!("container {name} is still running")));
         }
     }
@@ -216,15 +173,11 @@ fn stop_container(environment: &Environment) -> Result<Vec<&'static str>, Error>
 }
 
 /// Running unless LXC reports it stopped or knows no such container.
-fn container_running(environment: &Environment, name: &str, path: &str) -> bool {
-    if environment.lxc_info.is_none() && !Path::new(path).exists() {
+fn container_running(name: &str, path: &str) -> bool {
+    if !Path::new(path).exists() {
         return false;
     }
-    let program = environment
-        .lxc_info
-        .as_deref()
-        .unwrap_or(Path::new("lxc-info"));
-    let Ok(output) = Command::new(program)
+    let Ok(output) = Command::new("lxc-info")
         .args(["-n", name, "-P", path, "-s"])
         .output()
     else {
@@ -287,10 +240,8 @@ fn clear_data(data: &OwnedFd) -> bool {
 }
 
 /// The desktop entries of the apps that are gone, under either identity.
-fn clear_entries(home: &Path, applications: Option<&Path>) {
-    let path =
-        applications.map_or_else(|| home.join(".local/share/applications"), Path::to_path_buf);
-    let Ok(directory) = files::open_dir(&path) else {
+fn clear_entries(home: &Path) {
+    let Ok(directory) = files::open_dir(&home.join(".local/share/applications")) else {
         return;
     };
     for name in files::children(&directory).unwrap_or_default() {
@@ -303,7 +254,8 @@ fn clear_entries(home: &Path, applications: Option<&Path>) {
     }
 }
 
-/// Resets Android for the pkexec caller.
+/// Resets Android for the pkexec caller, whose home is looked up in
+/// `passwd` when given, else in the user database.
 ///
 /// # Errors
 ///
@@ -311,18 +263,18 @@ fn clear_entries(home: &Path, applications: Option<&Path>) {
 /// [`Error::NoData`] when there is nothing to remove, and [`Error::Failed`]
 /// for everything else, including a container that would not stop (nothing
 /// is removed then).
-pub fn run(arguments: &[OsString], environment: &Environment) -> Result<(), Error> {
+pub fn run(arguments: &[OsString], passwd: Option<&Path>) -> Result<(), Error> {
     if !arguments.is_empty() {
         return Err(Error::Usage("usage: deckard-reset".into()));
     }
-    let uid = caller(environment)?;
-    let home = home_of(uid, environment.passwd.as_deref())?;
-    let (path, data) = open_data(uid, &home, environment.data.as_deref())?;
-    let running = stop_container(environment)?;
+    let uid = caller()?;
+    let home = home_of(uid, passwd)?;
+    let (path, data) = open_data(uid, &home)?;
+    let running = stop_container()?;
     let complete = clear_data(&data);
-    clear_entries(&home, environment.applications.as_deref());
+    clear_entries(&home);
     for unit in running {
-        if !environment.systemctl(&["start", unit]) {
+        if !systemctl(&["start", unit]) {
             return Err(Error::Failed(format!("cannot start {unit} again")));
         }
     }

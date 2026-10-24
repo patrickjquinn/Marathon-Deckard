@@ -1,5 +1,5 @@
-//! The launcher's [`Backend`]: the session bus, the container manager and
-//! Android's `IPlatform`, plus the D-Bus proxies the host crates share.
+//! The launcher: the session bus, the container manager and Android's
+//! `IPlatform`, plus the D-Bus proxies the host crates share.
 
 use std::collections::HashMap;
 use std::env;
@@ -13,12 +13,27 @@ use zbus::blocking::fdo::DBusProxy;
 use zbus::names::BusName;
 use zbus::zvariant::OwnedObjectPath;
 
+use crate::Result;
 use crate::binder::{BinderConfig, Platform};
-use crate::{Backend, Container, Result, Session};
 
 pub const SESSION_NAME: &str = "id.waydro.Session";
 const SESSION_WAIT: Duration = Duration::from_secs(35);
 const USER_WAIT: Duration = Duration::from_secs(90);
+
+/// Whether [`NativeBackend::ready`] may start a stopped session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Session {
+    /// Start it and wait for Android's user to unlock.
+    Start,
+    /// Fail when it is stopped.
+    Existing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Container {
+    Running,
+    Frozen,
+}
 
 /// The root container manager.
 #[zbus::proxy(
@@ -149,9 +164,8 @@ impl NativeBackend {
             thread::sleep(Duration::from_millis(250));
         }
     }
-}
 
-impl Backend for NativeBackend {
+    /// Makes sure the session runs and reports whether the container is frozen.
     fn ready(&mut self, session: Session) -> Result<Container> {
         if !self.has_session()? {
             if session == Session::Existing {
@@ -171,41 +185,96 @@ impl Backend for NativeBackend {
         }
     }
 
-    fn unfreeze(&mut self) -> Result<()> {
-        Ok(self.container.unfreeze()?)
+    fn wake(&mut self) -> Result<&Platform> {
+        if self.ready(Session::Start)? == Container::Frozen {
+            self.container.unfreeze()?;
+        }
+        self.platform()
     }
 
-    fn freeze(&mut self) -> Result<()> {
-        Ok(self.container.freeze()?)
-    }
-
-    fn setprop(&mut self, key: &str, value: &str) -> Result<()> {
-        self.platform()?.setprop(key, value)
-    }
-
-    fn getprop(&mut self, key: &str, fallback: &str) -> Result<String> {
-        self.platform()?.getprop(key, fallback)
-    }
-
-    fn launch_app(&mut self, package: &str) -> Result<()> {
-        self.platform()?.launch_app(package)
-    }
-
-    fn launch_intent(&mut self, action: &str, uri: &str) -> Result<String> {
-        self.platform()?.launch_intent(action, uri)
-    }
-
-    fn settings_put_string(&mut self, table: i32, key: &str, value: &str) -> Result<()> {
-        self.platform()?.settings_put_string(table, key, value)
-    }
-
-    fn show_android_app(&mut self, package: &str) -> Result<()> {
+    fn show_android_app(&self, package: &str) -> Result<()> {
         let navigation = NavigationProxyBlocking::new(&self.session_bus)?;
         if !navigation.show_android_app(&format!("waydroid.{package}"))? {
             return Err(format!("Shell rejected Android window handoff for {package}").into());
         }
         Ok(())
     }
+
+    /// # Errors
+    /// The package name is invalid or a step fails.
+    pub fn launch_app(&mut self, package: &str) -> Result<()> {
+        if package.is_empty() || package.contains(char::is_whitespace) {
+            return Err("invalid package name".into());
+        }
+        self.wake()?.setprop("waydroid.active_apps", package)?;
+        self.show_android_app(package)?;
+        let platform = self.platform()?;
+        platform.launch_app(package)?;
+        immersive(platform)
+    }
+
+    /// # Errors
+    /// The action or URI is empty or a step fails.
+    pub fn launch_intent(&mut self, action: &str, uri: &str) -> Result<()> {
+        if action.is_empty() || uri.is_empty() {
+            return Err("action and URI must not be empty".into());
+        }
+        let package = self.wake()?.launch_intent(action, uri)?;
+        if package.is_empty() {
+            return Ok(());
+        }
+        let active = if package == "android" {
+            "Waydroid"
+        } else {
+            &package
+        };
+        self.platform()?.setprop("waydroid.active_apps", active)?;
+        // DeckardSystem relays system intents but is not itself a visible app.
+        if package != "android" && package != "org.marathonos.deckard.system" {
+            self.show_android_app(&package)?;
+        }
+        immersive(self.platform()?)
+    }
+
+    /// Runs `action` on a running session, thawing a frozen container around it.
+    fn thawed<T>(&mut self, key: &str, action: impl FnOnce(&Platform) -> Result<T>) -> Result<T> {
+        if key.is_empty() {
+            return Err("property key must not be empty".into());
+        }
+        let frozen = self.ready(Session::Existing)? == Container::Frozen;
+        if frozen {
+            self.container.unfreeze()?;
+        }
+        let result = self.platform().and_then(action);
+        if frozen {
+            let freeze = self.container.freeze();
+            if result.is_ok() {
+                freeze?;
+            }
+        }
+        result
+    }
+
+    /// # Errors
+    /// The key is empty, the session is stopped or Android refuses.
+    pub fn get_property(&mut self, key: &str) -> Result<String> {
+        self.thawed(key, |platform| platform.getprop(key, ""))
+    }
+
+    /// # Errors
+    /// The key is empty, the session is stopped or Android refuses.
+    pub fn set_property(&mut self, key: &str, value: &str) -> Result<()> {
+        self.thawed(key, |platform| platform.setprop(key, value))
+    }
+}
+
+fn immersive(platform: &Platform) -> Result<()> {
+    let value = if platform.getprop("persist.waydroid.multi_windows", "false")? == "false" {
+        "immersive.status=*"
+    } else {
+        "immersive.full=*"
+    };
+    platform.settings_put_string(2, "policy_control", value)
 }
 
 #[cfg(test)]

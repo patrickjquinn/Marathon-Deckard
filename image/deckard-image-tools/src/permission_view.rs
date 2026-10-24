@@ -1,5 +1,10 @@
 use regex::Regex;
 
+/// `GrantPermissionsActivity` smali with its handheld view handler replaced
+/// by `MarathonGrantView`.
+///
+/// # Errors
+/// The smali does not hold exactly one handler to replace.
 pub fn patch(smali: &str) -> Result<String, Box<dyn std::error::Error>> {
     let implementation = regex::escape(
         "Lcom/android/permissioncontroller/permission/ui/handheld/GrantPermissionsViewHandlerImpl;",

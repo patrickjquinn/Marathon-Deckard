@@ -16,8 +16,10 @@ pub const DIRECTORY: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
-fn invalid(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, message)
+/// An [`io::ErrorKind::InvalidData`] error carrying `message`.
+#[must_use]
+pub fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
 }
 
 /// Opens the directory `path` below `base` without following any link on
