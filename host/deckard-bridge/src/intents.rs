@@ -700,7 +700,7 @@ impl Intents {
     /// The Shell's foreground app changed: DeckardSystem hears the Android
     /// package in front, or "" for none.
     pub fn foreground_changed(&self, app: &str) {
-        let pkg = app.strip_prefix("waydroid.").unwrap_or("");
+        let pkg = app.strip_prefix(keel::APP_ID_PREFIX).unwrap_or("");
         let pkg = if ids::is_package_name(pkg) { pkg } else { "" };
         let mut state = sync::lock(&self.state);
         if state.focus != pkg {
@@ -719,11 +719,11 @@ impl Intents {
             "open" => self.open(m),
             "pick" => self.pick(m),
             "pick_done" => self.pick_done(keel::string(m, "id")),
-            "pick_cancel" => drop(
+            "pick_cancel" => {
                 sync::lock(&self.state)
                     .pending
-                    .remove(keel::string(m, "id")),
-            ),
+                    .remove(keel::string(m, "id"));
+            }
             _ => {}
         }
     }

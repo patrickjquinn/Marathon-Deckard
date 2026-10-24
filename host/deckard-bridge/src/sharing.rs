@@ -112,10 +112,8 @@ impl Sharing {
             _ => return,
         };
         let id = keel::string(m, "id");
-        if state
-            .pending
-            .get(id)
-            .is_some_and(|(waits, _)| *waits == kind)
+        let waits = state.pending.get(id).map(|(waits, _)| *waits);
+        if waits == Some(kind)
             && let Some((_, answer)) = state.pending.remove(id)
         {
             let _ = answer.try_send(Ok(m.clone()));
@@ -394,18 +392,14 @@ fn targets(reply: &Map<String, Value>) -> Vec<VariantMap> {
         }
         let png = validate::base64_png(keel::string(target, "icon"), 256 * 1024).ok();
         let png = png.and_then(|png| png_guard::sanitize(&png, 256 * 1024, 96).ok());
+        let icon = png.map(|png| api::png_uri(&png)).unwrap_or_default();
+        let label = validate::label(keel::string(target, "label"));
         let multiple = target.get("multiple").and_then(Value::as_bool);
         out.push(deckard_packages::dict([
             ("id", id.into()),
             ("pkg", pkg.into()),
-            (
-                "label",
-                validate::label(keel::string(target, "label")).into(),
-            ),
-            (
-                "icon",
-                png.map(|png| api::png_uri(&png)).unwrap_or_default().into(),
-            ),
+            ("label", label.into()),
+            ("icon", icon.into()),
             ("multiple", multiple.unwrap_or(false).into()),
         ]));
         if out.len() >= MAX_TARGETS {

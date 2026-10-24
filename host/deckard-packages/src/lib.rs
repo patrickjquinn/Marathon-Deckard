@@ -19,6 +19,7 @@ use serde_json::{Map, Value, json};
 use zbus::blocking::Connection;
 use zbus::export::serde::Serialize;
 use zbus::message::Header;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{DynamicType, OwnedValue, Value as Variant};
 use zbus::{DBusError, fdo, interface};
 
@@ -159,9 +160,8 @@ impl Packages {
     }
 
     fn emit<B: Serialize + DynamicType>(&self, member: &str, body: &B) -> zbus::Result<()> {
-        self.0
-            .bus
-            .emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body)
+        let bus = &self.0.bus;
+        bus.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body)
     }
 
     /// A message of type `kind` from the authenticated bridge on `route`.
@@ -177,10 +177,8 @@ impl Packages {
     ) -> zbus::Result<()> {
         let id = keel::string(message, "id");
         if kind == "package_changed" {
-            let (pkg, change) = (
-                keel::string(message, "pkg"),
-                keel::string(message, "change"),
-            );
+            let pkg = keel::string(message, "pkg");
+            let change = keel::string(message, "change");
             let known = matches!(change, "installed" | "updated" | "removed");
             if route == BridgeRoute::User && known && ids::is_package_name(pkg) {
                 return self.emit("PackageChanged", &(pkg, change));
@@ -210,11 +208,8 @@ impl Packages {
             return Ok(());
         }
         let pkg = Some(keel::string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
-        let why = text(message, "message", 512);
-        self.emit(
-            "Finished",
-            &(id, flag(message, "ok"), pkg.unwrap_or(""), why),
-        )
+        let (ok, why) = (flag(message, "ok"), text(message, "message", 512));
+        self.emit("Finished", &(id, ok, pkg.unwrap_or(""), why))
     }
 
     /// Fails the requests that went to the bridge on `route`.
@@ -436,14 +431,10 @@ impl PackagesInterface {
     }
 
     #[zbus(signal)]
-    async fn progress(
-        emitter: &zbus::object_server::SignalEmitter<'_>,
-        job: &str,
-        percent: i32,
-    ) -> zbus::Result<()>;
+    async fn progress(emitter: &SignalEmitter<'_>, job: &str, percent: i32) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn finished(
-        emitter: &zbus::object_server::SignalEmitter<'_>,
+        emitter: &SignalEmitter<'_>,
         job: &str,
         ok: bool,
         package: &str,
@@ -451,7 +442,7 @@ impl PackagesInterface {
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn package_changed(
-        emitter: &zbus::object_server::SignalEmitter<'_>,
+        emitter: &SignalEmitter<'_>,
         package: &str,
         change: &str,
     ) -> zbus::Result<()>;
