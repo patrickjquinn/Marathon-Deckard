@@ -11,6 +11,7 @@ deckard-host-tools = { path = "../deckard-host-tools" }
 deckard-launch = { path = "../deckard-launch" }
 rsbinder.workspace = true
 nix.workspace = true
+rustix = { workspace = true, features = ["event"] }
 signal-hook.workspace = true
 zbus = { workspace = true, features = ["blocking-api"] }
 

@@ -505,6 +505,7 @@ dependencies = [
  "deckard-launch",
  "nix",
  "rsbinder",
+ "rustix",
  "signal-hook",
  "tempfile",
  "zbus",

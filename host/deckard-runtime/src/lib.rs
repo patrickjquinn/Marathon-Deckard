@@ -7,13 +7,14 @@ mod timezone;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,9 @@ use deckard_host_tools::{bus, names};
 use deckard_launch::binder::{self, BinderConfig, Platform};
 use deckard_launch::session::{ContainerManagerProxyBlocking, SESSION_NAME};
 use nix::unistd::User;
+use rustix::event::{self, PollFd, PollFlags};
+use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+use rustix::io::Errno;
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 use zbus::blocking::Connection;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
@@ -33,12 +37,14 @@ const EVENT_QUEUE: usize = 64;
 
 struct SessionManager {
     stop: Arc<AtomicBool>,
+    wake: UnixStream,
 }
 
 #[zbus::interface(name = "org.marathonos.Deckard.SessionManager")]
 impl SessionManager {
     fn stop(&self) {
         self.stop.store(true, Ordering::Release);
+        let _ = (&self.wake).write(&[0]);
     }
 }
 
@@ -255,14 +261,14 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
     }
     timezone::propagate(&config, stop);
     while !stop.load(Ordering::Acquire) {
-        let event = match events.recv_timeout(Duration::from_millis(500)) {
+        let event = match events.try_recv() {
             Ok(event) => Some(event),
-            Err(RecvTimeoutError::Timeout) if resync.swap(false, Ordering::AcqRel) => None,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) if stop.load(Ordering::Acquire) => break,
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err("Android package callbacks stopped".into());
-            }
+            Err(_) if resync.swap(false, Ordering::AcqRel) => None,
+            Err(_) => match events.recv() {
+                Ok(event) => Some(event),
+                Err(_) if stop.load(Ordering::Acquire) => break,
+                Err(_) => return Err("Android package callbacks stopped".into()),
+            },
         };
         if let Err(error) = apply(data_home, &config, event) {
             eprintln!("deckard-runtime: Android launcher update failed: {error}");
@@ -284,13 +290,36 @@ pub fn session_start() -> Result<()> {
     let marker = runtime_dir.join(names::REQUESTED);
     let stop = Arc::new(AtomicBool::new(false));
     let leave_container = Arc::new(AtomicBool::new(false));
+    let (mut wakes, wake) = UnixStream::pair()?;
+    wakes.set_nonblocking(true)?;
+    wake.set_nonblocking(true)?;
     for signal in [SIGHUP, SIGINT, SIGTERM] {
         signal_hook::flag::register(signal, Arc::clone(&stop))?;
     }
     signal_hook::flag::register(SIGUSR1, Arc::clone(&leave_container))?;
+    for signal in [SIGHUP, SIGINT, SIGTERM, SIGUSR1] {
+        signal_hook::low_level::pipe::register(signal, wake.try_clone()?)?;
+    }
+    let display_dir = socket.parent().ok_or("Wayland socket has no directory")?;
+    let watch = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?;
+    let entries = WatchFlags::CREATE | WatchFlags::DELETE | WatchFlags::MOVED_FROM;
+    let entries = entries | WatchFlags::MOVED_TO | WatchFlags::DELETE_SELF | WatchFlags::MOVE_SELF;
+    inotify::add_watch(&watch, display_dir, entries)?;
     let session_bus = bus::session()?;
+    let closed = session_bus.inner().clone();
+    let closed_wake = wake.try_clone()?;
+    let closed_task = async move {
+        closed.closed().await;
+        let _ = (&closed_wake).write(&[0]);
+    };
+    session_bus
+        .inner()
+        .executor()
+        .spawn(closed_task, "session-bus-closed")
+        .detach();
     let manager = SessionManager {
         stop: Arc::clone(&stop),
+        wake,
     };
     session_bus.object_server().at(SESSION_PATH, manager)?;
     let name_reply =
@@ -317,6 +346,7 @@ pub fn session_start() -> Result<()> {
     });
 
     let mut compositor_changed = false;
+    let mut drained = [0_u8; 4096];
     while !stop.load(Ordering::Acquire)
         && !leave_container.load(Ordering::Acquire)
         && !session_bus.is_closed()
@@ -325,7 +355,16 @@ pub fn session_start() -> Result<()> {
             compositor_changed = true;
             break;
         }
-        thread::sleep(Duration::from_millis(100));
+        let mut ready = [
+            PollFd::new(&wakes, PollFlags::IN),
+            PollFd::new(&watch, PollFlags::IN),
+        ];
+        match event::poll(&mut ready, None) {
+            Ok(_) | Err(Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+        while wakes.read(&mut drained).is_ok_and(|count| count > 0) {}
+        while rustix::io::read(&watch, &mut drained).is_ok_and(|count| count > 0) {}
     }
     if !leave_container.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         ContainerManagerProxyBlocking::new(&system_bus)?.stop(false)?;
@@ -474,11 +513,13 @@ mod tests {
             return Ok(());
         }
         let stop = Arc::new(AtomicBool::new(false));
+        let (_wakes, wake) = UnixStream::pair()?;
         let owner = Connection::session()?;
         owner.object_server().at(
             SESSION_PATH,
             SessionManager {
                 stop: Arc::clone(&stop),
+                wake,
             },
         )?;
         let reply =
