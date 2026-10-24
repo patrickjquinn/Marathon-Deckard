@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sat, 24 Oct 2026 10:26:55 +0100
+Subject: [PATCH] camera: Build the 2.7 external provider on 64-bit-only
+ devices
+
+The service was 32-bit only, so a 64-bit-only product such as
+waydroid_arm64_only that lists it in PRODUCT_PACKAGES stopped in Kati
+("includes non-existent modules"). prefer32 keeps 32-bit where the device
+has it and builds 64-bit otherwise.
+
+Change-Id: Ib26e93335e4291a14e52d7c775cc92d405f1e585
+---
+ camera/provider/2.7/default/Android.bp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/camera/provider/2.7/default/Android.bp b/camera/provider/2.7/default/Android.bp
+index 8d7cd72..6c920b1 100644
+--- a/camera/provider/2.7/default/Android.bp
++++ b/camera/provider/2.7/default/Android.bp
+@@ -60,7 +60,7 @@ cc_defaults {
+     proprietary: true,
+     relative_install_path: "hw",
+     srcs: ["external-service.cpp"],
+-    compile_multilib: "32",
++    compile_multilib: "prefer32",
+     shared_libs: [
+         "android.hardware.camera.common@1.0",
+         "android.hardware.camera.device@1.0",

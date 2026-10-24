@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sat, 24 Oct 2026 10:28:02 +0100
+Subject: [PATCH] Support 16K and 64K pages on arm64 build hosts
+
+Soong links every musl host tool against libjemalloc5. With LG_PAGE 12
+those tools abort at start on a 16K-page arm64 kernel (Apple silicon
+Asahi) with "<jemalloc>: Unsupported system page size". Use 64K pages
+for aarch64 hosts, which also works on 4K and 16K kernels.
+
+Change-Id: I9290c287091c7b18155c242bcd31aa3f8db3782e
+---
+ include/jemalloc/internal/jemalloc_internal_defs_host.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/include/jemalloc/internal/jemalloc_internal_defs_host.h b/include/jemalloc/internal/jemalloc_internal_defs_host.h
+index f4c973b..0cc5e80 100644
+--- a/include/jemalloc/internal/jemalloc_internal_defs_host.h
++++ b/include/jemalloc/internal/jemalloc_internal_defs_host.h
+@@ -199,7 +199,12 @@
+ /* #undef LG_QUANTUM */
+ 
+ /* One page is 2^LG_PAGE bytes. */
++#if defined(__aarch64__)
++/* arm64 kernels use 4K, 16K or 64K pages; jemalloc aborts on a larger one. */
++#define LG_PAGE 16
++#else
+ #define LG_PAGE 12
++#endif
+ 
+ /*
+  * One huge page is 2^LG_HUGEPAGE bytes.  Note that this is defined even if the
