@@ -44,7 +44,7 @@ fn target_ids() {
 
 fn private_bus() -> Option<MutexGuard<'static, ()>> {
     std::env::var_os("DECKARD_BRIDGE_PRIVATE_BUS")?;
-    Some(PRIVATE_BUS.lock().unwrap_or_else(|e| e.into_inner()))
+    Some(deckard_core::sync::lock(&PRIVATE_BUS))
 }
 
 fn map(value: Value) -> Map<String, Value> {
