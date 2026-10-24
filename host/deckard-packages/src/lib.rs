@@ -31,6 +31,8 @@ const ANDROID_INSTALL_DIR: &str = "/data/deckard/install/";
 const MAX_APK_BYTES: u64 = 1 << 30;
 const MAX_STAGED_BYTES: u64 = 2 << 30;
 const MAX_STALE_ENTRIES: usize = 4096;
+/// The most entries read from one Android list.
+const MAX_READ: usize = 4096;
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -481,7 +483,8 @@ fn text(message: &Map<String, Value>, key: &str, limit: usize) -> String {
     validate::clean_text(keel::string(message, key), limit)
 }
 
-/// The first `limit` strings at `key` that pass `valid`.
+/// The first `limit` strings at `key` that pass `valid`, of the first
+/// `64 * limit` entries, never more than `MAX_READ`.
 fn names(
     message: &Map<String, Value>,
     key: &str,
@@ -489,7 +492,9 @@ fn names(
     valid: fn(&str) -> bool,
 ) -> Variant<'static> {
     let mut out = Vec::new();
-    for name in keel::array(message, key) {
+    let read = MAX_READ.min(64 * limit);
+    let entries = keel::array(message, key).iter().take(read);
+    for name in entries {
         let name = name.as_str().unwrap_or("");
         if out.len() < limit && valid(name) {
             out.push(name.to_owned());
@@ -538,7 +543,8 @@ fn identity(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 
 
 fn packages(message: &Map<String, Value>) -> Vec<VariantMap> {
     let mut list = Vec::new();
-    for entry in keel::array(message, "packages") {
+    let entries = keel::array(message, "packages").iter().take(MAX_READ);
+    for entry in entries {
         let Some(entry) = entry.as_object() else {
             continue;
         };
