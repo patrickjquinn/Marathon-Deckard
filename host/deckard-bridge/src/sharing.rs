@@ -12,15 +12,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_channel::Sender;
-use deckard_core::{ids, json, png_guard, sync, validate};
+use deckard_core::{ids, json, keel, png_guard, sync, validate};
 use serde_json::{Map, Value, json};
-use zbus::interface;
 use zbus::message::Header;
 use zbus::zvariant::{Dict, Fd, Value as Variant};
+use zbus::{Connection, interface};
 
 use crate::api::{self, ApiError};
 use crate::contract::VariantMap;
-use crate::intents::{self, NAVIGATION, SendSystem};
+use crate::intents::{self, Endpoint, NAVIGATION, SendSystem, Tasks};
 
 const MAX_RESOURCES: usize = 32;
 const MAX_TARGETS: usize = 64;
@@ -29,7 +29,7 @@ const MAX_BYTES: u64 = 1 << 30;
 const MAX_PENDING: usize = 16;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const BAD_REQUEST: &str = "a target and 1 to 32 resources";
-const DBUS: intents::Endpoint<'static> = (
+const DBUS: Endpoint<'static> = (
     "org.freedesktop.DBus",
     "/org/freedesktop/DBus",
     "org.freedesktop.DBus",
@@ -62,16 +62,16 @@ impl State {
 /// messages.
 #[derive(Clone)]
 pub struct Sharing {
-    bus: zbus::Connection,
+    bus: Connection,
     send: Arc<SendSystem>,
     xfer: PathBuf,
     state: Arc<Mutex<State>>,
-    tasks: Arc<intents::Tasks>,
+    tasks: Arc<Tasks>,
 }
 
 impl Sharing {
     /// Shares through `xfer/<id>/`.
-    pub fn new(bus: zbus::Connection, send: Arc<SendSystem>, xfer: PathBuf) -> Self {
+    pub fn new(bus: Connection, send: Arc<SendSystem>, xfer: PathBuf) -> Self {
         let (state, tasks) = (Arc::default(), Arc::default());
         Self {
             bus,
@@ -112,10 +112,8 @@ impl Sharing {
             _ => return,
         };
         let id = json::string(m, "id");
-        if state
-            .pending
-            .get(id)
-            .is_some_and(|(waits, _)| *waits == kind)
+        let waits = state.pending.get(id).map(|(waits, _)| *waits);
+        if waits == Some(kind)
             && let Some((_, answer)) = state.pending.remove(id)
         {
             let _ = answer.try_send(Ok(m.clone()));
@@ -264,10 +262,8 @@ impl Sharing {
             let guess = guess.map(|guess| guess.first_or_octet_stream().essence_str().to_owned());
             mime = guess.unwrap_or_else(|| "text/plain".into());
         }
-        let pkg = id.split('/').next().unwrap_or("");
-        let expect = (format!("waydroid.{pkg}"),);
-        let wait = Duration::from_secs(2);
-        let _ = intents::call(&self.bus, NAVIGATION, "ExpectAppWindow", &expect, wait).await;
+        let app = keel::app_id(id.split('/').next().unwrap_or(""));
+        intents::expect_window(&self.bus, &app, Duration::from_secs(2)).await;
         let message = json!({
             "t": "share", "target": id, "mime": mime, "title": title, "text": joined, "files": files,
         });
@@ -395,18 +391,14 @@ fn targets(reply: &Map<String, Value>) -> Vec<VariantMap> {
         }
         let png = validate::base64_png(json::string(target, "icon"), 256 * 1024);
         let png = png.and_then(|png| png_guard::sanitize(&png, 256 * 1024, 96));
+        let icon = png.map(|png| api::png_uri(&png)).unwrap_or_default();
+        let label = validate::label(json::string(target, "label"), "");
         let multiple = target.get("multiple").and_then(Value::as_bool);
         out.push(deckard_packages::dict([
             ("id", id.into()),
             ("pkg", pkg.into()),
-            (
-                "label",
-                validate::label(json::string(target, "label"), "").into(),
-            ),
-            (
-                "icon",
-                png.map(|png| api::png_uri(&png)).unwrap_or_default().into(),
-            ),
+            ("label", label.into()),
+            ("icon", icon.into()),
             ("multiple", multiple.unwrap_or(false).into()),
         ]));
         if out.len() >= MAX_TARGETS {

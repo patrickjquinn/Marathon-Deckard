@@ -19,21 +19,29 @@ use serde_json::{Map, Value, json};
 use zbus::blocking::Connection;
 use zbus::export::serde::Serialize;
 use zbus::message::Header;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{DynamicType, OwnedValue, Value as Variant};
-use zbus::{DBusError, fdo, interface};
+use zbus::{DBusError, Task, fdo, interface};
 
+/// Deckard's bus name, owned by the bridge.
 pub const BUS_NAME: &str = "org.marathonos.Deckard";
+/// Where Deckard's interfaces are served.
 pub const OBJECT_PATH: &str = "/org/marathonos/Deckard";
+/// The package interface.
 pub const INTERFACE: &str = "org.marathonos.Deckard1.Packages";
+/// The most requests waiting for Android at once.
 pub const MAX_PENDING: usize = 64;
 const ANDROID_INSTALL_DIR: &str = "/data/deckard/install/";
 const MAX_APK_BYTES: u64 = 1 << 30;
 const MAX_STAGED_BYTES: u64 = 2 << 30;
 const MAX_STALE_ENTRIES: usize = 4096;
+/// The most entries read from one Android list.
+const MAX_READ: usize = 4096;
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A D-Bus `a{sv}`.
 pub type VariantMap = HashMap<String, OwnedValue>;
 /// Queues a message to the bridge on a route; false when it is not connected.
 pub type BridgeSend = dyn Fn(BridgeRoute, &Value) -> bool + Send + Sync;
@@ -103,7 +111,7 @@ struct Pending {
     staged: Option<Staged>,
     /// None for a job, which ends with `Finished`.
     reply: Option<Sender<Answer>>,
-    _timeout: zbus::Task<()>,
+    timeout: Option<Task<()>>,
 }
 
 struct Inner {
@@ -154,14 +162,14 @@ impl Packages {
     }
 
     /// The interface to serve at [`OBJECT_PATH`].
+    #[must_use]
     pub fn interface(&self) -> PackagesInterface {
         PackagesInterface(Arc::downgrade(&self.0))
     }
 
     fn emit<B: Serialize + DynamicType>(&self, member: &str, body: &B) -> zbus::Result<()> {
-        self.0
-            .bus
-            .emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body)
+        let bus = &self.0.bus;
+        bus.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body)
     }
 
     /// A message of type `kind` from the authenticated bridge on `route`.
@@ -177,10 +185,8 @@ impl Packages {
     ) -> zbus::Result<()> {
         let id = json::string(message, "id");
         if kind == "package_changed" {
-            let (pkg, change) = (
-                json::string(message, "pkg"),
-                json::string(message, "change"),
-            );
+            let pkg = json::string(message, "pkg");
+            let change = json::string(message, "change");
             let known = matches!(change, "installed" | "updated" | "removed");
             if route == BridgeRoute::User && known && ids::is_package_name(pkg) {
                 return self.emit("PackageChanged", &(pkg, change));
@@ -210,11 +216,8 @@ impl Packages {
             return Ok(());
         }
         let pkg = Some(json::string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
-        let why = json::text(message, "message", 512);
-        self.emit(
-            "Finished",
-            &(id, flag(message, "ok"), pkg.unwrap_or(""), why),
-        )
+        let (ok, why) = (flag(message, "ok"), json::text(message, "message", 512));
+        self.emit("Finished", &(id, ok, pkg.unwrap_or(""), why))
     }
 
     /// Fails the requests that went to the bridge on `route`.
@@ -227,23 +230,17 @@ impl Packages {
             .extract_if(|_, item| item.route == route)
             .collect();
         for (id, item) in lost {
-            self.fail(&id, item, "Android stopped")?;
+            if let Some(finished) = fail(&id, item, "Android stopped") {
+                self.emit("Finished", &finished)?;
+            }
         }
         Ok(())
     }
 
     /// The requests still waiting for Android.
+    #[must_use]
     pub fn pending_count(&self) -> usize {
         sync::lock(&self.0.pending).len()
-    }
-
-    fn fail(&self, id: &str, item: Pending, why: &str) -> zbus::Result<()> {
-        drop(item.staged);
-        let Some(reply) = item.reply else {
-            return self.emit("Finished", &(id, false, "", why));
-        };
-        let _ = reply.try_send(Err(failed(why)));
-        Ok(())
     }
 
     /// Sends `message` as a new request and fails it after its timeout; the
@@ -269,8 +266,16 @@ impl Packages {
                 return;
             };
             let item = sync::lock(&inner.pending).remove(&timed);
-            if let Some(item) = item {
-                let _ = Packages(inner).fail(&timed, item, "Android didn't answer");
+            let Some(mut item) = item else {
+                return;
+            };
+            // Its own handle: dropped before the await, it would cancel this task.
+            let _this = item.timeout.take();
+            if let Some(finished) = fail(&timed, item, "Android didn't answer") {
+                let bus = inner.bus.inner();
+                let signal =
+                    bus.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, "Finished", &finished);
+                let _ = signal.await;
             }
         };
         let executor = self.0.bus.inner().executor();
@@ -279,7 +284,7 @@ impl Packages {
             route,
             staged,
             reply,
-            _timeout: executor.spawn(timeout, "deckard-package-timeout"),
+            timeout: Some(executor.spawn(timeout, "deckard-package-timeout")),
         };
         {
             let mut pending = sync::lock(&self.0.pending);
@@ -303,8 +308,14 @@ impl Packages {
         answer.recv().await.unwrap_or_else(interrupted)
     }
 
-    /// Copies the APK at `path` into the install directory; its path in Android.
-    fn stage(&self, path: &str) -> fdo::Result<(String, Staged)> {
+    /// Copies the APK at `path` into the install directory, off the bus's
+    /// executor; its path in Android.
+    async fn stage(&self, path: &str) -> fdo::Result<(String, Staged)> {
+        let (service, path) = (self.clone(), path.to_owned());
+        blocking::unblock(move || service.copy(&path)).await
+    }
+
+    fn copy(&self, path: &str) -> fdo::Result<(String, Staged)> {
         let mut input = File::open(path).map_err(|_| failed("not a file"))?;
         let metadata = input.metadata().ok().filter(fs::Metadata::is_file);
         let bytes = metadata.map_or(0, |metadata| metadata.len());
@@ -361,6 +372,16 @@ impl Packages {
     }
 }
 
+/// Ends `item` with `why`: a query hears it; a job's `Finished` is returned.
+fn fail<'a>(id: &'a str, item: Pending, why: &'a str) -> Option<(&'a str, bool, &'a str, &'a str)> {
+    drop(item.staged);
+    let Some(reply) = item.reply else {
+        return Some((id, false, "", why));
+    };
+    let _ = reply.try_send(Err(failed(why)));
+    None
+}
+
 fn random_id() -> fdo::Result<String> {
     let random = getrandom::u64().map_err(|_| failed("no random id"))?;
     Ok(format!("{random:016x}"))
@@ -378,7 +399,7 @@ impl PackagesInterface {
     async fn inspect_package(&self, path: &str) -> fdo::Result<VariantMap> {
         let service = self.service()?;
         let asked = async {
-            let (path, staged) = service.stage(path)?;
+            let (path, staged) = service.stage(path).await?;
             let message = json!({"t": "inspect", "path": path});
             service.query(Kind::Inspect, message, Some(staged)).await
         };
@@ -396,15 +417,9 @@ impl PackagesInterface {
     ) -> fdo::Result<String> {
         let service = self.service()?;
         service.allowed(&header).await?;
-        let (path, staged) = service.stage(path)?;
-        let message = json!({"t": "install", "path": path});
-        service.start(
-            Kind::Install,
-            BridgeRoute::User,
-            message,
-            Some(staged),
-            None,
-        )
+        let (path, staged) = service.stage(path).await?;
+        let (message, route) = (json!({"t": "install", "path": path}), BridgeRoute::User);
+        service.start(Kind::Install, route, message, Some(staged), None)
     }
 
     async fn uninstall_package(
@@ -436,14 +451,10 @@ impl PackagesInterface {
     }
 
     #[zbus(signal)]
-    async fn progress(
-        emitter: &zbus::object_server::SignalEmitter<'_>,
-        job: &str,
-        percent: i32,
-    ) -> zbus::Result<()>;
+    async fn progress(emitter: &SignalEmitter<'_>, job: &str, percent: i32) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn finished(
-        emitter: &zbus::object_server::SignalEmitter<'_>,
+        emitter: &SignalEmitter<'_>,
         job: &str,
         ok: bool,
         package: &str,
@@ -451,7 +462,7 @@ impl PackagesInterface {
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn package_changed(
-        emitter: &zbus::object_server::SignalEmitter<'_>,
+        emitter: &SignalEmitter<'_>,
         package: &str,
         change: &str,
     ) -> zbus::Result<()>;
@@ -459,22 +470,19 @@ impl PackagesInterface {
 
 fn reap_stale(directory: &Path) -> io::Result<()> {
     let mut entries = fs::read_dir(directory)?;
-    for _ in 0..MAX_STALE_ENTRIES {
-        let Some(entry) = entries.next() else {
-            return Ok(());
-        };
+    let first = entries.by_ref().take(MAX_STALE_ENTRIES);
+    for entry in first {
         let entry = entry?;
         let apk = entry.path().extension().is_some_and(|ext| ext == "apk");
         if apk && entry.file_type()?.is_file() {
             fs::remove_file(entry.path())?;
         }
     }
-    match entries.next() {
-        None => Ok(()),
-        Some(_) => Err(io::Error::other(
-            "too many entries in Android install staging directory",
-        )),
+    if entries.next().is_some() {
+        let why = "too many entries in Android install staging directory";
+        return Err(io::Error::other(why));
     }
+    Ok(())
 }
 
 fn flag(message: &Map<String, Value>, key: &str) -> bool {
@@ -486,7 +494,8 @@ fn number(message: &Map<String, Value>, key: &str) -> f64 {
     message.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
-/// The first `limit` strings at `key` that pass `valid`.
+/// The first `limit` strings at `key` that pass `valid`, of the first
+/// `64 * limit` entries, never more than `MAX_READ`.
 fn names(
     message: &Map<String, Value>,
     key: &str,
@@ -494,7 +503,9 @@ fn names(
     valid: fn(&str) -> bool,
 ) -> Variant<'static> {
     let mut out = Vec::new();
-    for name in json::array(message, key) {
+    let read = MAX_READ.min(64 * limit);
+    let entries = json::array(message, key).iter().take(read);
+    for name in entries {
         let name = name.as_str().unwrap_or("");
         if out.len() < limit && valid(name) {
             out.push(name.to_owned());
@@ -527,23 +538,20 @@ fn hardware(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 
 
 fn identity(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 4] {
     let pkg = Some(json::string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
+    let label = validate::label(json::string(message, "label"), "");
+    let code = number(message, "versionCode") as i64;
     [
         ("pkg", pkg.unwrap_or("").to_owned().into()),
-        (
-            "label",
-            validate::label(json::string(message, "label"), "").into(),
-        ),
+        ("label", label.into()),
         ("versionName", json::text(message, "versionName", 64).into()),
-        (
-            "versionCode",
-            (number(message, "versionCode") as i64).into(),
-        ),
+        ("versionCode", code.into()),
     ]
 }
 
 fn packages(message: &Map<String, Value>) -> Vec<VariantMap> {
     let mut list = Vec::new();
-    for entry in json::array(message, "packages") {
+    let entries = json::array(message, "packages").iter().take(MAX_READ);
+    for entry in entries {
         let Some(entry) = entry.as_object() else {
             continue;
         };

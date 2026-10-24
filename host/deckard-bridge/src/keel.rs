@@ -6,8 +6,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
+use std::ops::ControlFlow;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Duration;
@@ -17,12 +18,12 @@ use async_io::Timer;
 use deckard_core::keel::{self, APP_ID_PREFIX, App, Manifest, Shortcut};
 use deckard_core::{json, sync, validate};
 use deckard_packages::{BridgeRoute, BridgeSend};
-use futures_lite::{StreamExt, future};
+use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::fdo::{DBusProxy, RequestNameFlags, RequestNameReply};
 use zbus::message::Header;
-use zbus::zvariant::OwnedValue;
-use zbus::{Connection, connection};
+use zbus::zvariant::{OwnedValue, Value as Variant};
+use zbus::{Connection, DBusError, connection, interface};
 
 use crate::intents::{self, NAVIGATION};
 
@@ -47,7 +48,7 @@ const UNKNOWN_SECURE: &str = "Android cannot say whether the screen is protected
 const NO_SHELL: &str = "the shell did not answer";
 
 /// Keel's errors, as keel-mcp maps them.
-#[derive(Debug, zbus::DBusError)]
+#[derive(Debug, DBusError)]
 #[zbus(prefix = "org")]
 pub enum Error {
     #[zbus(error)]
@@ -106,6 +107,9 @@ enum Host {
     /// A paired computer: no screen content.
     External,
 }
+
+/// Android's reply, or why there is none.
+type Answer = Result<Map<String, Value>, String>;
 
 struct Pending {
     message: Value,
@@ -185,10 +189,10 @@ fn runs_one_of(pid: u32, paths: &[PathBuf]) -> bool {
     pid > 0 && paths.iter().any(same)
 }
 
-fn cmdline(pid: u32) -> io::Result<Vec<u8>> {
+/// At most `limit` bytes of the file at `path`.
+fn read_at_most(path: impl AsRef<Path>, limit: u64) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
-    let file = File::open(format!("/proc/{pid}/cmdline"))?;
-    file.take(MAX_CMDLINE).read_to_end(&mut out)?;
+    File::open(path)?.take(limit).read_to_end(&mut out)?;
     Ok(out)
 }
 
@@ -231,15 +235,19 @@ impl KeelApps {
             _stop: stop,
         });
         future::block_on(shared.load());
-        let (weak, bus, executor) = (
-            Arc::downgrade(&shared),
-            shared.bus.clone(),
-            &shared.executor,
-        );
+        let (weak, bus) = (Arc::downgrade(&shared), shared.bus.clone());
+        let executor = &shared.executor;
         executor.spawn(registry(weak.clone(), incoming)).detach();
         executor.spawn(refresher(weak.clone(), refresh)).detach();
         let foreground = async move {
-            if let Err(error) = follow_foreground(weak, bus).await {
+            let follow = intents::follow_foreground(&bus, |id| {
+                let Some(shared) = weak.upgrade() else {
+                    return ControlFlow::Break(());
+                };
+                shared.foreground(id);
+                ControlFlow::Continue(())
+            });
+            if let Err(error) = follow.await {
                 eprintln!("deckard-bridge: keel: no foreground changes: {error}");
             }
         };
@@ -248,6 +256,7 @@ impl KeelApps {
     }
 
     /// The DeckardBridge messages `handle` takes.
+    #[must_use]
     pub fn handles(kind: &str) -> bool {
         matches!(
             kind,
@@ -268,9 +277,8 @@ impl KeelApps {
                 Change::Gone(json::string(message, "pkg").to_owned())
             }
             (BridgeRoute::User, "app_list") => {
-                let listed = json::array(message, "pkgs")
-                    .iter()
-                    .filter_map(Value::as_str);
+                let pkgs = json::array(message, "pkgs");
+                let listed = pkgs.iter().filter_map(Value::as_str);
                 Change::List(listed.map(str::to_owned).collect())
             }
             (BridgeRoute::System, "keel_changed") if self.0.known(json::string(message, "pkg")) => {
@@ -302,9 +310,8 @@ async fn refresher(shared: Weak<Shared>, pkgs: async_channel::Receiver<String>) 
         let Some(shared) = shared.upgrade() else {
             return;
         };
-        let reply = shared
-            .request(BridgeRoute::System, keel_op("shortcuts", &pkg))
-            .await;
+        let ask = keel_op("shortcuts", &pkg);
+        let reply = shared.request(BridgeRoute::System, ask).await;
         if let Some(reply) = reply.ok().filter(ok) {
             let shortcuts = keel::shortcuts(json::array(&reply, "shortcuts"));
             shared.change(Change::Shortcuts(pkg, shortcuts));
@@ -322,35 +329,23 @@ async fn registry(shared: Weak<Shared>, changes: async_channel::Receiver<Change>
     }
 }
 
-/// The shell keeps a secure app's windows off its card and out of
-/// screenshots; it hears when an Android app comes to the front.
-async fn follow_foreground(shared: Weak<Shared>, bus: Connection) -> zbus::Result<()> {
-    let (service, path, interface) = NAVIGATION;
-    let navigation = zbus::Proxy::new(&bus, service, path, interface).await?;
-    let mut signals = navigation.receive_signal("ForegroundAppChanged").await?;
-    while let Some(signal) = signals.next().await {
-        let Some(shared) = shared.upgrade() else {
-            break;
-        };
-        let id: String = signal.body().deserialize().unwrap_or_default();
-        let pkg = id
-            .strip_prefix(APP_ID_PREFIX)
-            .filter(|pkg| shared.known(pkg));
+impl Shared {
+    /// App `id` came to the front: the shell keeps a secure app's windows off
+    /// its card and out of screenshots.
+    fn foreground(self: &Arc<Self>, id: &str) {
+        let pkg = id.strip_prefix(APP_ID_PREFIX).filter(|pkg| self.known(pkg));
         if let Some(pkg) = pkg
-            && sync::lock(&shared.state).checking.insert(pkg.to_owned())
+            && sync::lock(&self.state).checking.insert(pkg.to_owned())
         {
-            let (pkg, task) = (pkg.to_owned(), Arc::clone(&shared));
+            let (pkg, shared) = (pkg.to_owned(), Arc::clone(self));
             let check = async move {
-                task.check_secure(&pkg, 2).await;
-                sync::lock(&task.state).checking.remove(&pkg);
+                shared.check_secure(&pkg, 2).await;
+                sync::lock(&shared.state).checking.remove(&pkg);
             };
-            shared.executor.spawn(check).detach();
+            self.executor.spawn(check).detach();
         }
     }
-    Ok(())
-}
 
-impl Shared {
     fn change(&self, change: Change) {
         if self.changes.try_send(change).is_err() {
             eprintln!("deckard-bridge: keel: too many app changes; one dropped");
@@ -371,17 +366,11 @@ impl Shared {
     }
 
     async fn load(self: &Arc<Self>) {
-        let mut bytes = Vec::new();
-        let read = File::open(&self.state_path)
-            .and_then(|file| file.take(MAX_STATE_BYTES).read_to_end(&mut bytes));
-        let saved: Vec<Value> = match read {
-            Ok(_) => serde_json::from_slice(&bytes).unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
-        let apps = saved
-            .iter()
-            .filter_map(Value::as_object)
-            .filter_map(keel::app);
+        let saved = read_at_most(&self.state_path, MAX_STATE_BYTES).ok();
+        let saved = saved.and_then(|bytes| serde_json::from_slice::<Vec<Value>>(&bytes).ok());
+        let saved = saved.unwrap_or_default();
+        let objects = saved.iter().filter_map(Value::as_object);
+        let apps = objects.filter_map(keel::app);
         for app in apps {
             self.publish(app).await;
         }
@@ -457,10 +446,27 @@ impl Shared {
         if sync::lock(&self.state).apps.len() >= MAX_APPS {
             return eprintln!("deckard-bridge: keel: too many apps; not publishing {id}");
         }
-        let (connection, tick, calls) = match self.serve(&app.pkg).await {
-            Ok(served) => served,
+        let calls = Arc::new(());
+        let weak = Arc::downgrade(&calls);
+        let provider = Provider {
+            apps: Arc::downgrade(self),
+            pkg: app.pkg.clone(),
+            calls,
+        };
+        let builder = async {
+            let builder = connection::Builder::session()?.internal_executor(false);
+            builder.serve_at(PATH, provider)?.build().await
+        };
+        let connection = match builder.await {
+            Ok(connection) => connection,
             Err(error) => return eprintln!("deckard-bridge: keel: cannot publish {id}: {error}"),
         };
+        let ticker = connection.clone();
+        let tick = self.executor.spawn(async move {
+            loop {
+                ticker.executor().tick().await;
+            }
+        });
         let tools = manifest.json["tools"].as_array().map_or(0, Vec::len);
         let pkg = app.pkg.clone();
         let entry = Entry {
@@ -468,7 +474,7 @@ impl Shared {
             manifest,
             connection: connection.clone(),
             _tick: tick,
-            calls,
+            calls: weak,
             snapshot: 0,
         };
         // In the catalogue before the name is owned: Describe never answers {}.
@@ -483,28 +489,6 @@ impl Shared {
                 eprintln!("deckard-bridge: keel: cannot publish {id}: {owned:?}");
             }
         }
-    }
-
-    async fn serve(self: &Arc<Self>, pkg: &str) -> zbus::Result<(Connection, Task<()>, Weak<()>)> {
-        let calls = Arc::new(());
-        let weak = Arc::downgrade(&calls);
-        let provider = Provider {
-            apps: Arc::downgrade(self),
-            pkg: pkg.to_owned(),
-            calls,
-        };
-        let connection = connection::Builder::session()?
-            .internal_executor(false)
-            .serve_at(PATH, provider)?
-            .build()
-            .await?;
-        let ticker = connection.clone();
-        let tick = self.executor.spawn(async move {
-            loop {
-                ticker.executor().tick().await;
-            }
-        });
-        Ok((connection, tick, weak))
     }
 
     /// Releases the name before the next owner asks for it.
@@ -544,11 +528,7 @@ impl Shared {
     }
 
     /// Asks Android; a request made while it is down goes when it connects.
-    async fn request(
-        &self,
-        route: BridgeRoute,
-        mut message: Value,
-    ) -> Result<Map<String, Value>, String> {
+    async fn request(&self, route: BridgeRoute, mut message: Value) -> Answer {
         let (reply, answer) = async_channel::bounded(1);
         let id = {
             let mut state = sync::lock(&self.state);
@@ -603,7 +583,7 @@ impl Shared {
     }
 
     async fn shell(&self, action: &str, args: Value) -> Result<Map<String, Value>, Error> {
-        let options: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
+        let options: HashMap<&str, Variant<'_>> = HashMap::new();
         let body = (action, args.to_string(), options);
         let shell = ("org.marathonos.shell", PATH, INTERFACE);
         match intents::call(&self.bus, shell, "Invoke", &body, SHELL_TIMEOUT).await {
@@ -641,10 +621,8 @@ impl Shared {
                 Timer::after(WINDOW_POLL).await;
             }
             let running = self.shell("apps.running", json!({})).await?;
-            if json::array(&running, "result")
-                .iter()
-                .any(|app| app["id"] == id)
-            {
+            let running = json::array(&running, "result");
+            if running.iter().any(|app| app["id"] == id) {
                 return Ok(());
             }
         }
@@ -653,10 +631,11 @@ impl Shared {
 
     async fn launched(&self, route: BridgeRoute, launch: Value) -> Result<(), Error> {
         let reply = self.request(route, launch).await.map_err(unavailable)?;
-        match ok(&reply) {
-            true => Ok(()),
-            false => Err(Error::Failed(json::text(&reply, "error", 256))),
+        if ok(&reply) {
+            return Ok(());
         }
+        let why = json::text(&reply, "error", 256);
+        Err(Error::Failed(why))
     }
 
     /// Android starts the activity. A shell that expects the window brings it
@@ -673,18 +652,7 @@ impl Shared {
             self.shell("app.launch", json!({"id": id})).await?;
             return self.launched(route, launch).await;
         }
-        // The shell's ExpectAppWindow shows the app's window, and lets a new
-        // one take the front for a while, as for a launch.
-        let body = (id.as_str(),);
-        let expect = intents::call(
-            &self.bus,
-            NAVIGATION,
-            "ExpectAppWindow",
-            &body,
-            EXPECT_TIMEOUT,
-        );
-        let reply = expect.await.ok();
-        let expected = reply.is_some_and(|reply| reply.body().deserialize() == Ok(true));
+        let expected = intents::expect_window(&self.bus, &id, EXPECT_TIMEOUT).await;
         self.launched(route, launch).await?;
         if !expected {
             self.wait_for_window(&id).await?;
@@ -693,16 +661,19 @@ impl Shared {
         Ok(())
     }
 
+    /// The screen of an unlocked phone's front app that no secure window
+    /// hides.
     async fn read_screen(&self, pkg: &str, max_units: usize) -> Result<Value, Error> {
+        self.unlocked(pkg, Need::InFront).await?;
+        self.not_secure(pkg).await?;
         let ask = json!({"t": "screen_read", "pkg": pkg});
         let reply = self.request(BridgeRoute::User, ask).await;
         let reply = reply.map_err(unavailable)?;
         if !ok(&reply) {
             let why = json::text(&reply, "error", 256);
             let why = Some(why).filter(|why| !why.is_empty());
-            return Err(unavailable(
-                why.unwrap_or_else(|| "the screen cannot be read".into()),
-            ));
+            let why = why.as_deref().unwrap_or("the screen cannot be read");
+            return Err(unavailable(why));
         }
         let screen = keel::screen(&reply).filter(|screen| screen.pkg == pkg);
         let mut state = sync::lock(&self.state);
@@ -730,17 +701,13 @@ impl Shared {
 
     /// DeckardSystem vouches that no window of the app is secure.
     async fn not_secure(&self, pkg: &str) -> Result<(), Error> {
-        let label = self.label(pkg);
-        let secure = self
-            .secure(pkg)
-            .await
-            .ok_or_else(|| unavailable(UNKNOWN_SECURE))?;
+        let secure = self.secure(pkg).await;
+        let secure = secure.ok_or_else(|| unavailable(UNKNOWN_SECURE))?;
         let secure = secure.unwrap_or(true);
         self.report_secure(pkg, secure);
         if secure {
-            return Err(unavailable(format!(
-                "{label} protects this screen from being read"
-            )));
+            let why = format!("{} protects this screen from being read", self.label(pkg));
+            return Err(unavailable(why));
         }
         Ok(())
     }
@@ -790,18 +757,17 @@ impl Shared {
         host: Host,
     ) -> Result<Value, Error> {
         let unknown = || {
-            let name = validate::truncate(action, 64);
-            Error::UnknownAction(format!("no action named {name}"))
+            Error::UnknownAction(format!(
+                "no action named {}",
+                validate::truncate(action, 64)
+            ))
         };
         let (tool, search, shortcut, snapshot) = {
             let state = sync::lock(&self.state);
-            let entry = state
-                .apps
-                .get(pkg)
-                .ok_or_else(|| unavailable("the app is not installed"))?;
-            let tools = entry.manifest.json["tools"]
-                .as_array()
-                .map_or(&[][..], Vec::as_slice);
+            let entry = state.apps.get(pkg);
+            let entry = entry.ok_or_else(|| unavailable("the app is not installed"))?;
+            let tools = entry.manifest.json["tools"].as_array();
+            let tools = tools.map_or(&[][..], Vec::as_slice);
             let named = |tool: &&Value| tool["_meta"]["org.shipwright.keel/action"] == action;
             let tool = tools.iter().find(named).cloned().ok_or_else(unknown)?;
             let shortcut = entry.manifest.shortcuts.get(action).cloned();
@@ -810,18 +776,19 @@ impl Shared {
         if let Some(why) = keel::invalid(&tool["inputSchema"], args) {
             return Err(invalid(why));
         }
-        eprintln!("deckard-bridge: keel: {} {action}", keel::app_id(pkg));
+        let id = keel::app_id(pkg);
+        eprintln!("deckard-bridge: keel: {id} {action}");
         let arg = |key: &str| json::string(args, key);
-        let launch = match action {
+        let (launch, route) = match action {
             "app.show" if arg("link").trim().is_empty() => {
-                self.shell("app.launch", json!({"id": keel::app_id(pkg)}))
-                    .await?;
+                self.shell("app.launch", json!({"id": id})).await?;
                 return Ok(json!({}));
             }
             "app.show" => {
                 let link = arg("link").trim();
                 keel::link_allowed(link).map_err(invalid)?;
-                json!({"t": "launch", "pkg": pkg, "kind": "view", "uri": link})
+                let view = json!({"t": "launch", "pkg": pkg, "kind": "view", "uri": link});
+                (view, BridgeRoute::User)
             }
             "share.text" => {
                 let mut send =
@@ -829,21 +796,18 @@ impl Shared {
                 if !arg("subject").is_empty() {
                     send["subject"] = json!(arg("subject"));
                 }
-                send
+                (send, BridgeRoute::User)
             }
             "app.search" => {
-                json!({"t": "launch", "pkg": pkg, "kind": "search", "query": arg("query").trim(), "mode": search})
+                let query = arg("query").trim();
+                let search = json!({"t": "launch", "pkg": pkg, "kind": "search", "query": query, "mode": search});
+                (search, BridgeRoute::User)
             }
             "screen.read" if host == Host::External => {
-                return Err(unavailable(
-                    "screen content is not shared with a paired computer",
-                ));
+                let why = "screen content is not shared with a paired computer";
+                return Err(unavailable(why));
             }
-            "screen.read" => {
-                self.unlocked(pkg, Need::InFront).await?;
-                self.not_secure(pkg).await?;
-                return self.read_screen(pkg, SCREEN_UNITS).await;
-            }
+            "screen.read" => return self.read_screen(pkg, SCREEN_UNITS).await,
             "ui.tap" | "ui.type" => {
                 if host != Host::Person {
                     let why =
@@ -853,9 +817,8 @@ impl Shared {
                 let node = keel::parse_node(arg("node"))
                     .ok_or_else(|| invalid("node must be an id from screen.read, such as 3.17"))?;
                 if node.snapshot != snapshot {
-                    return Err(invalid(
-                        "that id is from an older screen.read: read the screen again",
-                    ));
+                    let why = "that id is from an older screen.read: read the screen again";
+                    return Err(invalid(why));
                 }
                 let mut act = json!({"t": "ui_act", "pkg": pkg, "snap": node.snapshot, "node": node.index, "act": "click"});
                 if action == "ui.type" {
@@ -867,18 +830,13 @@ impl Shared {
                 return Ok(json!({}));
             }
             _ => {
-                let id = shortcut.ok_or_else(unknown)?;
                 let mut start = keel_op("start", pkg);
-                start["id"] = json!(id);
-                self.unlocked(pkg, Need::Unlocked).await?;
-                self.launch_then_show(pkg, start, BridgeRoute::System)
-                    .await?;
-                return Ok(json!({}));
+                start["id"] = json!(shortcut.ok_or_else(unknown)?);
+                (start, BridgeRoute::System)
             }
         };
         self.unlocked(pkg, Need::Unlocked).await?;
-        self.launch_then_show(pkg, launch, BridgeRoute::User)
-            .await?;
+        self.launch_then_show(pkg, launch, route).await?;
         Ok(json!({}))
     }
 
@@ -886,12 +844,7 @@ impl Shared {
         if host == Host::External || !self.known(pkg) {
             return json!({});
         }
-        let read = async {
-            self.unlocked(pkg, Need::InFront).await?;
-            self.not_secure(pkg).await?;
-            self.read_screen(pkg, CONTEXT_UNITS).await
-        };
-        let Ok(screen) = read.await else {
+        let Ok(screen) = self.read_screen(pkg, CONTEXT_UNITS).await else {
             return json!({});
         };
         let label = screen["label"].as_str().unwrap_or("");
@@ -927,7 +880,8 @@ impl Provider {
         let pid = pid.get_connection_unix_process_id(sender.into()).await;
         let pid = pid.ok().filter(|pid| runs_one_of(*pid, &shared.trusted));
         let pid = pid.ok_or_else(denied)?;
-        let host = match cmdline(pid).is_ok_and(|line| keel::is_external_host(&line)) {
+        let cmdline = read_at_most(format!("/proc/{pid}/cmdline"), MAX_CMDLINE);
+        let host = match cmdline.is_ok_and(|line| keel::is_external_host(&line)) {
             true => Host::External,
             false => Host::Local,
         };
@@ -936,11 +890,11 @@ impl Provider {
 }
 
 fn no_entity(entity_type: &str) -> Error {
-    let name = validate::truncate(entity_type, 64);
-    Error::UnknownAction(format!("no entity type {name}"))
+    let entity_type = validate::truncate(entity_type, 64);
+    Error::UnknownAction(format!("no entity type {entity_type}"))
 }
 
-#[zbus::interface(name = "org.shipwright.Keel.Actions")]
+#[interface(name = "org.shipwright.Keel.Actions")]
 impl Provider {
     fn describe(&self) -> String {
         let Ok(shared) = self.shared() else {
@@ -965,11 +919,10 @@ impl Provider {
         let Ok(Value::Object(args)) = serde_json::from_str::<Value>(&arguments) else {
             return Err(invalid("arguments must be a JSON object"));
         };
-        let user_initiated = options
-            .get("userInitiated")
-            .map(|value| bool::try_from(&**value));
+        let asked = options.get("userInitiated");
+        let person = asked.is_some_and(|value| matches!(bool::try_from(&**value), Ok(true)));
         let host = match host {
-            Host::Local if matches!(user_initiated, Some(Ok(true))) => Host::Person,
+            Host::Local if person => Host::Person,
             host => host,
         };
         let result = shared.invoke(&self.pkg, &action, &args, host);

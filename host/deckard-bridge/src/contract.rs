@@ -91,13 +91,14 @@ pub fn app(value: &Map<String, Value>) -> VariantMap {
         mode @ ("unrestricted" | "optimized") => mode,
         _ => "optimized",
     };
+    let version = json::text(value, "versionName", 64);
     deckard_packages::dict([
         ("pkg", pkg.into()),
         (
             "label",
             validate::label(json::string(value, "label"), pkg).into(),
         ),
-        ("versionName", json::text(value, "versionName", 64).into()),
+        ("versionName", version.into()),
         ("versionCode", number(value, "versionCode", 1 << 53).into()),
         ("system", flag(value, "system").into()),
         ("appBytes", number(value, "appBytes", 1 << 50).into()),
@@ -175,10 +176,7 @@ pub fn apps(value: &Map<String, Value>, fixed: Fixed) -> Vec<VariantMap> {
             ("granted", flag(item, "granted").into()),
         ]);
         if fixed == Fixed::Shown {
-            map.extend(deckard_packages::dict([(
-                "fixed",
-                flag(item, "fixed").into(),
-            )]));
+            map.insert("fixed".into(), flag(item, "fixed").into());
         }
         out.push(map);
         if out.len() == 500 {
@@ -194,11 +192,10 @@ pub fn google(value: &Map<String, Value>) -> VariantMap {
     let mut accounts = Vec::new();
     let entries = json::array(value, "accounts").iter().take(MAX_ENTRIES);
     for account in entries {
-        let account = validate::clean_text(account.as_str().unwrap_or(""), 254)
-            .trim()
-            .to_owned();
+        let account = validate::clean_text(account.as_str().unwrap_or(""), 254);
+        let account = account.trim();
         if accounts.len() < 10 && !account.is_empty() && !account.contains('\n') {
-            accounts.push(account);
+            accounts.push(account.to_owned());
         }
     }
     let enabled = flag(value, "enabled");

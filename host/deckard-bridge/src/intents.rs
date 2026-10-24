@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::ops::ControlFlow;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use std::time::{Duration, SystemTime};
 
 use async_channel::Receiver;
 use async_io::Timer;
-use deckard_core::{ids, json, sync, validate};
+use deckard_core::{ids, json, keel, sync, validate};
 use futures_lite::{StreamExt, future};
 use percent_encoding::CONTROLS;
 use regex::Regex;
@@ -24,6 +25,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use zbus::message::Message;
 use zbus::zvariant::{DynamicType, OwnedValue, Value as Variant};
+use zbus::{Connection, Proxy};
 
 /// Queues a message on the authenticated system channel; false while
 /// DeckardSystem is not connected.
@@ -139,7 +141,7 @@ pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
             let args = object(json!({"url": url, "newTab": true}));
             Ok(Target::Keel("browser", "browser.open", args))
         }
-        "tel" | "sms" => phone(kind == "tel", &scheme, m),
+        "tel" | "sms" => phone(kind, &scheme, m),
         "mailto" => Ok(mail(m)),
         "geo" if scheme == "geo" => Ok(geo(uri)),
         "geo" => Err("not a geo: URI"),
@@ -174,7 +176,8 @@ fn web(uri: &str, scheme: &str) -> Option<String> {
     Some(format!("{head}{tail}"))
 }
 
-fn phone(tel: bool, scheme: &str, m: &Map<String, Value>) -> Result<Target, &'static str> {
+fn phone(kind: &str, scheme: &str, m: &Map<String, Value>) -> Result<Target, &'static str> {
+    let tel = kind == "tel";
     let sms = ["sms", "smsto", "mms", "mmsto"].contains(&scheme);
     if (tel && scheme != "tel") || (!tel && !sms) {
         return Err("wrong scheme");
@@ -241,12 +244,10 @@ fn query(uri: &str, key: &str) -> String {
 }
 
 fn mail(m: &Map<String, Value>) -> Target {
-    let args = filled([
-        ("to", addresses(m, "to")),
-        ("cc", addresses(m, "cc")),
-        ("subject", json::text(m, "subject", 1000)),
-        ("body", json::text(m, "body", 100_000)),
-    ]);
+    let subject = json::text(m, "subject", 1000);
+    let body = json::text(m, "body", 100_000);
+    let (to, cc) = (addresses(m, "to"), addresses(m, "cc"));
+    let args = filled([("to", to), ("cc", cc), ("subject", subject), ("body", body)]);
     Target::Keel("email", "mail.compose", args)
 }
 
@@ -347,8 +348,12 @@ pub(crate) async fn within<T>(limit: Duration, work: impl Future<Output = T>) ->
 }
 
 /// Calls `method` of `to`, failing once `limit` has passed.
+///
+/// # Errors
+///
+/// The call's error, or a failure once `limit` has passed.
 pub(crate) async fn call<B>(
-    bus: &zbus::Connection,
+    bus: &Connection,
     (service, path, interface): Endpoint<'_>,
     method: &str,
     body: &B,
@@ -362,12 +367,41 @@ where
     within(limit, call).await.unwrap_or_else(timed_out)
 }
 
+/// Hands `seen` each app the Shell brings to the front, until it breaks.
+///
+/// # Errors
+///
+/// When the Shell's signal cannot be followed.
+pub(crate) async fn follow_foreground(
+    bus: &Connection,
+    mut seen: impl FnMut(&str) -> ControlFlow<()>,
+) -> zbus::Result<()> {
+    let (service, path, interface) = NAVIGATION;
+    let shell = Proxy::new(bus, service, path, interface).await?;
+    let mut changes = shell.receive_signal("ForegroundAppChanged").await?;
+    while let Some(signal) = changes.next().await {
+        if let Ok(app) = signal.body().deserialize::<String>()
+            && seen(&app).is_break()
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Asks the Shell to show app `id`'s next window, and let it take the front
+/// for a while, as for a launch; whether the Shell will.
+pub(crate) async fn expect_window(bus: &Connection, id: &str, limit: Duration) -> bool {
+    let reply = call(bus, NAVIGATION, "ExpectAppWindow", &(id,), limit).await;
+    reply.is_ok_and(|reply| reply.body().deserialize() == Ok(true))
+}
+
 /// Runs `target` on the session bus.
 ///
 /// # Errors
 ///
 /// The bus error of the call, or a timeout after 30 seconds.
-async fn launch(bus: &zbus::Connection, target: &Target) -> zbus::Result<()> {
+async fn launch(bus: &Connection, target: &Target) -> zbus::Result<()> {
     let json = |args: &Map<String, Value>| Value::Object(args.clone()).to_string();
     let reply = match target {
         Target::Keel(app, action, args) => {
@@ -393,6 +427,10 @@ fn open_at(dir: impl AsFd, name: impl Arg, flags: OFlags, mode: u32) -> io::Resu
 }
 
 /// `xfer/<id>/`, never through a link.
+///
+/// # Errors
+///
+/// When `id` is not a transfer ID or the directory cannot be opened.
 pub(crate) fn transfer(root: &Path, id: &str) -> io::Result<OwnedFd> {
     if !request_id(id) {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -402,6 +440,10 @@ pub(crate) fn transfer(root: &Path, id: &str) -> io::Result<OwnedFd> {
 }
 
 /// Makes `xfer/<id>/` and opens it.
+///
+/// # Errors
+///
+/// As [`transfer`], or when `xfer` cannot be made.
 pub(crate) fn new_transfer(root: &Path, id: &str) -> io::Result<OwnedFd> {
     fs::create_dir_all(root)?;
     let dir = open_at(CWD, root, OFlags::RDONLY | OFlags::DIRECTORY, 0)?;
@@ -412,6 +454,10 @@ pub(crate) fn new_transfer(root: &Path, id: &str) -> io::Result<OwnedFd> {
 }
 
 /// A regular file in `dir`, never through a link nor blocking on a FIFO.
+///
+/// # Errors
+///
+/// When it cannot be opened or is not a regular file.
 pub(crate) fn open_file(dir: impl AsFd, name: impl Arg) -> io::Result<OwnedFd> {
     let fd = open_at(dir, name, OFlags::RDONLY | OFlags::NONBLOCK, 0)?;
     file_size(fd.as_fd()).ok_or(io::ErrorKind::InvalidInput)?;
@@ -585,7 +631,7 @@ pub(crate) struct Tasks(Arc<()>);
 
 impl Tasks {
     /// Runs `task` on `bus`'s executor, or drops it while `MAX_TASKS` run.
-    pub(crate) fn spawn<F>(&self, bus: &zbus::Connection, name: &str, task: F)
+    pub(crate) fn spawn<F>(&self, bus: &Connection, name: &str, task: F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -604,7 +650,7 @@ impl Tasks {
 /// Opens, picks and captures for DeckardSystem.
 #[derive(Clone)]
 pub struct Intents {
-    bus: zbus::Connection,
+    bus: Connection,
     send: Arc<SendSystem>,
     xfer: PathBuf,
     camera: PathBuf,
@@ -615,12 +661,7 @@ pub struct Intents {
 impl Intents {
     /// Makes and sweeps `xfer`, and follows the Shell's foreground app.
     /// `camera` is Marathon Camera's folder.
-    pub fn start(
-        bus: zbus::Connection,
-        send: Arc<SendSystem>,
-        xfer: PathBuf,
-        camera: PathBuf,
-    ) -> Self {
+    pub fn start(bus: Connection, send: Arc<SendSystem>, xfer: PathBuf, camera: PathBuf) -> Self {
         if let Err(error) = fs::create_dir_all(&xfer) {
             eprintln!("deckard-bridge: cannot make {}: {error}", xfer.display());
         }
@@ -636,7 +677,11 @@ impl Intents {
         };
         let follower = intents.clone();
         intents.spawn("deckard-foreground", async move {
-            if let Err(error) = follower.follow_foreground().await {
+            let follow = follow_foreground(&follower.bus, |app| {
+                follower.foreground_changed(app);
+                ControlFlow::Continue(())
+            });
+            if let Err(error) = follow.await {
                 eprintln!("deckard-bridge: foreground watch failed: {error}");
             }
         });
@@ -672,7 +717,7 @@ impl Intents {
     /// The Shell's foreground app changed: DeckardSystem hears the Android
     /// package in front, or "" for none.
     pub fn foreground_changed(&self, app: &str) {
-        let pkg = app.strip_prefix("waydroid.").unwrap_or("");
+        let pkg = app.strip_prefix(keel::APP_ID_PREFIX).unwrap_or("");
         let pkg = if ids::is_package_name(pkg) { pkg } else { "" };
         let mut state = sync::lock(&self.state);
         if state.focus != pkg {
@@ -680,18 +725,6 @@ impl Intents {
             drop(state);
             self.send(json!({"t": "focus", "pkg": pkg}));
         }
-    }
-
-    async fn follow_foreground(&self) -> zbus::Result<()> {
-        let (service, path, interface) = NAVIGATION;
-        let shell = zbus::Proxy::new(&self.bus, service, path, interface).await?;
-        let mut changes = shell.receive_signal("ForegroundAppChanged").await?;
-        while let Some(signal) = changes.next().await {
-            if let Ok(app) = signal.body().deserialize::<String>() {
-                self.foreground_changed(&app);
-            }
-        }
-        Ok(())
     }
 
     /// A message from the authenticated system channel.
@@ -703,11 +736,11 @@ impl Intents {
             "open" => self.open(m),
             "pick" => self.pick(m),
             "pick_done" => self.pick_done(json::string(m, "id")),
-            "pick_cancel" => drop(
+            "pick_cancel" => {
                 sync::lock(&self.state)
                     .pending
-                    .remove(json::string(m, "id")),
-            ),
+                    .remove(json::string(m, "id"));
+            }
             _ => {}
         }
     }
@@ -831,7 +864,7 @@ impl Intents {
     /// Asks the FileChooser portal; the chosen local files.
     async fn choose(&self, id: &str, ask: Ask, options: Options) -> zbus::Result<Vec<PathBuf>> {
         let path = self.request_path(id)?;
-        let request = zbus::Proxy::new(&self.bus, PORTAL, path, REQUEST).await?;
+        let request = Proxy::new(&self.bus, PORTAL, path, REQUEST).await?;
         let mut responses = request.receive_signal("Response").await?;
         let (method, title) = match ask {
             Ask::Save => ("SaveFile", "Save"),

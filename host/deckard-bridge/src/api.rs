@@ -13,10 +13,10 @@ use deckard_core::runtime_state::{ResetError, State, UnitCall};
 use deckard_core::{ids, png_guard};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use zbus::interface;
 use zbus::message::{Flags, Header, Message};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::DynamicType;
+use zbus::{Connection, DBusError, interface};
 
 use crate::auth;
 use crate::contract::{self, Fixed, VariantMap};
@@ -25,6 +25,7 @@ use crate::manage::Manage;
 use crate::runtime::{self, Runtime};
 
 pub use deckard_packages::{BUS_NAME, OBJECT_PATH};
+/// The Settings interface.
 pub const INTERFACE: &str = "org.marathonos.Deckard1";
 const SYSTEMD: Endpoint<'static> = (
     "org.freedesktop.systemd1",
@@ -35,7 +36,7 @@ const RESET_HELPER: &str = "/usr/libexec/deckard-reset";
 const MAX_ICON_BYTES: usize = 512 * 1024;
 
 /// The errors of Deckard's Settings and Share interfaces.
-#[derive(Debug, zbus::DBusError)]
+#[derive(Debug, DBusError)]
 #[zbus(prefix = "org")]
 pub enum ApiError {
     #[zbus(name = "freedesktop.DBus.Error.InvalidArgs")]
@@ -68,12 +69,7 @@ pub(crate) fn png_uri(png: &[u8]) -> String {
 }
 
 /// Calls `method` without waiting for a reply.
-async fn notify<B>(
-    bus: &zbus::Connection,
-    to: Endpoint<'_>,
-    method: &str,
-    body: &B,
-) -> zbus::Result<()>
+async fn notify<B>(bus: &Connection, to: Endpoint<'_>, method: &str, body: &B) -> zbus::Result<()>
 where
     B: Serialize + DynamicType,
 {
@@ -88,7 +84,7 @@ where
 /// `org.marathonos.Deckard1` at [`OBJECT_PATH`].
 #[derive(Clone)]
 pub struct SettingsApi {
-    pub bus: zbus::Connection,
+    pub bus: Connection,
     pub runtime: Runtime,
     pub manage: Manage,
     pub icon_dirs: Vec<PathBuf>,
@@ -121,9 +117,8 @@ impl SettingsApi {
     }
 
     async fn emit<B: Serialize + DynamicType>(&self, member: &str, body: &B) {
-        let signal = self
-            .bus
-            .emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body);
+        let bus = &self.bus;
+        let signal = bus.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body);
         let _ = signal.await;
     }
 
@@ -142,9 +137,8 @@ impl SettingsApi {
             UnitCall::Restart => "RestartUnit",
         };
         let body = (runtime::UNIT, "replace");
-        notify(&self.bus, SYSTEMD, method, &body)
-            .await
-            .map_err(failed)
+        let sent = notify(&self.bus, SYSTEMD, method, &body).await;
+        sent.map_err(failed)
     }
 
     /// Stops Android, waiting at most 90 seconds for it.
@@ -240,10 +234,8 @@ impl SettingsApi {
 
     async fn get_app(&self, pkg: &str, #[zbus(header)] header: Header<'_>) -> Result<VariantMap> {
         valid(ids::is_package_name(pkg))?;
-        let reply = self
-            .request("app", json!({"pkg": pkg}), None, header)
-            .await?;
-        Ok(contract::app(&reply))
+        let reply = self.request("app", json!({"pkg": pkg}), None, header);
+        Ok(contract::app(&reply.await?))
     }
 
     // `permission` is a Marathon permission; "notifications" is Android's
@@ -294,8 +286,8 @@ impl SettingsApi {
         enabled: bool,
         #[zbus(header)] header: Header<'_>,
     ) -> Result<()> {
-        self.change("links", pkg, json!({"enabled": enabled}), header)
-            .await
+        let args = json!({"enabled": enabled});
+        self.change("links", pkg, args, header).await
     }
 
     async fn set_battery(
@@ -305,8 +297,8 @@ impl SettingsApi {
         #[zbus(header)] header: Header<'_>,
     ) -> Result<()> {
         valid(matches!(mode, "unrestricted" | "optimized"))?;
-        self.change("battery", pkg, json!({"mode": mode}), header)
-            .await
+        let args = json!({"mode": mode});
+        self.change("battery", pkg, args, header).await
     }
 
     async fn force_stop(&self, pkg: &str, #[zbus(header)] header: Header<'_>) -> Result<()> {
@@ -327,10 +319,8 @@ impl SettingsApi {
         #[zbus(header)] header: Header<'_>,
     ) -> Result<Vec<VariantMap>> {
         valid(contract::SPECIAL_KINDS.contains(&kind))?;
-        let reply = self
-            .request("special", json!({"kind": kind}), None, header)
-            .await?;
-        Ok(contract::apps(&reply, Fixed::Hidden))
+        let reply = self.request("special", json!({"kind": kind}), None, header);
+        Ok(contract::apps(&reply.await?, Fixed::Hidden))
     }
 
     async fn set_special_access(
@@ -369,8 +359,8 @@ impl SettingsApi {
         #[zbus(header)] header: Header<'_>,
     ) -> Result<()> {
         valid(matches!(page, "account" | "selfcheck"))?;
-        self.request("gms_open", json!({"page": page}), None, header)
-            .await?;
+        let args = json!({"page": page});
+        self.request("gms_open", args, None, header).await?;
         let body = ("waydroid.com.google.android.gms",);
         let _ = notify(&self.bus, NAVIGATION, "ExpectAppWindow", &body).await;
         Ok(())
