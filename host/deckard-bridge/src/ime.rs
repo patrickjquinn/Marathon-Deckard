@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use deckard_core::ids::PackageName;
 use deckard_core::keel::APP_ID_PREFIX;
@@ -189,15 +190,9 @@ pub fn serve(events: &Receiver<ChannelEvent>, handle: &ChannelHandle, bus: &Conn
         Err(error) => return eprintln!("deckard-bridge: no Shell TextInput1: {error}"),
     };
     let state = Arc::new(Mutex::new(ImeState::default()));
-    let (bus, owners) = (bus.clone(), bus.clone());
-    let (listener, owner) = (shell.clone(), shell.clone());
-    let (listener_state, listener_handle) = (Arc::clone(&state), handle.clone());
-    crate::spawn("IME signal listener failed", move || {
-        listen(&bus, &listener, &listener_state, &listener_handle)
-    });
-    crate::spawn("Shell owner watch failed", move || {
-        follow_owner(&owners, &owner)
-    });
+    if let Err(error) = listen(bus, &shell, &state, handle) {
+        eprintln!("deckard-bridge: IME signal listener failed: {error}");
+    }
     let mut current = None;
     for event in events {
         match event {
@@ -227,39 +222,37 @@ pub fn serve(events: &Receiver<ChannelEvent>, handle: &ChannelHandle, bus: &Conn
     }
 }
 
-/// Registers once subscribed, so no signal can overtake the subscription.
+/// Relays the Shell's signals, and registers once subscribed so none can
+/// overtake the subscription, then again whenever the Shell gets a new owner.
 fn listen(
     bus: &Connection,
-    shell: &Proxy<'_>,
-    state: &Mutex<ImeState>,
+    shell: &Proxy<'static>,
+    state: &Arc<Mutex<ImeState>>,
     handle: &ChannelHandle,
 ) -> zbus::Result<()> {
     let rule = crate::signals(SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)?.build();
     let signals = MessageIterator::for_match_rule(rule, bus, Some(64))?;
-    crate::report("IME register failed", register(shell));
-    for signal in signals {
-        match signal {
-            Ok(signal) => {
-                let mut ime = sync::lock(state);
-                if let Some(message) = ime.shell(&signal) {
-                    let _ = handle.send(message);
+    let (state, handle, owner) = (Arc::clone(state), handle.clone(), shell.clone());
+    let rules = vec![(
+        crate::owner_changes(SHELL_BUS_NAME)?,
+        crate::gained_owner as _,
+    )];
+    crate::follow(bus, rules, move || {
+        crate::report("IME register failed", register(&owner));
+    })?;
+    thread::spawn(move || {
+        for signal in signals {
+            match signal {
+                Ok(signal) => {
+                    let mut ime = sync::lock(&state);
+                    if let Some(message) = ime.shell(&signal) {
+                        let _ = handle.send(message);
+                    }
                 }
+                Err(error) => eprintln!("deckard-bridge: Shell IME signal failed: {error}"),
             }
-            Err(error) => eprintln!("deckard-bridge: Shell IME signal failed: {error}"),
         }
-    }
-    Ok(())
-}
-
-/// Registers again whenever the Shell gets a new bus owner.
-fn follow_owner(bus: &Connection, shell: &Proxy<'_>) -> zbus::Result<()> {
-    let changes =
-        MessageIterator::for_match_rule(crate::owner_changes(SHELL_BUS_NAME)?, bus, Some(8))?;
-    for change in changes {
-        if change.is_ok_and(|change| crate::gained_owner(&change)) {
-            crate::report("IME register failed", register(shell));
-        }
-    }
+    });
     Ok(())
 }
 
