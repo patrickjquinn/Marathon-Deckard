@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,8 +28,9 @@ const LEGACY_RUN: &str = "/run/waydroid-lxc";
 const LEGACY_APP_ID_PREFIX: &str = "waydroid.";
 const LEGACY_USER_STATE: &str = "waydroid";
 const SHELL: &str = "/usr/bin/marathon-shell-bin";
-const APK_DATABASE: &str = "/lib/apk/db/installed";
-const PACKAGES: [&str; 2] = ["deckard", "marathon-shell"];
+/// Files a start remakes, by their path in the tree: tmpfiles' seed and the
+/// bridge's copies of the Shell's state.
+const REMADE: [&str; 3] = ["waydroid.cfg", "data/deckard/doze", "data/deckard/palette"];
 const SYSTEM_PROCESSES: [&str; 1] = ["/usr/libexec/deckard-containerd"];
 const USER_PROCESSES: [&str; 3] = [
     SHELL,
@@ -98,8 +99,6 @@ struct Journal {
     /// Steps finished in `direction`, in order.
     done: Vec<Step>,
     complete: bool,
-    /// Package versions when the transaction started.
-    packages: BTreeMap<String, String>,
     /// Each moved tree, by its step.
     roots: BTreeMap<Step, Root>,
     /// Android packages and their UIDs, from `packages.list`.
@@ -190,16 +189,30 @@ fn map_config(text: &str, direction: Direction) -> String {
     result
 }
 
-/// Renames `from` to `to`; done when only `to` exists. An empty `to` (made
-/// by a start before the move) gives way.
+/// Whether the tree at `path` holds only what a start makes: directories,
+/// sockets and [`REMADE`].
+fn fresh(root: &Path, path: &Path) -> io::Result<bool> {
+    let kind = fs::symlink_metadata(path)?.file_type();
+    if !kind.is_dir() {
+        let remade = kind.is_file() && REMADE.iter().any(|name| root.join(name) == path);
+        return Ok(remade || kind.is_socket());
+    }
+    for entry in fs::read_dir(path)? {
+        if !fresh(root, &entry?.path())? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Renames `from` to `to`; done when only `to` exists. A fresh `to`, made by
+/// a start while an earlier move had failed, gives way.
 fn rename(from: &Path, to: &Path) -> io::Result<()> {
     let source = files::found(fs::symlink_metadata(from))?;
     let target = files::found(fs::symlink_metadata(to))?;
     match (source, target) {
         (None, _) => return Ok(()),
-        (Some(_), Some(target)) if target.is_dir() && fs::read_dir(to)?.next().is_none() => {
-            fs::remove_dir(to)?;
-        }
+        (Some(_), Some(_)) if fresh(to, to)? => fs::remove_dir_all(to)?,
         (Some(_), Some(_)) => {
             let message = format!("both {} and {} exist", from.display(), to.display());
             return Err(io::Error::other(message));
@@ -248,20 +261,6 @@ fn running(executables: &[&str]) -> Option<String> {
         }
     }
     None
-}
-
-fn package_versions() -> BTreeMap<String, String> {
-    let text = fs::read_to_string(APK_DATABASE).unwrap_or_default();
-    let mut versions = BTreeMap::new();
-    let mut name = None;
-    for line in text.lines() {
-        if let Some(package) = line.strip_prefix("P:") {
-            name = PACKAGES.contains(&package).then_some(package);
-        } else if let (Some(version), Some(package)) = (line.strip_prefix("V:"), name) {
-            versions.insert(package.to_owned(), version.to_owned());
-        }
-    }
-    versions
 }
 
 fn android_apps(data: &Path) -> BTreeMap<String, u32> {
@@ -461,7 +460,6 @@ fn transact(direction: Direction, home: Option<&Path>) -> io::Result<()> {
             direction,
             done: Vec::new(),
             complete: false,
-            packages: package_versions(),
             roots: BTreeMap::new(),
             apps: plan.data.as_ref().map_or_else(BTreeMap::new, |(from, to)| {
                 android_apps(if from.exists() { from } else { to })

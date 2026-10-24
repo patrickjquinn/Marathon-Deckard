@@ -76,15 +76,27 @@ impl Navigation {
     }
 }
 
-fn shell() -> Connection {
-    serve(
+/// The Shell, whose name is given up on drop: closing the connection frees
+/// it only later, after the next test may have asked for its owner.
+struct Shell(Connection);
+
+impl Drop for Shell {
+    fn drop(&mut self) {
+        let _ = self.0.release_name("org.marathonos.Shell");
+    }
+}
+
+fn shell() -> Shell {
+    Shell(serve(
         "org.marathonos.Shell",
         "/org/marathonos/Shell/Navigation",
         Navigation,
-    )
+    ))
 }
 
-/// Sharing on its own connection with DeckardSystem as `sent`, and a client.
+/// Sharing with DeckardSystem as `sent`, and a client. Sharing is served by
+/// a builder, which returns once its object server takes calls; a call sent
+/// before then is dropped and never answered.
 fn start(xfer: &Path) -> (Connection, Sharing, Sent, Proxy<'static>) {
     let sent = Sent::default();
     let sink = sent.clone();
@@ -92,11 +104,13 @@ fn start(xfer: &Path) -> (Connection, Sharing, Sent, Proxy<'static>) {
         sink.lock().unwrap().push(message);
         true
     });
-    let bus = Connection::session().unwrap();
-    let sharing = Sharing::new(bus.inner().clone(), send, xfer.into());
-    bus.object_server()
-        .at("/org/marathonos/Deckard", sharing.clone())
+    let calls = Connection::session().unwrap();
+    let sharing = Sharing::new(calls.inner().clone(), send, xfer.into());
+    let bus = Builder::session().unwrap();
+    let bus = bus
+        .serve_at("/org/marathonos/Deckard", sharing.clone())
         .unwrap();
+    let bus = bus.build().unwrap();
     let (client, to) = (
         Connection::session().unwrap(),
         bus.unique_name().unwrap().to_string(),

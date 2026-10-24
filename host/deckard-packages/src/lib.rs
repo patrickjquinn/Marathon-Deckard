@@ -332,17 +332,17 @@ impl Packages {
         }
         let copy_failed = || failed("cannot copy the app into Android");
         input.rewind().map_err(|_| copy_failed())?;
-        let fits = |used| (used <= MAX_STAGED_BYTES - bytes).then_some(used + bytes);
-        let (budget, order) = (Arc::clone(&self.0.staged), Ordering::SeqCst);
-        if budget.fetch_update(order, order, fits).is_err() {
-            let why = "too many staged Android apps";
-            return Err(fdo::Error::LimitsExceeded(why.to_owned()));
-        }
+        let budget = Arc::clone(&self.0.staged);
+        let used = budget.fetch_add(bytes, Ordering::SeqCst);
         let mut staged = Staged {
             path: None,
             bytes,
             budget,
         };
+        if used > MAX_STAGED_BYTES - bytes {
+            let why = "too many staged Android apps";
+            return Err(fdo::Error::LimitsExceeded(why.to_owned()));
+        }
         let name = format!("{}.apk", random_id()?);
         let target = self.0.install_dir.join(&name);
         let mut options = OpenOptions::new();

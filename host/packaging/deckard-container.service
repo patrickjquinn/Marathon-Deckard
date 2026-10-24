@@ -1,6 +1,8 @@
 [Unit]
 Description=Deckard Android container
 ConditionPathExists=/run/user/1000/deckard-requested
+Requisite=deckard-migrate.service
+After=deckard-migrate.service
 
 [Service]
 Type=dbus
