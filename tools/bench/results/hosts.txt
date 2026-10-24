@@ -1,0 +1,67 @@
+{"label": "rust-1-container", "kind": "startup", "name": "id.waydro.Container", "command_ms": 401, "name_ms": 354, "peers_ms": null, "boot_ms": null}
+{"label": "rust-1-session", "kind": "startup", "name": "id.waydro.Session", "command_ms": 112, "name_ms": 88, "peers_ms": null, "boot_ms": 10693}
+rust-1-procs deckard-container.service 261114 /usr/libexec/deckard-containerd --production-run 
+rust-1-procs deckard-container.service 261200 dnsmasq --conf-file=/dev/null --strict-order --bind-interfaces --pid-file=/run/w
+rust-1-procs deckard-session.service 261131 /usr/libexec/deckard-runtime session start 
+rust-1-idle pid=261114 comm=deckard-contain window_s=120.004070235 rss_kb=3300 pss_kb=2665 uss_kb=2656 private_dirty_kb=348 threads=7 cpu_ms=66.47 tick_ms=60 slices_s=66.00 vol_s=60.65 invol_s=5.35
+rust-1-idle pid=261131 comm=deckard-runtime window_s=120.004070235 rss_kb=3124 pss_kb=2489 uss_kb=2480 private_dirty_kb=492 threads=11 cpu_ms=36.51 tick_ms=30 slices_s=24.02 vol_s=24.01 invol_s=0.02
+{"label": "rust-1", "kind": "launch", "n": 10, "missing": 0, "median_ms": 160.235, "min_ms": 142.26, "max_ms": 174.09, "samples_ms": [146.82, 170.53, 164.82, 162.4, 155.0, 170.6, 158.07, 151.15, 174.09, 142.26]}
+rust-1-work pid=261114 comm=deckard-contain window_s=31.766311457 rss_kb=3304 pss_kb=2669 uss_kb=2660 private_dirty_kb=352 threads=7 cpu_ms=30.16 tick_ms=30 slices_s=56.16 vol_s=53.33 invol_s=2.83
+rust-1-work pid=261131 comm=deckard-runtime window_s=31.766311457 rss_kb=3124 pss_kb=2489 uss_kb=2480 private_dirty_kb=492 threads=11 cpu_ms=13.97 tick_ms=20 slices_s=24.21 vol_s=24.02 invol_s=0.22
+rust-1 android=STOPPED
+{"label": "rust-2-container", "kind": "startup", "name": "id.waydro.Container", "command_ms": 351, "name_ms": 327, "peers_ms": null, "boot_ms": null}
+{"label": "rust-2-session", "kind": "startup", "name": "id.waydro.Session", "command_ms": 111, "name_ms": 99, "peers_ms": null, "boot_ms": 10711}
+rust-2-procs deckard-container.service 264399 /usr/libexec/deckard-containerd --production-run 
+rust-2-procs deckard-container.service 264482 dnsmasq --conf-file=/dev/null --strict-order --bind-interfaces --pid-file=/run/w
+rust-2-procs deckard-session.service 264415 /usr/libexec/deckard-runtime session start 
+rust-2-idle pid=264399 comm=deckard-contain window_s=120.004722615 rss_kb=3292 pss_kb=2669 uss_kb=2660 private_dirty_kb=352 threads=7 cpu_ms=71.28 tick_ms=70 slices_s=76.73 vol_s=69.74 invol_s=6.99
+rust-2-idle pid=264415 comm=deckard-runtime window_s=120.004722615 rss_kb=3208 pss_kb=2496 uss_kb=2484 private_dirty_kb=496 threads=11 cpu_ms=37.64 tick_ms=30 slices_s=24.12 vol_s=24.00 invol_s=0.12
+{"label": "rust-2", "kind": "launch", "n": 10, "missing": 0, "median_ms": 150.29500000000002, "min_ms": 141.06, "max_ms": 216.07, "samples_ms": [146.4, 148.77, 174.44, 141.06, 216.07, 158.47, 145.29, 162.45, 151.82, 144.87]}
+rust-2-work pid=264399 comm=deckard-contain window_s=31.743545063 rss_kb=3296 pss_kb=2673 uss_kb=2664 private_dirty_kb=356 threads=7 cpu_ms=29.80 tick_ms=30 slices_s=62.28 vol_s=58.69 invol_s=3.62
+rust-2-work pid=264415 comm=deckard-runtime window_s=31.743545063 rss_kb=3208 pss_kb=2496 uss_kb=2484 private_dirty_kb=496 threads=11 cpu_ms=13.84 tick_ms=10 slices_s=24.41 vol_s=24.04 invol_s=0.38
+rust-2 android=STOPPED
+{"label": "rust-3-container", "kind": "startup", "name": "id.waydro.Container", "command_ms": 351, "name_ms": 340, "peers_ms": null, "boot_ms": null}
+{"label": "rust-3-session", "kind": "startup", "name": "id.waydro.Session", "command_ms": 110, "name_ms": 93, "peers_ms": null, "boot_ms": 10754}
+rust-3-procs deckard-container.service 267608 /usr/libexec/deckard-containerd --production-run 
+rust-3-procs deckard-container.service 267693 dnsmasq --conf-file=/dev/null --strict-order --bind-interfaces --pid-file=/run/w
+rust-3-procs deckard-session.service 267624 /usr/libexec/deckard-runtime session start 
+rust-3-idle pid=267608 comm=deckard-contain window_s=120.004344349 rss_kb=3380 pss_kb=2668 uss_kb=2656 private_dirty_kb=348 threads=7 cpu_ms=67.32 tick_ms=70 slices_s=58.03 vol_s=54.01 invol_s=4.02
+rust-3-idle pid=267624 comm=deckard-runtime window_s=120.004344349 rss_kb=3116 pss_kb=2485 uss_kb=2476 private_dirty_kb=488 threads=11 cpu_ms=37.63 tick_ms=40 slices_s=24.07 vol_s=24.01 invol_s=0.06
+{"label": "rust-3", "kind": "launch", "n": 10, "missing": 0, "median_ms": 148.14, "min_ms": 133.26, "max_ms": 160.64, "samples_ms": [150.32, 148.59, 152.71, 146.28, 151.19, 139.47, 133.26, 140.66, 147.69, 160.64]}
+rust-3-work pid=267608 comm=deckard-contain window_s=31.544521767 rss_kb=3384 pss_kb=2672 uss_kb=2660 private_dirty_kb=352 threads=7 cpu_ms=29.19 tick_ms=30 slices_s=54.56 vol_s=52.15 invol_s=2.41
+rust-3-work pid=267624 comm=deckard-runtime window_s=31.544521767 rss_kb=3116 pss_kb=2485 uss_kb=2476 private_dirty_kb=488 threads=11 cpu_ms=13.64 tick_ms=10 slices_s=24.28 vol_s=24.03 invol_s=0.25
+rust-3 android=STOPPED
+{"label": "python-1-container", "kind": "startup", "name": "id.waydro.Container", "command_ms": 251, "name_ms": 238, "peers_ms": null, "boot_ms": null}
+{"label": "python-1-session", "kind": "startup", "name": "id.waydro.Session", "command_ms": 277, "name_ms": 431, "peers_ms": null, "boot_ms": 10985}
+python-1-procs waydroid-container.service 270883 python3 /usr/bin/waydroid container start 
+python-1-procs waydroid-container.service 270953 dnsmasq --conf-file=/dev/null -u dnsmasq --strict-order --bind-interfaces --pid-
+python-1-procs bench-waydroid-session.service 270902 python3 /usr/bin/waydroid session start 
+python-1-idle pid=270883 comm=python3 window_s=120.004170775 rss_kb=35120 pss_kb=23305 uss_kb=20824 private_dirty_kb=20812 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+python-1-idle pid=270902 comm=python3 window_s=120.004170775 rss_kb=35000 pss_kb=23146 uss_kb=20664 private_dirty_kb=20616 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+{"label": "python-1", "kind": "launch", "n": 10, "missing": 0, "median_ms": 145.355, "min_ms": 130.48, "max_ms": 180.0, "samples_ms": [149.12, 152.31, 140.79, 179.14, 180.0, 135.66, 143.54, 130.48, 147.17, 140.83]}
+python-1-work pid=270883 comm=python3 window_s=31.568697830 rss_kb=35224 pss_kb=23409 uss_kb=20928 private_dirty_kb=20916 threads=7 cpu_ms=24.51 tick_ms=30 slices_s=1.77 vol_s=1.39 invol_s=0.38
+python-1-work pid=270902 comm=python3 window_s=31.568697830 rss_kb=35000 pss_kb=23145 uss_kb=20664 private_dirty_kb=20616 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+python-1 android=STOPPED
+{"label": "python-2-container", "kind": "startup", "name": "id.waydro.Container", "command_ms": 301, "name_ms": 270, "peers_ms": null, "boot_ms": null}
+{"label": "python-2-session", "kind": "startup", "name": "id.waydro.Session", "command_ms": 112, "name_ms": 289, "peers_ms": null, "boot_ms": 10926}
+python-2-procs waydroid-container.service 274129 python3 /usr/bin/waydroid container start 
+python-2-procs waydroid-container.service 274192 dnsmasq --conf-file=/dev/null -u dnsmasq --strict-order --bind-interfaces --pid-
+python-2-procs bench-waydroid-session.service 274145 python3 /usr/bin/waydroid session start 
+python-2-idle pid=274129 comm=python3 window_s=120.004051018 rss_kb=35116 pss_kb=23285 uss_kb=20816 private_dirty_kb=20808 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+python-2-idle pid=274145 comm=python3 window_s=120.004051018 rss_kb=35004 pss_kb=23103 uss_kb=20632 private_dirty_kb=20612 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+{"label": "python-2", "kind": "launch", "n": 10, "missing": 0, "median_ms": 164.04500000000002, "min_ms": 132.55, "max_ms": 218.2, "samples_ms": [132.55, 218.2, 147.28, 156.59, 140.74, 145.34, 178.79, 172.96, 180.21, 171.5]}
+python-2-work pid=274129 comm=python3 window_s=31.754510817 rss_kb=35220 pss_kb=23389 uss_kb=20920 private_dirty_kb=20912 threads=7 cpu_ms=21.11 tick_ms=20 slices_s=1.76 vol_s=1.32 invol_s=0.50
+python-2-work pid=274145 comm=python3 window_s=31.754510817 rss_kb=35004 pss_kb=23103 uss_kb=20632 private_dirty_kb=20612 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+python-2 android=STOPPED
+{"label": "python-3-container", "kind": "startup", "name": "id.waydro.Container", "command_ms": 301, "name_ms": 257, "peers_ms": null, "boot_ms": null}
+{"label": "python-3-session", "kind": "startup", "name": "id.waydro.Session", "command_ms": 109, "name_ms": 304, "peers_ms": null, "boot_ms": 10921}
+python-3-procs waydroid-container.service 277491 python3 /usr/bin/waydroid container start 
+python-3-procs waydroid-container.service 277552 dnsmasq --conf-file=/dev/null -u dnsmasq --strict-order --bind-interfaces --pid-
+python-3-procs bench-waydroid-session.service 277505 python3 /usr/bin/waydroid session start 
+python-3-idle pid=277491 comm=python3 window_s=120.004236685 rss_kb=35028 pss_kb=23282 uss_kb=20844 private_dirty_kb=20804 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+python-3-idle pid=277505 comm=python3 window_s=120.004236685 rss_kb=34984 pss_kb=23161 uss_kb=20712 private_dirty_kb=20612 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+{"label": "python-3", "kind": "launch", "n": 10, "missing": 0, "median_ms": 155.1, "min_ms": 128.81, "max_ms": 200.38, "samples_ms": [128.81, 155.44, 156.51, 154.76, 160.72, 141.21, 145.87, 200.38, 146.72, 189.63]}
+python-3-work pid=277491 comm=python3 window_s=31.746704072 rss_kb=35140 pss_kb=23394 uss_kb=20956 private_dirty_kb=20916 threads=7 cpu_ms=18.12 tick_ms=20 slices_s=1.61 vol_s=1.23 invol_s=0.41
+python-3-work pid=277505 comm=python3 window_s=31.746704072 rss_kb=34984 pss_kb=23161 uss_kb=20712 private_dirty_kb=20612 threads=7 cpu_ms=0.00 tick_ms=0 slices_s=0.00 vol_s=0.00 invol_s=0.00
+python-3 android=STOPPED
+phase hosts finished
