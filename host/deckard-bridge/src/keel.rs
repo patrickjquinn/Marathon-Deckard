@@ -22,8 +22,8 @@ use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::fdo::{DBusProxy, RequestNameFlags, RequestNameReply};
 use zbus::message::Header;
-use zbus::zvariant::OwnedValue;
-use zbus::{Connection, connection};
+use zbus::zvariant::{OwnedValue, Value as Variant};
+use zbus::{Connection, DBusError, connection, interface};
 
 use crate::intents::{self, NAVIGATION};
 
@@ -48,7 +48,7 @@ const UNKNOWN_SECURE: &str = "Android cannot say whether the screen is protected
 const NO_SHELL: &str = "the shell did not answer";
 
 /// Keel's errors, as keel-mcp maps them.
-#[derive(Debug, zbus::DBusError)]
+#[derive(Debug, DBusError)]
 #[zbus(prefix = "org")]
 pub enum Error {
     #[zbus(error)]
@@ -256,6 +256,7 @@ impl KeelApps {
     }
 
     /// The DeckardBridge messages `handle` takes.
+    #[must_use]
     pub fn handles(kind: &str) -> bool {
         matches!(
             kind,
@@ -582,7 +583,7 @@ impl Shared {
     }
 
     async fn shell(&self, action: &str, args: Value) -> Result<Map<String, Value>, Error> {
-        let options: HashMap<&str, zbus::zvariant::Value<'_>> = HashMap::new();
+        let options: HashMap<&str, Variant<'_>> = HashMap::new();
         let body = (action, args.to_string(), options);
         let shell = ("org.marathonos.shell", PATH, INTERFACE);
         match intents::call(&self.bus, shell, "Invoke", &body, SHELL_TIMEOUT).await {
@@ -889,7 +890,7 @@ fn no_entity(entity_type: &str) -> Error {
     Error::UnknownAction(format!("no entity type {entity_type}"))
 }
 
-#[zbus::interface(name = "org.shipwright.Keel.Actions")]
+#[interface(name = "org.shipwright.Keel.Actions")]
 impl Provider {
     fn describe(&self) -> String {
         let Ok(shared) = self.shared() else {

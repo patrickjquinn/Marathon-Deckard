@@ -141,7 +141,7 @@ pub fn route(m: &Map<String, Value>) -> Result<Target, &'static str> {
             let args = object(json!({"url": url, "newTab": true}));
             Ok(Target::Keel("browser", "browser.open", args))
         }
-        "tel" | "sms" => phone(kind == "tel", &scheme, m),
+        "tel" | "sms" => phone(kind, &scheme, m),
         "mailto" => Ok(mail(m)),
         "geo" if scheme == "geo" => Ok(geo(uri)),
         "geo" => Err("not a geo: URI"),
@@ -176,7 +176,8 @@ fn web(uri: &str, scheme: &str) -> Option<String> {
     Some(format!("{head}{tail}"))
 }
 
-fn phone(tel: bool, scheme: &str, m: &Map<String, Value>) -> Result<Target, &'static str> {
+fn phone(kind: &str, scheme: &str, m: &Map<String, Value>) -> Result<Target, &'static str> {
+    let tel = kind == "tel";
     let sms = ["sms", "smsto", "mms", "mmsto"].contains(&scheme);
     if (tel && scheme != "tel") || (!tel && !sms) {
         return Err("wrong scheme");
@@ -347,6 +348,10 @@ pub(crate) async fn within<T>(limit: Duration, work: impl Future<Output = T>) ->
 }
 
 /// Calls `method` of `to`, failing once `limit` has passed.
+///
+/// # Errors
+///
+/// The call's error, or a failure once `limit` has passed.
 pub(crate) async fn call<B>(
     bus: &Connection,
     (service, path, interface): Endpoint<'_>,
@@ -422,6 +427,10 @@ fn open_at(dir: impl AsFd, name: impl Arg, flags: OFlags, mode: u32) -> io::Resu
 }
 
 /// `xfer/<id>/`, never through a link.
+///
+/// # Errors
+///
+/// When `id` is not a transfer ID or the directory cannot be opened.
 pub(crate) fn transfer(root: &Path, id: &str) -> io::Result<OwnedFd> {
     if !request_id(id) {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -431,6 +440,10 @@ pub(crate) fn transfer(root: &Path, id: &str) -> io::Result<OwnedFd> {
 }
 
 /// Makes `xfer/<id>/` and opens it.
+///
+/// # Errors
+///
+/// As [`transfer`], or when `xfer` cannot be made.
 pub(crate) fn new_transfer(root: &Path, id: &str) -> io::Result<OwnedFd> {
     fs::create_dir_all(root)?;
     let dir = open_at(CWD, root, OFlags::RDONLY | OFlags::DIRECTORY, 0)?;
@@ -441,6 +454,10 @@ pub(crate) fn new_transfer(root: &Path, id: &str) -> io::Result<OwnedFd> {
 }
 
 /// A regular file in `dir`, never through a link nor blocking on a FIFO.
+///
+/// # Errors
+///
+/// When it cannot be opened or is not a regular file.
 pub(crate) fn open_file(dir: impl AsFd, name: impl Arg) -> io::Result<OwnedFd> {
     let fd = open_at(dir, name, OFlags::RDONLY | OFlags::NONBLOCK, 0)?;
     file_size(fd.as_fd()).ok_or(io::ErrorKind::InvalidInput)?;

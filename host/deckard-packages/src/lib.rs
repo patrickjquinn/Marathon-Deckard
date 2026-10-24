@@ -21,7 +21,7 @@ use zbus::export::serde::Serialize;
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{DynamicType, OwnedValue, Value as Variant};
-use zbus::{DBusError, fdo, interface};
+use zbus::{DBusError, Task, fdo, interface};
 
 pub const BUS_NAME: &str = "org.marathonos.Deckard";
 pub const OBJECT_PATH: &str = "/org/marathonos/Deckard";
@@ -104,7 +104,7 @@ struct Pending {
     staged: Option<Staged>,
     /// None for a job, which ends with `Finished`.
     reply: Option<Sender<Answer>>,
-    _timeout: zbus::Task<()>,
+    _timeout: Task<()>,
 }
 
 struct Inner {

@@ -14,13 +14,13 @@ use std::time::Duration;
 use async_channel::Sender;
 use deckard_core::{ids, keel, png_guard, sync, text, validate};
 use serde_json::{Map, Value, json};
-use zbus::interface;
 use zbus::message::Header;
 use zbus::zvariant::{Dict, Fd, Value as Variant};
+use zbus::{Connection, interface};
 
 use crate::api::{self, ApiError};
 use crate::contract::VariantMap;
-use crate::intents::{self, NAVIGATION, SendSystem};
+use crate::intents::{self, Endpoint, NAVIGATION, SendSystem, Tasks};
 
 const MAX_RESOURCES: usize = 32;
 const MAX_TARGETS: usize = 64;
@@ -29,7 +29,7 @@ const MAX_BYTES: u64 = 1 << 30;
 const MAX_PENDING: usize = 16;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const BAD_REQUEST: &str = "a target and 1 to 32 resources";
-const DBUS: intents::Endpoint<'static> = (
+const DBUS: Endpoint<'static> = (
     "org.freedesktop.DBus",
     "/org/freedesktop/DBus",
     "org.freedesktop.DBus",
@@ -62,16 +62,16 @@ impl State {
 /// messages.
 #[derive(Clone)]
 pub struct Sharing {
-    bus: zbus::Connection,
+    bus: Connection,
     send: Arc<SendSystem>,
     xfer: PathBuf,
     state: Arc<Mutex<State>>,
-    tasks: Arc<intents::Tasks>,
+    tasks: Arc<Tasks>,
 }
 
 impl Sharing {
     /// Shares through `xfer/<id>/`.
-    pub fn new(bus: zbus::Connection, send: Arc<SendSystem>, xfer: PathBuf) -> Self {
+    pub fn new(bus: Connection, send: Arc<SendSystem>, xfer: PathBuf) -> Self {
         let (state, tasks) = (Arc::default(), Arc::default());
         Self {
             bus,

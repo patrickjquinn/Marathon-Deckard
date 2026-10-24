@@ -13,10 +13,10 @@ use deckard_core::runtime_state::{ResetError, State, UnitCall};
 use deckard_core::{ids, png_guard};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use zbus::interface;
 use zbus::message::{Flags, Header, Message};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::DynamicType;
+use zbus::{Connection, DBusError, interface};
 
 use crate::auth;
 use crate::contract::{self, Fixed, VariantMap};
@@ -35,7 +35,7 @@ const RESET_HELPER: &str = "/usr/libexec/deckard-reset";
 const MAX_ICON_BYTES: usize = 512 * 1024;
 
 /// The errors of Deckard's Settings and Share interfaces.
-#[derive(Debug, zbus::DBusError)]
+#[derive(Debug, DBusError)]
 #[zbus(prefix = "org")]
 pub enum ApiError {
     #[zbus(name = "freedesktop.DBus.Error.InvalidArgs")]
@@ -68,12 +68,7 @@ pub(crate) fn png_uri(png: &[u8]) -> String {
 }
 
 /// Calls `method` without waiting for a reply.
-async fn notify<B>(
-    bus: &zbus::Connection,
-    to: Endpoint<'_>,
-    method: &str,
-    body: &B,
-) -> zbus::Result<()>
+async fn notify<B>(bus: &Connection, to: Endpoint<'_>, method: &str, body: &B) -> zbus::Result<()>
 where
     B: Serialize + DynamicType,
 {
@@ -88,7 +83,7 @@ where
 /// `org.marathonos.Deckard1` at [`OBJECT_PATH`].
 #[derive(Clone)]
 pub struct SettingsApi {
-    pub bus: zbus::Connection,
+    pub bus: Connection,
     pub runtime: Runtime,
     pub manage: Manage,
     pub icon_dirs: Vec<PathBuf>,
