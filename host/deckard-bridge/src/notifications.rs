@@ -208,16 +208,14 @@ fn toast_label(message: &Map<String, Value>) -> String {
 }
 
 fn live_keys(message: &Map<String, Value>) -> Vec<String> {
-    message
-        .get("keys")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .take(MAX_SYNC_KEYS)
-        .filter_map(Value::as_str)
-        .filter(|key| notification_key(key).is_ok())
-        .map(str::to_owned)
-        .collect()
+    let keys = keel::array(message, "keys");
+    let mut live = Vec::new();
+    for key in &keys[..keys.len().min(MAX_SYNC_KEYS)] {
+        if let Some(key) = key.as_str().filter(|key| notification_key(key).is_ok()) {
+            live.push(key.to_owned());
+        }
+    }
+    live
 }
 
 fn save_icon(directory: &Path, package: &str, png: &[u8]) -> io::Result<()> {
