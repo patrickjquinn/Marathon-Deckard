@@ -152,3 +152,7 @@ transiently before `m`:
 
     dev=$(sudo zramctl --find --size 12G --algorithm zstd)
     sudo mkswap $dev && sudo swapon -p 100 $dev
+
+Do not put a swapfile on the SD card. With one there (equal priority with
+the NVMe swapfile), 9 GB of soong_build ended up on it and analysis took
+twice as long. `swapoff` moved it to zram in 1.5 minutes.

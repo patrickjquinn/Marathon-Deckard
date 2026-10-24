@@ -8,6 +8,7 @@ set -euo pipefail
 T=$(readlink -f "$1"); P=$(readlink -f "$(dirname "$0")/../patches")
 declare -A MAP=(
   [bionic]=bionic [build_make]=build/make [build_soong]=build/soong
+  [external_cronet]=external/cronet
   [external_flatbuffers]=external/flatbuffers
   [external_jemalloc_new]=external/jemalloc_new
   [external_pulseaudio]=external/pulseaudio

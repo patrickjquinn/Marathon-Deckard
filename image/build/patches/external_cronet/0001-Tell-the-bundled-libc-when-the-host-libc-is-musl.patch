@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sat, 24 Oct 2026 19:35:56 +0100
+Subject: [PATCH] Tell the bundled libc++ when the host libc is musl
+
+__config_site hard-codes _LIBCPP_HAS_MUSL_LIBC 0, so on a musl host
+(the only kind Soong builds on arm64) libc++ called strtoll_l and
+strtoull_l, which musl does not have. Soong defines ANDROID_HOST_MUSL
+for those builds; use it.
+
+Change-Id: Ib9a380e06f97e1303b2bb619cd5fe70c34440402
+---
+ stable/buildtools/third_party/libc++/__config_site | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/stable/buildtools/third_party/libc++/__config_site b/stable/buildtools/third_party/libc++/__config_site
+index 67075bd8..9564972a 100644
+--- a/stable/buildtools/third_party/libc++/__config_site
++++ b/stable/buildtools/third_party/libc++/__config_site
+@@ -25,7 +25,11 @@
+ #define _LIBCPP_HAS_THREADS 1
+ #define _LIBCPP_HAS_MONOTONIC_CLOCK 1
+ #define _LIBCPP_HAS_TERMINAL 1
++#if defined(ANDROID_HOST_MUSL)
++#define _LIBCPP_HAS_MUSL_LIBC 1
++#else
+ #define _LIBCPP_HAS_MUSL_LIBC 0
++#endif
+ 
+ #ifdef _WIN32
+ #define _LIBCPP_HAS_THREAD_API_PTHREAD 0
