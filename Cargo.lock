@@ -386,14 +386,15 @@ dependencies = [
 name = "deckard-container"
 version = "0.4.0"
 dependencies = [
+ "async-channel",
  "async-io",
+ "async-signal",
  "deckard-host-tools",
  "deckard-launch",
  "futures-lite",
  "rsbinder",
  "rustix",
  "serde",
- "signal-hook",
  "tempfile",
  "zbus",
 ]

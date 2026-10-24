@@ -7,11 +7,11 @@ use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use async_channel::Sender;
 use deckard_host_tools::{bus, cfg};
 use deckard_launch::binder::BinderConfig;
 use rustix::fd::OwnedFd;
@@ -196,7 +196,7 @@ enum HardwareOutcome {
 
 struct Backend {
     manager: ContainerManager,
-    hardware_sender: SyncSender<HardwareRequest>,
+    hardware_sender: Sender<HardwareRequest>,
     hardware_stop: Option<Arc<AtomicBool>>,
     suspend_stops: bool,
 }
@@ -376,7 +376,7 @@ pub struct ContainerService {
 
 impl ContainerService {
     #[must_use]
-    pub fn new(manager: ContainerManager, hardware_sender: SyncSender<HardwareRequest>) -> Self {
+    pub fn new(manager: ContainerManager, hardware_sender: Sender<HardwareRequest>) -> Self {
         let backend = Backend {
             manager,
             hardware_sender,
@@ -637,7 +637,7 @@ impl ContainerService {
 /// The system bus or the name is unavailable.
 pub async fn serve_system_bus(
     manager: ContainerManager,
-    hardware_sender: SyncSender<HardwareRequest>,
+    hardware_sender: Sender<HardwareRequest>,
 ) -> zbus::Result<(Connection, ContainerService)> {
     let service = ContainerService::new(manager, hardware_sender);
     let initializer = InitializerService::production(service.clone());
@@ -655,7 +655,6 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::process::Command;
-    use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use zbus::object_server::Interface;
 
@@ -672,7 +671,7 @@ mod tests {
             },
             network: Network::new("deckard0".into(), "/nonexistent/run".into())?,
         };
-        Ok(ContainerService::new(manager, mpsc::sync_channel(1).0))
+        Ok(ContainerService::new(manager, async_channel::bounded(1).0))
     }
 
     #[test]

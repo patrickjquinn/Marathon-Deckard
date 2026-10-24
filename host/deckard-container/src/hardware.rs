@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::SyncSender;
 
+use async_channel::Sender;
 use deckard_host_tools::names::android;
 use deckard_launch::binder::{self, BinderConfig, Reply, Service};
 use rsbinder::{Parcel, StatusCode};
@@ -83,7 +83,7 @@ fn admit(code: u32, parcel: &mut Parcel) -> Admission {
     }
 }
 
-struct Hardware(SyncSender<HardwareRequest>);
+struct Hardware(Sender<HardwareRequest>);
 
 impl Service for Hardware {
     const NAME: &'static str = android::HARDWARE.0;
@@ -108,7 +108,7 @@ impl Service for Hardware {
 /// The Binder device cannot be opened.
 pub fn run(
     config: &BinderConfig,
-    requests: SyncSender<HardwareRequest>,
+    requests: Sender<HardwareRequest>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     binder::serve(config, Hardware(requests), stop)

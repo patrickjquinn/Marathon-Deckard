@@ -1,10 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::time::Duration;
 
+use async_signal::{Signal, Signals};
 use deckard_container::dbus;
 use deckard_container::drivers::DriverNodes;
 use deckard_container::lxc::{ContainerManager, Lxc};
@@ -15,6 +12,7 @@ use deckard_container::{Result, hardware, properties};
 use deckard_host_tools::names;
 use deckard_launch::binder::{self, BinderConfig};
 use deckard_launch::session::ContainerManagerProxyBlocking;
+use futures_lite::{StreamExt, future};
 
 const USAGE: &str =
     "usage: deckard-containerd --audit-production | --audit-hardware | --production-run";
@@ -80,22 +78,18 @@ fn main() -> Result<()> {
         },
         network: Network::new(names::BRIDGE.into(), names::RUN.into())?,
     };
-    let (hardware_sender, hardware_receiver) = mpsc::sync_channel(hardware::QUEUE_DEPTH);
-    let terminating = Arc::new(AtomicBool::new(false));
-    for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
-        signal_hook::flag::register(signal, Arc::clone(&terminating))?;
-    }
+    let (hardware_sender, hardware_receiver) = async_channel::bounded(hardware::QUEUE_DEPTH);
+    let mut terminating = Signals::new([Signal::Term, Signal::Int])?;
     async_io::block_on(async {
         let (_connection, service) = dbus::serve_system_bus(manager, hardware_sender).await?;
-        while !terminating.load(Ordering::Relaxed) {
-            let batch = hardware_receiver.try_iter().take(8);
-            for request in batch {
+        let requests = async {
+            while let Ok(request) = hardware_receiver.recv().await {
                 if let Err(error) = service.handle_hardware_request(request).await {
                     eprintln!("deckard-containerd: hardware request failed: {error}");
                 }
             }
-            async_io::Timer::after(Duration::from_millis(100)).await;
-        }
+        };
+        future::or(requests, async { drop(terminating.next().await) }).await;
         service.shutdown().await?;
         Ok(())
     })
