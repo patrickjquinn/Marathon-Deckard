@@ -3,7 +3,7 @@ name = "deckard-overlay-sync"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license = "Apache-2.0"
+license = "GPL-3.0-or-later"
 publish.workspace = true
 
 [dependencies]
