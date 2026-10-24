@@ -9,8 +9,7 @@ use std::process;
 
 use deckard_core::palette::{self, Color, Theme};
 use deckard_core::runtime_state::SHELL_BUS_NAME;
-use futures_lite::{StreamExt, future};
-use zbus::MessageStream;
+use zbus::MatchRule;
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::zvariant::OwnedValue;
 
@@ -70,16 +69,14 @@ pub fn sync_doze(bus: &Connection, path: &Path) -> zbus::Result<()> {
     Ok(())
 }
 
-async fn refresh_palette(bus: &zbus::Connection, path: &Path) {
-    let reply = bus
-        .call_method(
-            Some(SHELL_BUS_NAME),
-            AMBIENCE_PATH,
-            Some(AMBIENCE_INTERFACE),
-            "GetAmbience",
-            &(),
-        )
-        .await;
+fn refresh_palette(bus: &Connection, path: &Path) {
+    let reply = bus.call_method(
+        Some(SHELL_BUS_NAME),
+        AMBIENCE_PATH,
+        Some(AMBIENCE_INTERFACE),
+        "GetAmbience",
+        &(),
+    );
     let ambience = match reply.and_then(|reply| reply.body().deserialize::<State>()) {
         Ok(ambience) => ambience,
         Err(error) => {
@@ -101,34 +98,16 @@ async fn refresh_palette(bus: &zbus::Connection, path: &Path) {
 
 /// Writes Android's 65 system colours for the current ambience highlight to
 /// `path`, again whenever the ambience or the Shell's bus owner changes.
-/// Changes during a `GetAmbience` fold into one more read, and the signal
-/// queues keep draining meanwhile, so a burst never wedges the connection.
 ///
 /// # Errors
 /// Returns the D-Bus error that prevented the subscription.
-pub fn sync_palette(bus: &zbus::Connection, path: &Path) -> zbus::Result<()> {
-    future::block_on(async {
-        let ambience = crate::signals(SHELL_BUS_NAME, AMBIENCE_PATH, AMBIENCE_INTERFACE)?;
-        let ambience = ambience.member("AmbienceChanged")?.build();
-        let owner = crate::owner_changes(SHELL_BUS_NAME)?;
-        let ambience = MessageStream::for_match_rule(ambience, bus, Some(8)).await?;
-        let owner = MessageStream::for_match_rule(owner, bus, Some(8)).await?;
-        let mut triggers = ambience.or(owner);
-        let (stale, refreshes) = async_channel::bounded(1);
-        let follow = async move {
-            while let Some(trigger) = triggers.next().await {
-                if trigger.is_ok() {
-                    let _ = stale.try_send(());
-                }
-            }
-        };
-        let refresh = async {
-            refresh_palette(bus, path).await;
-            while refreshes.recv().await.is_ok() {
-                refresh_palette(bus, path).await;
-            }
-        };
-        future::zip(follow, refresh).await;
-        Ok(())
-    })
+pub fn sync_palette(bus: &Connection, path: &Path) -> zbus::Result<()> {
+    let ambience = crate::signals(SHELL_BUS_NAME, AMBIENCE_PATH, AMBIENCE_INTERFACE)?;
+    let rules: Vec<(MatchRule<'static>, crate::Relevant)> = vec![
+        (ambience.member("AmbienceChanged")?.build(), |_| true),
+        (crate::owner_changes(SHELL_BUS_NAME)?, |_| true),
+    ];
+    let (bus, path) = (bus.clone(), path.to_owned());
+    crate::follow(&bus.clone(), rules, move || refresh_palette(&bus, &path))?;
+    Ok(())
 }

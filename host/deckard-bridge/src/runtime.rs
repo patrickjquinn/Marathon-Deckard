@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
-use std::thread;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use deckard_core::runtime_state::{ResetError, RuntimeState, State, UnitCall};
 use deckard_core::sync;
 use serde_json::{Map, Value};
-use zbus::blocking::{Connection, MessageIterator, Proxy};
+use zbus::MatchRule;
+use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
 
 pub const UNIT: &str = "deckard-session.service";
@@ -225,49 +225,29 @@ fn refresh(properties: &Proxy<'_>, runtime: &Runtime) -> zbus::Result<bool> {
 }
 
 /// Follows the session unit's `PropertiesChanged` and calls `changed` each
-/// time its state moves. Runs on a dedicated thread. Signals only mark the
-/// unit stale; a second thread reads it, so a burst never fills the signal
-/// queue while a `GetAll` reply waits behind it.
+/// time its state moves.
 ///
 /// # Errors
 /// Returns the D-Bus error that prevented the subscription.
 pub fn watch_unit(
     bus: &Connection,
-    runtime: &Runtime,
-    mut changed: impl FnMut() + Send,
+    runtime: Runtime,
+    mut changed: impl FnMut() + Send + 'static,
 ) -> zbus::Result<()> {
     let manager = Proxy::new(bus, SYSTEMD, MANAGER_PATH, MANAGER)?;
     let path: OwnedObjectPath = manager.call("LoadUnit", &(UNIT,))?;
     let rule = crate::signals(SYSTEMD, path.as_str(), PROPERTIES)?.member("PropertiesChanged")?;
-    let rule = rule.add_arg(UNIT_INTERFACE)?.build();
-    let signals = MessageIterator::for_match_rule(rule, bus, Some(8))?;
+    let rule = rule.add_arg(UNIT_INTERFACE)?.build().to_owned();
     if let Err(error) = manager.call::<_, _, ()>("Subscribe", &()) {
         eprintln!("deckard-bridge: systemd Subscribe failed: {error}");
     }
-    let properties = Proxy::new(bus, SYSTEMD, path.as_str(), PROPERTIES)?;
-    let mut update = || match refresh(&properties, runtime) {
+    let properties = Proxy::new(bus, SYSTEMD, path, PROPERTIES)?;
+    let rules: Vec<(MatchRule<'static>, crate::Relevant)> = vec![(rule, |_| true)];
+    crate::follow(bus, rules, move || match refresh(&properties, &runtime) {
         Ok(true) => changed(),
         Ok(false) => {}
         Err(error) => eprintln!("deckard-bridge: reading {UNIT} failed: {error}"),
-    };
-    let (stale, refreshes) = mpsc::sync_channel(1);
-    thread::scope(|scope| {
-        scope.spawn(move || {
-            update();
-            while refreshes.recv().is_ok() {
-                update();
-            }
-        });
-        for signal in signals {
-            match signal {
-                Ok(_) => {
-                    let _ = stale.try_send(());
-                }
-                Err(error) => eprintln!("deckard-bridge: {UNIT} signal failed: {error}"),
-            }
-        }
-        drop(stale);
-    });
+    })?;
     Ok(())
 }
 

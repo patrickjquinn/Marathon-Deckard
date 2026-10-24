@@ -8,9 +8,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use deckard_bridge::Outbound;
+use deckard_bridge::Wake;
 use deckard_bridge::api::{BUS_NAME, OBJECT_PATH, SettingsApi};
 use deckard_bridge::app_channel::{self, AppChannel, ChannelEvent, ChannelHandle};
-use deckard_bridge::audio::{self, AudioWake};
+use deckard_bridge::audio;
 use deckard_bridge::ime;
 use deckard_bridge::intents::Intents;
 use deckard_bridge::keel::KeelApps;
@@ -167,7 +168,7 @@ struct App {
     packages: PackageBridge,
     notifications: NotificationBridge,
     media: MprisAdapter,
-    audio: AudioWake,
+    audio: Wake,
     keel: KeelApps,
     intents: Intents,
     location: Option<LocationSync>,
@@ -421,9 +422,10 @@ fn main() -> Result<(), Error> {
     });
     let (watch_bus, watch_runtime) = (bus.clone(), runtime.clone());
     deckard_bridge::spawn("unit watch failed", move || {
-        runtime::watch_unit(&watch_bus, &watch_runtime, || {
-            emit_runtime(&watch_bus, &watch_runtime);
-            boot_watchdog.set_active_since(watch_runtime.active_since_ms());
+        let runtime = watch_runtime.clone();
+        runtime::watch_unit(&watch_bus.clone(), watch_runtime, move || {
+            emit_runtime(&watch_bus, &runtime);
+            boot_watchdog.set_active_since(runtime.active_since_ms());
         })
     });
     let (doze_bus, doze) = (bus.clone(), data.join("deckard/doze"));
@@ -432,7 +434,7 @@ fn main() -> Result<(), Error> {
     });
     let (palette_bus, palette) = (bus.clone(), data.join("deckard/palette"));
     deckard_bridge::spawn("palette sync failed", move || {
-        shell_sync::sync_palette(palette_bus.inner(), &palette)
+        shell_sync::sync_palette(&palette_bus, &palette)
     });
     let marker = dirs::runtime_dir()
         .unwrap_or_else(env::temp_dir)

@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 use deckard_bridge::runtime::{self, Runtime};
@@ -90,11 +89,9 @@ fn follows_unit_property_changes_without_polling() -> TestResult {
     let (changed, changes) = mpsc::channel();
     let bus = Connection::session()?;
     let watched = runtime.clone();
-    thread::spawn(move || {
-        runtime::watch_unit(&bus, &watched, || {
-            let _ = changed.send(());
-        })
-    });
+    runtime::watch_unit(&bus, watched, move || {
+        let _ = changed.send(());
+    })?;
     subscriptions.recv_timeout(Duration::from_secs(2))?;
 
     change(&systemd, &unit, "active", 5_000_000)?;
