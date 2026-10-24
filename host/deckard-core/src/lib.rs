@@ -5,7 +5,6 @@ pub mod ids;
 pub mod json;
 pub mod keel;
 pub mod messages;
-pub mod notification_state;
 pub mod palette;
 pub mod png_guard;
 pub mod pressure;

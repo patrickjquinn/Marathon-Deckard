@@ -6,9 +6,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+use deckard_bridge::notifications::Notifications;
 use deckard_core::messages;
-use deckard_core::notification_state::BridgeEvent;
-use deckard_notifications::NotificationAdapter;
 use image::{DynamicImage, ImageFormat};
 use serde_json::json;
 use zbus::blocking::{Connection, connection::Builder};
@@ -150,11 +149,11 @@ fn private_bus_notify_replace_close_and_legacy_state() -> TestResult<()> {
         .build()?;
     let home = tempfile::tempdir()?;
     let state_path = home.path().join("state/deckard/notifications.json");
-    let adapter = NotificationAdapter::new(
+    let adapter = Notifications::new(
         bus.connection()?,
-        &state_path,
+        state_path.clone(),
         home.path().join("icons"),
-        |_| {},
+        Arc::new(|_| true),
     )?;
 
     let first = post("android-key", "First", false);
@@ -190,11 +189,11 @@ fn private_bus_notify_replace_close_and_legacy_state() -> TestResult<()> {
     assert_eq!(persisted["android-key"]["id"], 41);
     assert_eq!(persisted["android-key"]["reply"], "a1");
 
-    let restored = NotificationAdapter::new(
+    let restored = Notifications::new(
         bus.connection()?,
-        &state_path,
+        state_path.clone(),
         home.path().join("icons"),
-        |_| {},
+        Arc::new(|_| true),
     )?;
     restored.post(&first)?;
     assert_eq!(
@@ -204,7 +203,11 @@ fn private_bus_notify_replace_close_and_legacy_state() -> TestResult<()> {
     );
     restored.post(&post("android-key", "Changed", false))?;
     assert_eq!(calls.lock().unwrap().notify[1].replaces_id, 41);
-    restored.remove("android-key")?;
+    restored.handle(
+        json!({"t": "remove", "key": "android-key"})
+            .as_object()
+            .unwrap(),
+    )?;
     assert_eq!(calls.lock().unwrap().close, [41]);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&std::fs::read(state_path)?)?,
@@ -223,14 +226,12 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
         .serve_at(PATH, FakeHub(calls))?
         .build()?;
     let home = tempfile::tempdir()?;
-    let (tx, rx) = mpsc::channel();
-    let adapter = NotificationAdapter::new(
+    let (tx, rx) = mpsc::sync_channel(8);
+    let adapter = Notifications::new(
         bus.connection()?,
         home.path().join("notifications.json"),
         home.path().join("icons"),
-        move |event| {
-            let _ = tx.send(event);
-        },
+        Arc::new(move |event| tx.try_send(serde_json::Value::Object(event)).is_ok()),
     )?;
     let _listener = adapter.listen()?;
     adapter.post(&post("tap", "Tap", false))?;
@@ -243,10 +244,7 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
     )?;
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(2))?,
-        BridgeEvent::Invoke {
-            key: "tap".into(),
-            action: "default".into()
-        }
+        json!({"t": "invoke", "key": "tap", "action": "default"})
     );
     hub.emit_signal(
         None::<&str>,
@@ -257,11 +255,7 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
     )?;
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(2))?,
-        BridgeEvent::Reply {
-            key: "tap".into(),
-            action: "a1".into(),
-            text: "Hello".into()
-        }
+        json!({"t": "reply", "key": "tap", "action": "a1", "text": "Hello"})
     );
     hub.emit_signal(
         None::<&str>,
@@ -290,9 +284,7 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
     )?;
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(2))?,
-        BridgeEvent::Dismiss {
-            key: "dismiss".into()
-        }
+        json!({"t": "dismiss", "key": "dismiss"})
     );
     Ok(())
 }
@@ -306,11 +298,11 @@ fn private_bus_image_data_uses_freedesktop_struct_signature() -> TestResult<()> 
         .serve_at(PATH, FakeHub(calls.clone()))?
         .build()?;
     let home = tempfile::tempdir()?;
-    let adapter = NotificationAdapter::new(
+    let adapter = Notifications::new(
         bus.connection()?,
         home.path().join("notifications.json"),
         home.path().join("icons"),
-        |_| {},
+        Arc::new(|_| true),
     )?;
     let mut png = io::Cursor::new(Vec::new());
     DynamicImage::new_rgba8(2, 3).write_to(&mut png, ImageFormat::Png)?;

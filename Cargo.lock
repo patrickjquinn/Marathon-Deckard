@@ -366,11 +366,11 @@ dependencies = [
  "deckard-core",
  "deckard-host-tools",
  "deckard-mpris",
- "deckard-notifications",
  "deckard-packages",
  "dirs",
  "futures-lite",
  "getrandom",
+ "hex",
  "image",
  "mime_guess",
  "percent-encoding",
@@ -378,6 +378,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "zbus",
 ]
@@ -463,18 +464,6 @@ dependencies = [
  "deckard-core",
  "image",
  "serde_json",
- "tempfile",
- "zbus",
-]
-
-[[package]]
-name = "deckard-notifications"
-version = "0.4.0"
-dependencies = [
- "deckard-core",
- "image",
- "serde_json",
- "sha2",
  "tempfile",
  "zbus",
 ]

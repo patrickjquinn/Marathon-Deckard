@@ -15,10 +15,10 @@ blocking = "=1.7.0"
 deckard-core = { path = "../deckard-core" }
 deckard-host-tools = { path = "../deckard-host-tools" }
 deckard-mpris = { path = "../deckard-mpris" }
-deckard-notifications = { path = "../deckard-notifications" }
 deckard-packages = { path = "../deckard-packages" }
 dirs = "=6.0.0"
 futures-lite.workspace = true
+hex.workspace = true
 getrandom = "=0.4.3"
 mime_guess = { version = "=2.0.5", default-features = false }
 percent-encoding = "=2.3.2"
@@ -26,11 +26,12 @@ regex.workspace = true
 rustix = { workspace = true, features = ["event"] }
 serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
+sha2 = "=0.10.9"
 zbus = { workspace = true, features = ["blocking-api"] }
 
 [dev-dependencies]
 image.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

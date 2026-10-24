@@ -8,7 +8,6 @@ members = [
     "host/deckard-host-tools",
     "host/deckard-launch",
     "host/deckard-mpris",
-    "host/deckard-notifications",
     "host/deckard-overlay-sync",
     "host/deckard-packages",
     "host/deckard-runtime",

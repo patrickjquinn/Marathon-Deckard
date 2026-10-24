@@ -17,7 +17,7 @@ use deckard_bridge::intents::Intents;
 use deckard_bridge::keel::KeelApps;
 use deckard_bridge::location::LocationSync;
 use deckard_bridge::manage::Manage;
-use deckard_bridge::notifications::NotificationBridge;
+use deckard_bridge::notifications::Notifications;
 use deckard_bridge::packages::PackageBridge;
 use deckard_bridge::prompts::PermissionPrompts;
 use deckard_bridge::reclaim::Reclaimer;
@@ -167,7 +167,7 @@ fn listen_system(mut listener: BridgeListener, system: &System) {
 struct App {
     handle: ChannelHandle,
     packages: PackageBridge,
-    notifications: NotificationBridge,
+    notifications: Notifications,
     media: MprisAdapter,
     audio: Wake,
     keel: KeelApps,
@@ -335,18 +335,13 @@ fn main() -> Result<(), Error> {
         store_handler,
     )?;
     let media = MprisAdapter::new(None, cache.with_file_name("art"))?;
-    let actions = Arc::clone(&to_user);
-    let notifications = NotificationBridge::new(
+    let notifications = Notifications::new(
         bus.clone(),
         state.join("notifications.json"),
         cache,
-        move |action| {
-            actions(deckard_bridge::object(
-                serde_json::to_value(&action).unwrap_or_default(),
-            ));
-        },
+        Arc::clone(&to_user),
     )?;
-    let _hub_listener = notifications.listen_hub()?;
+    let _hub_listener = notifications.listen()?;
     let xfer = data.join("deckard/xfer");
     let camera = dirs::picture_dir()
         .unwrap_or_else(|| home.join("Pictures"))

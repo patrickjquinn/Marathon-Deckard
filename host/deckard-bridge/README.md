@@ -31,7 +31,7 @@ must match the installed binary.
 | `doze.{h,cpp}`: `/data/deckard/doze` from `Power1.StateChanged` | `src/shell_sync.rs` `sync_doze` |
 | `palette.{h,cpp}`: `/data/deckard/palette` from the ambience highlight | `src/shell_sync.rs` `sync_palette`, `deckard-core::palette` |
 | `packages.{h,cpp}`: `org.marathonos.Deckard1.Packages`, install staging, mutation policy | `deckard-packages`, `src/packages.rs` |
-| `notifications.{h,cpp}`: Hub posts, actions, icons, toasts, `notifications.json` | `deckard-notifications`, `src/notifications.rs`, `deckard-core::notification_state` |
+| `notifications.{h,cpp}`: Hub posts, actions, icons, toasts, `notifications.json` | `src/notifications.rs` |
 | `mpris.{h,cpp}`: one MPRIS2 player per media session, album art | `deckard-mpris`, routed in `main.rs` `serve_app` |
 | `audio.{h,cpp}`: `{t:audio,quiet,alarm}` from the Shell's profile, DND and alarm volume | `src/audio.rs` |
 | `ime.{h,cpp}`: IME channel, `ShellTextInput` | `src/ime.rs` |
