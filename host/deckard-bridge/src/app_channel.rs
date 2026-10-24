@@ -1,19 +1,16 @@
 //! Authenticated, framed Android app socket with replaceable connections.
 
-use std::io::{self, ErrorKind};
+use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use deckard_core::ids::PackageName;
 use deckard_core::sync;
-use deckard_core::transport::{self, BridgeListener, BridgeSession};
+use deckard_core::transport::{self, BridgeListener, BridgeSession, BridgeWriter};
 use serde_json::{Map, Value};
 
-const READ_POLL: Duration = Duration::from_millis(100);
 const OUTBOUND_CAPACITY: usize = 256;
 /// One rate-limiter burst. While the consumer is behind, further messages
 /// are dropped as the limiter drops frames; past `transport::MAX_DROPPED` the
@@ -31,7 +28,7 @@ pub enum ChannelEvent {
 struct Active {
     generation: u64,
     outbound: SyncSender<Map<String, Value>>,
-    stop: Arc<AtomicBool>,
+    closer: BridgeWriter,
 }
 
 type Current = Arc<Mutex<Option<Active>>>;
@@ -77,7 +74,7 @@ impl ChannelHandle {
         match active.outbound.try_send(message) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
-                active.stop.store(true, Ordering::Release);
+                active.closer.close();
                 let text = "Android peer is not draining output";
                 Err(io::Error::new(io::ErrorKind::WouldBlock, text))
             }
@@ -135,39 +132,40 @@ impl AppChannel {
             };
             let generation = session.generation();
             eprintln!("deckard-bridge: {} connected", self.package.as_str());
+            let closer = match session.writer() {
+                Ok(closer) => closer,
+                Err(error) => {
+                    eprintln!("deckard-bridge: Android session failed: {error}");
+                    continue;
+                }
+            };
             let (outbound, receiver) = mpsc::sync_channel(OUTBOUND_CAPACITY);
-            let stop = Arc::new(AtomicBool::new(false));
             let next = Active {
                 generation,
                 outbound,
-                stop: Arc::clone(&stop),
+                closer,
             };
-            let previous = sync::lock(&self.active).replace(next);
-            if let Some(previous) = previous {
-                previous.stop.store(true, Ordering::Release);
-            }
+            sync::lock(&self.active).replace(next);
             let closed = |_| io::Error::new(io::ErrorKind::BrokenPipe, "channel events closed");
             self.events
                 .send(ChannelEvent::Connected(generation))
                 .map_err(closed)?;
             let events = self.events.clone();
             let active = Arc::clone(&self.active);
-            thread::spawn(move || serve(session, receiver, &events, &active, &stop));
+            thread::spawn(move || serve(session, receiver, &events, &active));
         }
     }
 }
 
 /// Runs `session`: what `outgoing` yields is written from a second thread,
-/// and each message read goes to `each` until the peer leaves, `stop` is
-/// set or `each` returns false.
+/// and each message read goes to `each` until the peer leaves, the session
+/// is closed or `each` returns false.
 pub fn pump(
     mut session: BridgeSession,
     mut outgoing: impl FnMut() -> Option<Map<String, Value>> + Send + 'static,
-    stop: &AtomicBool,
     mut each: impl FnMut(Map<String, Value>) -> bool,
 ) {
-    let started = session.set_read_timeout(Some(READ_POLL));
-    let mut writer = match started.and_then(|()| session.writer()) {
+    let mut writer = match session.writer() {
         Ok(writer) => writer,
         Err(error) => return eprintln!("deckard-bridge: Android session failed: {error}"),
     };
@@ -180,7 +178,7 @@ pub fn pump(
         }
         writer.close();
     });
-    while !stop.load(Ordering::Acquire) {
+    loop {
         match session.read_message() {
             Ok(Some(message)) => {
                 if !each(message) {
@@ -188,7 +186,6 @@ pub fn pump(
                 }
             }
             Ok(None) => break,
-            Err(error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
             Err(error) => {
                 eprintln!("deckard-bridge: Android read failed: {error}");
                 break;
@@ -202,14 +199,12 @@ fn serve(
     outbound: Receiver<Map<String, Value>>,
     events: &SyncSender<ChannelEvent>,
     active: &Mutex<Option<Active>>,
-    stop: &AtomicBool,
 ) {
     let generation = session.generation();
     let mut dropped = 0_u32;
     pump(
         session,
         move || outbound.recv().ok(),
-        stop,
         |message| match events.try_send(ChannelEvent::Message(generation, message)) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {

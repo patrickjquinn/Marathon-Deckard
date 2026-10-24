@@ -256,12 +256,6 @@ impl BridgeSession {
         self.generation
     }
 
-    /// # Errors
-    /// The socket refused the timeout.
-    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        self.stream.set_read_timeout(timeout)
-    }
-
     /// The next message, or `None` at a clean end of stream. Coalesced
     /// frames are drained before more is read; a protocol error closes the
     /// session.

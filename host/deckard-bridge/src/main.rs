@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -124,7 +123,7 @@ fn serve_system(
 ) {
     // Manage closes the queue when a new DeckardSystem connects.
     let outgoing = move || outgoing.recv_blocking().ok();
-    app_channel::pump(session, outgoing, &AtomicBool::new(false), |message| {
+    app_channel::pump(session, outgoing, |message| {
         system.handle(generation, &message);
         true
     });
