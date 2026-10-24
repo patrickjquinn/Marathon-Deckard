@@ -23,9 +23,13 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{DynamicType, OwnedValue, Value as Variant};
 use zbus::{DBusError, Task, fdo, interface};
 
+/// Deckard's bus name, owned by the bridge.
 pub const BUS_NAME: &str = "org.marathonos.Deckard";
+/// Where Deckard's interfaces are served.
 pub const OBJECT_PATH: &str = "/org/marathonos/Deckard";
+/// The package interface.
 pub const INTERFACE: &str = "org.marathonos.Deckard1.Packages";
+/// The most requests waiting for Android at once.
 pub const MAX_PENDING: usize = 64;
 const ANDROID_INSTALL_DIR: &str = "/data/deckard/install/";
 const MAX_APK_BYTES: u64 = 1 << 30;
@@ -37,6 +41,7 @@ const INSPECT_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A D-Bus `a{sv}`.
 pub type VariantMap = HashMap<String, OwnedValue>;
 /// Queues a message to the bridge on a route; false when it is not connected.
 pub type BridgeSend = dyn Fn(BridgeRoute, &Value) -> bool + Send + Sync;
@@ -157,6 +162,7 @@ impl Packages {
     }
 
     /// The interface to serve at [`OBJECT_PATH`].
+    #[must_use]
     pub fn interface(&self) -> PackagesInterface {
         PackagesInterface(Arc::downgrade(&self.0))
     }
@@ -232,6 +238,7 @@ impl Packages {
     }
 
     /// The requests still waiting for Android.
+    #[must_use]
     pub fn pending_count(&self) -> usize {
         sync::lock(&self.0.pending).len()
     }
@@ -411,14 +418,8 @@ impl PackagesInterface {
         let service = self.service()?;
         service.allowed(&header).await?;
         let (path, staged) = service.stage(path).await?;
-        let message = json!({"t": "install", "path": path});
-        service.start(
-            Kind::Install,
-            BridgeRoute::User,
-            message,
-            Some(staged),
-            None,
-        )
+        let (message, route) = (json!({"t": "install", "path": path}), BridgeRoute::User);
+        service.start(Kind::Install, route, message, Some(staged), None)
     }
 
     async fn uninstall_package(
@@ -544,17 +545,13 @@ fn hardware(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 
 
 fn identity(message: &Map<String, Value>) -> [(&'static str, Variant<'static>); 4] {
     let pkg = Some(keel::string(message, "pkg")).filter(|pkg| ids::is_package_name(pkg));
+    let label = validate::label(keel::string(message, "label"));
+    let code = number(message, "versionCode") as i64;
     [
         ("pkg", pkg.unwrap_or("").to_owned().into()),
-        (
-            "label",
-            validate::label(keel::string(message, "label")).into(),
-        ),
+        ("label", label.into()),
         ("versionName", text(message, "versionName", 64).into()),
-        (
-            "versionCode",
-            (number(message, "versionCode") as i64).into(),
-        ),
+        ("versionCode", code.into()),
     ]
 }
 
