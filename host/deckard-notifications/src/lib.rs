@@ -219,15 +219,7 @@ impl NotificationAdapter {
             let image = (width, height, width * 4, true, 8_i32, 4_i32, pixels);
             hints.insert("image-data", Variant::new(image));
         }
-        let icon = self
-            .inner
-            .icon_dir
-            .join(format!("{}.png", post.package.as_str()));
-        let icon_url = if icon.is_file() {
-            format!("file://{}", icon.display())
-        } else {
-            String::new()
-        };
+        let icon_url = icon_url(&self.inner.icon_dir, post.package.as_str());
         let mut actions = Vec::with_capacity(post.actions.len() * 2);
         for (id, label) in &post.actions {
             actions.extend([id.as_str(), label.as_str()]);
@@ -267,6 +259,17 @@ impl NotificationAdapter {
             }
             _ => Ok(()),
         }
+    }
+}
+
+/// The `file://` URL of `package`'s icon in `icon_dir`; empty when it has none.
+#[must_use]
+pub fn icon_url(icon_dir: &Path, package: &str) -> String {
+    let icon = icon_dir.join(format!("{package}.png"));
+    if icon.is_file() {
+        format!("file://{}", icon.display())
+    } else {
+        String::new()
     }
 }
 

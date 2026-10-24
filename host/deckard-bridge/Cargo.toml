@@ -27,10 +27,8 @@ regex.workspace = true
 rustix = { workspace = true, features = ["event"] }
 serde.workspace = true
 serde_json.workspace = true
-zbus = { workspace = true, features = ["blocking-api"] }
-
-[dev-dependencies]
 tempfile.workspace = true
+zbus = { workspace = true, features = ["blocking-api"] }
 
 [lints]
 workspace = true

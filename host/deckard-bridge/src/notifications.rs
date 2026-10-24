@@ -1,19 +1,19 @@
 //! Android notification socket dispatch for the Rust Hub adapter.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use deckard_core::ids::PackageName;
+use deckard_core::keel;
 use deckard_core::messages;
 use deckard_core::notification_state::BridgeEvent;
 use deckard_core::png_guard;
+use deckard_core::sync;
 use deckard_core::validate::{base64_png, clean_text, notification_key};
 use deckard_notifications::{NotificationAdapter, Result};
 use regex::Regex;
@@ -27,7 +27,6 @@ const MAX_ICON_BYTES: usize = 256 * 1024;
 const MAX_SYNC_KEYS: usize = 4096;
 const TOAST_INTERVAL: Duration = Duration::from_millis(500);
 const TOAST_LIFETIME: Duration = Duration::from_secs(4);
-static NEXT_ICON: AtomicU64 = AtomicU64::new(0);
 static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:waydroid|lineageos|lineage os)\b")
         .unwrap_or_else(|error| panic!("invalid fixed runtime-name pattern: {error}"))
@@ -74,7 +73,7 @@ impl NotificationBridge {
                 }
             }
             "remove" => {
-                let key = string(message, "key");
+                let key = keel::string(message, "key");
                 if notification_key(key).is_ok() {
                     self.adapter.remove(key)?;
                 }
@@ -94,13 +93,13 @@ impl NotificationBridge {
         let Some(package) = package(message) else {
             return Ok(());
         };
-        let Ok(bytes) = base64_png(string(message, "png"), MAX_ICON_BYTES) else {
+        let Ok(bytes) = base64_png(keel::string(message, "png"), MAX_ICON_BYTES) else {
             return Ok(());
         };
         let Ok(png) = png_guard::sanitize(&bytes, MAX_ICON_BYTES, 128) else {
             return Ok(());
         };
-        save_icon(&self.icon_dir, &package, &png)?;
+        save_icon(&self.icon_dir, package.as_str(), &png)?;
         Ok(())
     }
 
@@ -108,38 +107,33 @@ impl NotificationBridge {
         let Some(package) = package(message) else {
             return Ok(());
         };
-        let text = clean_text(string(message, "text"), 512).trim().to_owned();
+        let text = clean_text(keel::string(message, "text"), 512)
+            .trim()
+            .to_owned();
         if text.is_empty() {
             return Ok(());
         }
+        let package = package.as_str();
         {
-            let mut last = self
-                .last_toast
-                .lock()
-                .map_err(|_| io::Error::other("toast state poisoned"))?;
+            let mut last = sync::lock(&self.last_toast);
             let now = Instant::now();
             if last
-                .get(&package)
+                .get(package)
                 .is_some_and(|previous| now.duration_since(*previous) < TOAST_INTERVAL)
             {
                 return Ok(());
             }
             last.retain(|_, previous| now.duration_since(*previous) < TOAST_LIFETIME);
-            last.insert(package.clone(), now);
+            last.insert(package.to_owned(), now);
         }
         let label = toast_label(message);
         let label = if label.trim().is_empty() {
-            package.as_str()
+            package
         } else {
             label.as_str()
         };
-        let icon = self.icon_dir.join(format!("{package}.png"));
-        let icon_url = if icon.is_file() {
-            format!("file://{}", icon.display())
-        } else {
-            String::new()
-        };
-        let desktop_entry = format!("waydroid.{package}");
+        let icon_url = deckard_notifications::icon_url(&self.icon_dir, package);
+        let desktop_entry = keel::app_id(package);
         let hints: HashMap<&str, Variant<'_>> = HashMap::from([
             ("desktop-entry", Variant::from(&desktop_entry)),
             ("urgency", Variant::from(0_u8)),
@@ -176,22 +170,12 @@ impl NotificationBridge {
     }
 }
 
-pub fn bridge_event(event: &BridgeEvent) -> Map<String, Value> {
-    event.to_json().as_object().cloned().unwrap_or_default()
-}
-
-fn string<'a>(message: &'a Map<String, Value>, field: &str) -> &'a str {
-    message.get(field).and_then(Value::as_str).unwrap_or("")
-}
-
-fn package(message: &Map<String, Value>) -> Option<String> {
-    PackageName::try_from(string(message, "pkg"))
-        .ok()
-        .map(|name| name.as_str().to_owned())
+fn package(message: &Map<String, Value>) -> Option<PackageName> {
+    PackageName::try_from(keel::string(message, "pkg")).ok()
 }
 
 fn toast_label(message: &Map<String, Value>) -> String {
-    let label = clean_text(string(message, "label"), 128);
+    let label = clean_text(keel::string(message, "label"), 128);
     RUNTIME_NAME
         .replace_all(&label, "Android")
         .split_whitespace()
@@ -214,34 +198,11 @@ fn live_keys(message: &Map<String, Value>) -> Vec<String> {
 
 fn save_icon(directory: &Path, package: &str, png: &[u8]) -> io::Result<()> {
     fs::create_dir_all(directory)?;
-    let destination = directory.join(format!("{package}.png"));
-    for _ in 0..4 {
-        let nonce = NEXT_ICON.fetch_add(1, Ordering::Relaxed);
-        let temporary = directory.join(format!(".{package}.{}.{}.tmp", std::process::id(), nonce));
-        let result = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary);
-        let Ok(mut output) = result else {
-            continue;
-        };
-        let written = output.write_all(png).and_then(|()| output.sync_all());
-        drop(output);
-        if let Err(error) = written {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        if let Err(error) = fs::rename(&temporary, &destination) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        return Ok(());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "cannot allocate icon file",
-    ))
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    file.write_all(png)?;
+    file.as_file().sync_all()?;
+    file.persist(directory.join(format!("{package}.png")))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -251,7 +212,6 @@ fn save_icon(directory: &Path, package: &str, png: &[u8]) -> io::Result<()> {
 )]
 mod tests {
     use super::*;
-    use deckard_core::notification_state::BridgeEvent;
     use serde_json::json;
 
     #[test]
@@ -260,20 +220,6 @@ mod tests {
         assert_eq!(
             live_keys(input.as_object().expect("object")),
             ["good", "also-good"]
-        );
-    }
-
-    #[test]
-    fn action_event_keeps_android_wire_contract() {
-        assert_eq!(
-            bridge_event(&BridgeEvent::Invoke {
-                key: "k".into(),
-                action: "default".into()
-            }),
-            json!({"t":"invoke","key":"k","action":"default"})
-                .as_object()
-                .expect("object")
-                .clone()
         );
     }
 

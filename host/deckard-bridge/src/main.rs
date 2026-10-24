@@ -16,7 +16,7 @@ use deckard_bridge::intents::Intents;
 use deckard_bridge::keel::KeelApps;
 use deckard_bridge::location::LocationSync;
 use deckard_bridge::manage::Manage;
-use deckard_bridge::notifications::{self, NotificationBridge};
+use deckard_bridge::notifications::NotificationBridge;
 use deckard_bridge::packages::PackageBridge;
 use deckard_bridge::prompts::PermissionPrompts;
 use deckard_bridge::reclaim::Reclaimer;
@@ -365,7 +365,7 @@ fn main() -> Result<(), Error> {
         state.join("notifications.json"),
         cache,
         move |action| {
-            actions(notifications::bridge_event(&action));
+            actions(deckard_bridge::object(action.to_json()));
         },
     )?;
     let _hub_listener = notifications.listen_hub()?;
