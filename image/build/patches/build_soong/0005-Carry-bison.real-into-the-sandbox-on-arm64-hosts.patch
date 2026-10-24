@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jetbee <7734987+jetbee@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 22:44:08 +0100
+Subject: [PATCH] Carry bison.real into the sandbox on arm64 hosts
+
+On an arm64 host bison is a wrapper script around bison.real (see
+image/build/scripts/bison-arm64-wrapper.sh); add the real binary to the
+sandbox as an implicit tool.
+
+From jetbee/hk-lineageos-build-on-dgx-spark (lineage-24.0).
+
+Change-Id: I914d654db097cac04581b968f67f6cadad1d4d39
+---
+ android/rule_builder.go | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/android/rule_builder.go b/android/rule_builder.go
+index 13be695..86a4947 100644
+--- a/android/rule_builder.go
++++ b/android/rule_builder.go
+@@ -1358,6 +1358,10 @@ func (c *RuleBuilderCommand) PrebuiltBuildTool(ctx PathContext, tool string) *Ru
+ 		libDir := PathForSource(ctx, "prebuilts/build-tools", ctx.Config().PrebuiltOS(), "lib64")
+ 		c.ImplicitTool(libDir.Join(ctx, "libc_musl.so"))
+ 		c.ImplicitTool(libDir.Join(ctx, "libc++.so"))
++		if tool == "bison" {
++			// bison is a wrapper script around bison.real.
++			c.ImplicitTool(PathForSource(ctx, "prebuilts/build-tools", ctx.Config().PrebuiltOS(), "bin", "bison.real"))
++		}
+ 	}
+ 	return c
+ }

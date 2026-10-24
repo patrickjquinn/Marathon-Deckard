@@ -131,6 +131,26 @@ In the order they appeared.
     lineage-24.0's newer ICU no longer trips it). Turned off with the clang-22
     set.
 
+13. **cronet: `unsupported option '-msse3' for target 'aarch64-linux-musl'`**
+    (about 300 objects). Its generated Android.bp puts x86 flags in
+    `target.host.cflags`. Soong now drops x86-only flags for arm64 host
+    modules (DGX patch 3).
+14. **flatc: `use of undeclared identifier 'strtoll_l'`.** musl has none;
+    flatc builds with `FLATBUFFERS_LOCALE_INDEPENDENT=0` on musl
+    (`patches/external_flatbuffers`).
+15. **ART: `mutex 'mutator_lock_' must be acquired before 'monitor_lock_'
+    [-Werror,-Wthread-safety-analysis]`.** clang 22 checks lock order under
+    plain `-Wthread-safety`; it stays a warning for clang ≥ r596125.
+16. **cronet's own libc++: `no member named 'strtoll_l'`.** Its
+    `__config_site` hard-codes `_LIBCPP_HAS_MUSL_LIBC 0`; it now follows
+    `ANDROID_HOST_MUSL` (`patches/external_cronet`).
+17. **Genrules that run bison directly (one-true-awk, libpcap):
+    `/nonexistent/common/bison/m4sugar/m4sugar.m4: cannot open`.** The arm64
+    bison relocates only from `.../linux-x86/bin`. As in the DGX set,
+    `bison` becomes `bison-arm64-wrapper.sh` around `bison.real` (placed by
+    `place-arm64-prebuilts.sh`), and Android.bp and Soong carry
+    `bison.real` into the sandbox.
+
 Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
 adds `-Wno-everything` and drops the version-gated flags.
 `m -k` (keep going) collects independent failures in one pass, which

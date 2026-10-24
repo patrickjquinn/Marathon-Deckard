@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jetbee <7734987+jetbee@users.noreply.github.com>
+Date: Mon, 5 Oct 2026 02:57:38 +0000
+Subject: [PATCH] bison: add bison.real as a dependency of the arm64 wrapper
+
+The arm64 bison is installed as bison.real and a small wrapper named bison sets
+BISON_PKGDATADIR (the binary finds its data relative to linux-x86). The wrapper and the
+rename are done by scripts/bison-arm64-wrapper.sh (the binary is not part of this
+patch); this change lists bison.real in the module's deps.
+
+From jetbee/hk-lineageos-build-on-dgx-spark (lineage-24.0); applies
+unchanged to lineage-23.2.
+
+Change-Id: I2ed2a10eb87b15d5ba9893c8f388b841f28370c3
+---
+ Android.bp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Android.bp b/Android.bp
+index 6ea9804..994dac4 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -96,6 +96,7 @@ prebuilt_build_tool {
+         musl_arm64: {
+             src: "linux-arm64/bin/bison",
+             deps: [
++                "linux-arm64/bin/bison.real",
+                 "linux-arm64/lib64/libc++.so",
+                 "linux-arm64/lib64/libc_musl.so",
+             ],
