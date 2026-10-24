@@ -5,7 +5,7 @@ mod digest;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{self, File};
-use std::io::{self, Cursor, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, Weak};
@@ -15,9 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use deckard_core::keel;
 use deckard_core::messages::Post;
 use deckard_core::notification_state::{BridgeEvent, Command, NotificationState};
+use deckard_core::png_guard;
 use deckard_core::sync;
-use image::imageops::FilterType;
-use image::{ImageFormat, ImageReader};
 use serde_json::Value;
 use zbus::MatchRule;
 use zbus::blocking::{Connection, MessageIterator};
@@ -302,22 +301,9 @@ fn persist(path: &Path, state: &Value) -> Result<()> {
     Ok(())
 }
 
+/// The RGBA pixels of a PNG scaled to fit 128 px.
 fn image_data(png: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
-    if png.is_empty() || png.len() > 512 * 1024 {
-        return None;
-    }
-    let reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
-    let (width, height) = reader.into_dimensions().ok()?;
-    if width == 0 || height == 0 || width > 4096 || height > 4096 {
-        return None;
-    }
-    let image = image::load_from_memory_with_format(png, ImageFormat::Png).ok()?;
-    let image = if width.max(height) > 128 {
-        image.resize(128, 128, FilterType::Lanczos3)
-    } else {
-        image
-    };
-    let image = image.to_rgba8();
+    let image = png_guard::decode(png, 512 * 1024, 128).ok()?;
     let width = i32::try_from(image.width()).ok()?;
     let height = i32::try_from(image.height()).ok()?;
     Some((width, height, image.into_raw()))
