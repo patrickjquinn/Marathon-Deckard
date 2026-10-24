@@ -13,8 +13,11 @@ use zbus::MatchRule;
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
 
+/// The Android session's user unit.
 pub const UNIT: &str = "deckard-session.service";
+/// systemd's manager interface.
 pub const MANAGER: &str = "org.freedesktop.systemd1.Manager";
+/// systemd's manager object.
 pub const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
 const SYSTEMD: &str = "org.freedesktop.systemd1";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";

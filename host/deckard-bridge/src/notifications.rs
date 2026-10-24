@@ -32,6 +32,7 @@ static RUNTIME_NAME: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap_or_else(|error| panic!("invalid fixed runtime-name pattern: {error}"))
 });
 
+/// Android's notifications and toasts on the Hub; cheap to clone.
 #[derive(Clone)]
 pub struct NotificationBridge {
     adapter: NotificationAdapter,
@@ -43,6 +44,9 @@ pub struct NotificationBridge {
 impl NotificationBridge {
     /// Validated Hub actions go back to Android through `to_android`, which
     /// must not block.
+    ///
+    /// # Errors
+    /// As [`NotificationAdapter::new`].
     pub fn new(
         bus: Connection,
         state_path: impl Into<PathBuf>,
@@ -60,11 +64,18 @@ impl NotificationBridge {
         })
     }
 
+    /// Follows the Hub's signals on their own thread.
+    ///
+    /// # Errors
+    /// The subscription failed.
     pub fn listen_hub(&self) -> Result<JoinHandle<()>> {
         self.adapter.listen()
     }
 
     /// Call only on the authenticated app bridge, in wire order.
+    ///
+    /// # Errors
+    /// The Hub refused a call, or state or an icon could not be saved.
     pub fn handle(&self, message: &Map<String, Value>) -> Result<()> {
         match message.get("t").and_then(Value::as_str).unwrap_or("") {
             "post" => {

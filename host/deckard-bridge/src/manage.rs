@@ -11,7 +11,7 @@ use deckard_core::validate;
 use futures_lite::future;
 use serde_json::{Map, Value};
 
-pub const MAX_PENDING: usize = 32;
+const MAX_PENDING: usize = 32;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 type Reply = Result<Map<String, Value>, String>;

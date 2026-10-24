@@ -23,7 +23,9 @@ use zbus::blocking::{Connection, MessageIterator};
 use zbus::message::{Message, Type};
 use zbus::zvariant::Value as Variant;
 
+/// Any failure of the adapter.
 pub type AdapterError = Box<dyn Error + Send + Sync>;
+/// The adapter's result.
 pub type Result<T> = std::result::Result<T, AdapterError>;
 
 const HUB: &str = "org.freedesktop.Notifications";

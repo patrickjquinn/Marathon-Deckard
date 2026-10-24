@@ -43,6 +43,8 @@ async fn resolve(bus: &zbus::Connection, sender: &str) -> zbus::Result<bool> {
     Ok(false)
 }
 
+/// Whether the caller in `header` is the Settings app or one of its
+/// children; false when that takes over 5 s.
 pub async fn settings(bus: &zbus::Connection, header: Header<'_>) -> bool {
     let Some(sender) = header.sender() else {
         return false;
