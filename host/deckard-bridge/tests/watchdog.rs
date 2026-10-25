@@ -1,13 +1,10 @@
-use std::env;
 use std::fs::{self, File};
 use std::path::Path;
 use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use deckard_bridge::watchdog::{self, BootWatchdog};
-use deckard_core::runtime_state::{BOOT_TIMEOUT_MS, SHELL_BUS_NAME};
-use zbus::blocking::Connection;
+use deckard_bridge::watchdog::BootWatchdog;
+use deckard_core::runtime_state::BOOT_TIMEOUT_MS;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -60,33 +57,4 @@ fn restarts_a_stalled_boot_once_until_a_boot_completes() -> TestResult {
     watchdog.set_active_since(now_ms()? - BOOT_MS);
     restarts.recv_timeout(SOON)?;
     Ok(())
-}
-
-#[test]
-fn restarts_android_once_the_shell_comes_back() -> TestResult {
-    if env::var_os("DECKARD_BRIDGE_PRIVATE_BUS").is_none() {
-        return Ok(());
-    }
-    let (restarted, restarts) = mpsc::channel();
-    let bus = Connection::session()?;
-    thread::spawn(move || {
-        watchdog::follow_shell(&bus, move || {
-            let _ = restarted.send(());
-        })
-    });
-    let shell = Connection::session()?;
-    shell.request_name(SHELL_BUS_NAME)?;
-    assert!(restarts.recv_timeout(QUIET).is_err());
-    for _ in 0..3 {
-        shell.release_name(SHELL_BUS_NAME)?;
-        shell.request_name(SHELL_BUS_NAME)?;
-        if restarts.recv_timeout(SOON).is_ok() {
-            // A crash loop restarts Android once, not on every Shell start.
-            shell.release_name(SHELL_BUS_NAME)?;
-            shell.request_name(SHELL_BUS_NAME)?;
-            assert!(restarts.recv_timeout(SOON).is_err());
-            return Ok(());
-        }
-    }
-    Err("the Shell's return never restarted Android".into())
 }

@@ -26,7 +26,7 @@ must match the installed binary.
 | `manage.{h,cpp}`: DeckardSystem request/reply by id, per generation | `src/manage.rs` |
 | `runtime.{h,cpp}`: runtime state, start at login, `UnitWatch` on `deckard-session.service` | `src/runtime.rs` (systemd `PropertiesChanged`), `deckard-core::runtime_state` |
 | `bootwatchdog.{h,cpp}`: `/data/deckard/booted`, `deckard-boot-evidence`, one restart | `src/watchdog.rs`, `deckard-core::runtime_state::BootWatchdog` |
-| `sessionfollower.{h,cpp}`: `TryRestartUnit` when `org.marathonos.Shell` returns | `src/watchdog.rs` `follow_shell` |
+| `sessionfollower.{h,cpp}`: `TryRestartUnit` when `org.marathonos.Shell` returns | dropped: `deckard-runtime` ends the session when the compositor's socket changes, and the unit restarts it |
 | `reclaimer.{h,cpp}`: `memory.events` and PSI triggers, `reclaim`/`reclaimed` | `src/reclaim.rs`, `deckard-core::pressure` |
 | `doze.{h,cpp}`: `/data/deckard/doze` from `Power1.StateChanged` | `src/shell_sync.rs` `sync_doze` |
 | `palette.{h,cpp}`: `/data/deckard/palette` from the ambience highlight | `src/shell_sync.rs` `sync_palette`, `deckard-core::palette` |

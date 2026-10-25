@@ -201,6 +201,28 @@ service configures the pool before loading the HAL, which also satisfies
 The HAL records protocol errors in that file (`protocol error: interface
 ...`); there is none.
 
+### Fix (2026-10-25)
+
+Every Shell restart still left one composer core: the Wayland thread aborts
+the moment the Shell's end closes, about 1.4 s before deckard-runtime sees
+the new socket and ends the session. The abort is now `exit_group(0)`:
+`bl abort` at `0x429b4` (the thread's last instruction, reached with the
+error already logged and written to the file) becomes `b 0x52db4`, where
+three unreachable nops that align a libffi jump table become `mov x8, #94;
+mov x0, xzr; svc #0`. `exit_group` skips the C++ destructors, which `exit`
+would run while the HAL's other threads are still in binder. sha256 after
+both patches: `4d58c41c721728449756481973a2ae7ba714321e6139702f50ddbca90fe447f2`.
+
+On the device, three Shell restarts: init logged `Service
+'vendor.hwcomposer-2-1' exited with status 0` each time, Android came back
+each time, and there were no cores.
+
+deckard-runtime now ends a session whose compositor restarted with status
+75, which `deckard-session.service` treats as success and restarts
+(`SuccessExitStatus`, `RestartForceExitStatus`), instead of a logged
+failure. deckard-bridge's Shell follower, which restarted the unit a second
+time on the same event, is gone.
+
 ## 3. The boot that never completes
 
 ### What was seen

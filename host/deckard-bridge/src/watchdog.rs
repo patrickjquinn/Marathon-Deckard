@@ -1,21 +1,15 @@
-//! Restarts an Android session that never finishes booting, or that lost
-//! its display because the Shell went away and came back.
+//! Restarts an Android session that never finishes booting.
 
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use deckard_core::runtime_state::{
-    self, BOOT_TIMEOUT_MS, BootTimer, EVIDENCE_TIMEOUT_MS, SHELL_BUS_NAME, SHELL_SETTLE_MS,
-    SessionFollower, Stall,
-};
-use zbus::blocking::Connection;
+use deckard_core::runtime_state::{self, BOOT_TIMEOUT_MS, BootTimer, EVIDENCE_TIMEOUT_MS, Stall};
 
 const EVENT_CAPACITY: usize = 16;
 const EVIDENCE_LOG_LIMIT: u64 = 256 * 1024;
@@ -162,35 +156,4 @@ fn log_evidence(output: impl Read) {
         }
     }
     let _ = io::copy(&mut output, &mut io::sink());
-}
-
-/// Calls `restart` once the Shell's bus name returns after it was lost,
-/// since the composer HAL aborts with its Wayland server. A Shell crash loop
-/// restarts Android at most once every 30 s.
-///
-/// # Errors
-/// Returns the D-Bus error that prevented the subscription.
-pub fn follow_shell(
-    bus: &Connection,
-    restart: impl Fn() + Send + Sync + 'static,
-) -> zbus::Result<()> {
-    let rule = crate::owner_changes(SHELL_BUS_NAME)?;
-    let mut follower = SessionFollower::default();
-    let restart = Arc::new(restart);
-    let start = Instant::now();
-    crate::relay(bus, rule, 8, move |signal| {
-        let Ok((name, _, owner)) = signal.body().deserialize::<(String, String, String)>() else {
-            return true;
-        };
-        let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        if follower.on_name_owner_changed(&name, !owner.is_empty(), now) {
-            let restart = Arc::clone(&restart);
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(SHELL_SETTLE_MS));
-                eprintln!("deckard-bridge: the Shell restarted; restarting the Android session");
-                restart();
-            });
-        }
-        true
-    })
 }

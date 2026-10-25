@@ -277,12 +277,20 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
     Ok(())
 }
 
+/// How a session ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ended {
+    Stopped,
+    /// The compositor's socket changed: Android needs a new session.
+    CompositorRestarted,
+}
+
 /// Owns [`SESSION_NAME`], starts the container for this user and runs
 /// until stopped, told to leave (SIGUSR1) or the compositor's socket changes.
 ///
 /// # Errors
-/// The session cannot start, or the compositor restarted.
-pub fn session_start() -> Result<()> {
+/// The session cannot start.
+pub fn session_start() -> Result<Ended> {
     let payload = make_payload()?;
     let runtime_dir = Path::new(&payload["xdg_runtime_dir"]);
     let socket = runtime_dir.join(&payload["wayland_display"]);
@@ -369,10 +377,11 @@ pub fn session_start() -> Result<()> {
     if !leave_container.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         ContainerManagerProxyBlocking::new(&system_bus)?.stop(false)?;
     }
-    if compositor_changed {
-        return Err("Wayland compositor socket changed; restarting Android session".into());
-    }
-    Ok(())
+    Ok(if compositor_changed {
+        Ended::CompositorRestarted
+    } else {
+        Ended::Stopped
+    })
 }
 
 /// Asks the running session to stop, else stops the container directly.

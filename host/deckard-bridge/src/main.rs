@@ -24,7 +24,7 @@ use deckard_bridge::runtime::{self, Runtime};
 use deckard_bridge::sharing::Sharing;
 use deckard_bridge::shell_sync;
 use deckard_bridge::storage::SharedStorage;
-use deckard_bridge::watchdog::{self, BootWatchdog};
+use deckard_bridge::watchdog::BootWatchdog;
 use deckard_core::ids::PackageName;
 use deckard_core::json;
 use deckard_core::runtime_state::UnitCall;
@@ -406,13 +406,6 @@ fn main() -> Result<(), Error> {
             future::block_on(runtime::call_unit(restart_bus.inner(), UnitCall::Restart));
         deckard_bridge::report("restarting Android failed", restarted);
     });
-    let restart_bus = bus.clone();
-    let restart = move || {
-        let restarted = future::block_on(runtime::try_restart_unit(restart_bus.inner()));
-        deckard_bridge::report("restarting Android failed", restarted);
-    };
-    let follower = watchdog::follow_shell(&bus, restart);
-    deckard_bridge::report("Shell follower failed", follower);
     let (watch_bus, watched) = (bus.clone(), runtime.clone());
     let watch = runtime::watch_unit(&bus, runtime.clone(), move || {
         emit_runtime(&watch_bus, &watched);

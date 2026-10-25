@@ -116,6 +116,8 @@ fn hwcomposer_command_matches_golden_output_and_refuses_unknown_input() {
     .unwrap();
     let mut stock = golden.clone();
     stock[0x3eee0..0x3eee4].copy_from_slice(&[0x20, 0x00, 0x80, 0x52]);
+    stock[0x429b4..0x429b8].copy_from_slice(&[0xe7, 0xa3, 0x00, 0x94]);
+    stock[0x52db4..0x52dc0].copy_from_slice(&[0x1f, 0x20, 0x03, 0xd5].repeat(3));
     std::fs::write(&input, &stock).unwrap();
 
     let result = command()

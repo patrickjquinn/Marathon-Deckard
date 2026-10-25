@@ -5,8 +5,6 @@ use std::time::Duration;
 
 pub const BOOT_TIMEOUT_MS: u64 = 60_000;
 pub const EVIDENCE_TIMEOUT_MS: u64 = 90_000;
-pub const SHELL_SETTLE_MS: u64 = 2_000;
-const SHELL_MIN_GAP_MS: u64 = 30_000;
 pub const SHELL_BUS_NAME: &str = "org.marathonos.Shell";
 
 /// Android as Settings shows it.
@@ -263,38 +261,6 @@ impl BootWatchdog {
     }
 }
 
-/// Follows the Shell's bus name. `now_ms` is a monotonic clock.
-#[derive(Debug, Default)]
-pub struct SessionFollower {
-    lost: bool,
-    last_restart_ms: Option<u64>,
-}
-
-impl SessionFollower {
-    /// Whether the Shell came back after it was lost, and no restart was
-    /// asked for in the last [`SHELL_MIN_GAP_MS`]: the adapter restarts the
-    /// session [`SHELL_SETTLE_MS`] later. A suppressed return still clears
-    /// the loss.
-    #[must_use]
-    pub fn on_name_owner_changed(&mut self, name: &str, has_new_owner: bool, now_ms: u64) -> bool {
-        if name != SHELL_BUS_NAME {
-            return false;
-        }
-        if !has_new_owner {
-            self.lost = true;
-            return false;
-        }
-        let recent = self
-            .last_restart_ms
-            .is_some_and(|last| now_ms.saturating_sub(last) < SHELL_MIN_GAP_MS);
-        if !std::mem::take(&mut self.lost) || recent {
-            return false;
-        }
-        self.last_restart_ms = Some(now_ms);
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,19 +316,5 @@ mod tests {
         assert_eq!(watchdog.on_boot_timeout(None, true), Stall::Collect);
         assert_eq!(watchdog.on_boot_timeout(None, true), Stall::None);
         assert!(watchdog.evidence_finished(None));
-    }
-
-    #[test]
-    fn follower_suppresses_crash_loop_but_allows_exact_gap() {
-        let mut follower = SessionFollower::default();
-        assert!(!follower.on_name_owner_changed(SHELL_BUS_NAME, true, 0));
-        assert!(!follower.on_name_owner_changed("org.other", false, 0));
-        assert!(!follower.on_name_owner_changed(SHELL_BUS_NAME, false, 100));
-        assert!(follower.on_name_owner_changed(SHELL_BUS_NAME, true, 100));
-        assert!(!follower.on_name_owner_changed(SHELL_BUS_NAME, false, 101));
-        assert!(!follower.on_name_owner_changed(SHELL_BUS_NAME, true, 30_099));
-        assert!(!follower.on_name_owner_changed(SHELL_BUS_NAME, true, 30_100));
-        assert!(!follower.on_name_owner_changed(SHELL_BUS_NAME, false, 30_100));
-        assert!(follower.on_name_owner_changed(SHELL_BUS_NAME, true, 30_100));
     }
 }

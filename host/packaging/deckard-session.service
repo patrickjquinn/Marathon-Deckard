@@ -9,5 +9,8 @@ Type=simple
 Environment=WAYLAND_DISPLAY=marathon-wayland-0
 ExecStart=/usr/libexec/deckard-runtime session start
 Restart=on-failure
+# The compositor restarted: a new session, not a failure.
+SuccessExitStatus=75
+RestartForceExitStatus=75
 RestartSec=2
 TimeoutStopSec=30

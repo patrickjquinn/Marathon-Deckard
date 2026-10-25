@@ -197,14 +197,6 @@ pub async fn call_unit(bus: &zbus::Connection, call: UnitCall) -> zbus::Result<(
     manager_call(bus, method).await
 }
 
-/// Restarts the session only while it runs.
-///
-/// # Errors
-/// systemd refused the job.
-pub async fn try_restart_unit(bus: &zbus::Connection) -> zbus::Result<()> {
-    manager_call(bus, "TryRestartUnit").await
-}
-
 fn refresh(properties: &Proxy<'_>, runtime: &Runtime) -> zbus::Result<bool> {
     let values: HashMap<String, OwnedValue> = properties.call("GetAll", &(UNIT_INTERFACE,))?;
     let active = values
