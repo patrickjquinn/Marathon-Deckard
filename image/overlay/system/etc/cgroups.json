@@ -18,6 +18,10 @@
       {
         "Controller": "freezer",
         "Path": "."
+      },
+      {
+        "Controller": "cpuset",
+        "Path": "."
       }
     ]
   }
