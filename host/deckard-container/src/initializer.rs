@@ -609,16 +609,19 @@ fn trusted(path: &Path, kind: Kind) -> Result<()> {
     )
 }
 
-/// A daemon-owned regular file or block device holding an ext filesystem.
+/// A daemon-owned regular file or block device holding an ext or EROFS
+/// filesystem (Android 15+ system images are EROFS).
 fn validate_image(path: &Path) -> Result<()> {
     trusted(path, Kind::File)?;
     let mut image = File::open(path)?;
-    image.seek(SeekFrom::Start(1024 + 56))?;
-    let mut magic = [0; 2];
-    image.read_exact(&mut magic)?;
+    image.seek(SeekFrom::Start(1024))?;
+    let mut superblock = [0; 58];
+    image.read_exact(&mut superblock)?;
+    let ext = superblock[56..58] == [0x53, 0xef];
+    let erofs = superblock[..4] == [0xe2, 0xe1, 0xf5, 0xe0];
     crate::ensure(
-        magic == [0x53, 0xef],
-        format!("not an ext image: {}", path.display()),
+        ext || erofs,
+        format!("not an ext or EROFS image: {}", path.display()),
     )
 }
 
@@ -707,11 +710,12 @@ mod tests {
             fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755))?;
             let work = root.path().join("work");
             fs::create_dir_all(work.join("images"))?;
-            for image in ["system.img", "vendor.img"] {
-                let mut bytes = vec![0; 1082];
-                bytes[1080..1082].copy_from_slice(&[0x53, 0xef]);
-                fs::write(work.join("images").join(image), bytes)?;
-            }
+            let mut erofs = vec![0; 1082];
+            erofs[1024..1028].copy_from_slice(&[0xe2, 0xe1, 0xf5, 0xe0]);
+            fs::write(work.join("images/system.img"), erofs)?;
+            let mut ext = vec![0; 1082];
+            ext[1080..1082].copy_from_slice(&[0x53, 0xef]);
+            fs::write(work.join("images/vendor.img"), ext)?;
             Ok(Self {
                 instance: Instance {
                     work,
