@@ -9,6 +9,7 @@ fn main() {
         host_fonts: PathBuf::from("/usr/share/fonts"),
         overlay_system: Path::new(names::WORK).join("overlay/system"),
         state: Path::new(names::WORK).join("deckard-fonts.list"),
+        config: PathBuf::from(names::CONFIG),
     };
     if let Err(error) = deckard_fonts_sync::sync(&paths) {
         eprintln!("deckard-fonts-sync: {error}");

@@ -20,6 +20,7 @@ impl Fixture {
         let host_fonts = root.join("host-fonts");
         let overlay_system = root.join("waydroid/overlay/system");
         let state = root.join("waydroid/deckard-fonts.list");
+        let config = root.join("waydroid.cfg");
         std::fs::create_dir_all(&share).unwrap();
         std::fs::create_dir_all(&host_fonts).unwrap();
         std::fs::create_dir_all(&overlay_system).unwrap();
@@ -31,8 +32,14 @@ impl Fixture {
                 host_fonts,
                 overlay_system,
                 state,
+                config,
             },
         };
+        std::fs::write(
+            &fixture.paths.config,
+            "[waydroid]\nsystem_datetime = 1790477549\n",
+        )
+        .unwrap();
         fixture.share("fonts.xml", "<familyset/>");
         fixture.share("fonts_customization.xml", "<fonts-modification/>");
         fixture.share("host-fonts.txt", "Required.ttf\n");
@@ -135,6 +142,20 @@ fn missing_host_font_root_uses_fallback() {
         fixture.run().unwrap(),
         Outcome::MissingRequiredFonts(vec!["Required.ttf".into()])
     );
+    assert!(!fixture.paths.state.exists());
+}
+
+#[test]
+fn another_image_cleans_prior_installation() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.run().unwrap(), Outcome::Applied);
+    std::fs::write(
+        &fixture.paths.config,
+        "[waydroid]\nsystem_datetime = 1792993496\n",
+    )
+    .unwrap();
+    assert_eq!(fixture.run().unwrap(), Outcome::OtherImage);
+    assert!(!fixture.overlay("fonts/Required.ttf").exists());
     assert!(!fixture.paths.state.exists());
 }
 

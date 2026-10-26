@@ -1,6 +1,7 @@
 //! Installs Marathon's fonts into Android's system overlay: the generated
 //! `fonts.xml`, the host font files it names, and whiteouts for the
-//! Android fonts it drops. A state file lists what was installed, so the
+//! Android fonts it drops. They are generated from one Android image's font
+//! set, so they are installed only while `waydroid.cfg` names that image. A state file lists what was installed, so the
 //! next run removes exactly that. Every path is opened without following
 //! links.
 
@@ -12,7 +13,7 @@ use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use deckard_host_tools::files;
+use deckard_host_tools::{cfg, files};
 use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags};
 use rustix::io::Errno;
 
@@ -29,6 +30,9 @@ const MAX_LIST: u64 = 1024 * 1024;
 const MAX_XML: i64 = 16 * 1024 * 1024;
 const MANIFEST: &str = "etc/fonts.xml";
 const CUSTOMIZATION: &str = "product/etc/fonts_customization.xml";
+/// The `system_datetime` of the image the packaged font files were made for
+/// (LineageOS 20, 2026-09-27).
+const IMAGE: &str = "1790477549";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
@@ -37,12 +41,14 @@ pub struct Paths {
     pub host_fonts: PathBuf,
     pub overlay_system: PathBuf,
     pub state: PathBuf,
+    pub config: PathBuf,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     Applied,
     MissingManifest,
+    OtherImage,
     MissingRequiredFonts(Vec<String>),
 }
 
@@ -279,6 +285,10 @@ pub fn sync(paths: &Paths) -> io::Result<Outcome> {
         remove_state(&state_dir, state_name)?;
         Ok(outcome)
     };
+    let config = files::read_optional(&paths.config)?;
+    if cfg::get(&config, "system_datetime") != Some(IMAGE) {
+        return uninstall(Outcome::OtherImage);
+    }
     let share = files::found(files::open_dir(&paths.share))?;
     let manifest = match &share {
         Some(share) => files::found(open_regular(share, OsStr::new("fonts.xml")))?,
