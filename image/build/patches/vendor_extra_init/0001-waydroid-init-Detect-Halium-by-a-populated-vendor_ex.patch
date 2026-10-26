@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 09:53:05 +0000
+Subject: [PATCH] waydroid-init: Detect Halium by a populated /vendor_extra
+
+BOARD_ROOT_EXTRA_FOLDERS puts an empty /vendor_extra into every system
+image, so the existence check made waydroid-init take every container
+for a Halium one and skip GPU detection: on a mainline host the minigbm
+allocator never started, mapper 4 was missing, and SurfaceFlinger
+aborted with "Failed to create a valid texture". The host's vendor is
+bind-mounted there only for Halium vendors, so test for a non-empty
+directory instead.
+---
+ waydroid-init/main.cpp | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/waydroid-init/main.cpp b/waydroid-init/main.cpp
+index 0b063c8..e810fc0 100644
+--- a/waydroid-init/main.cpp
++++ b/waydroid-init/main.cpp
+@@ -50,8 +50,9 @@ int main(int argc, char **argv) {
+     base::SetProperty("waydroid.init.start", "1");
+ 
+     // On Halium-based setups the device provides its own GPU/EGL/gralloc
+-    // stack through vendor blobs (marked by the presence of /vendor_extra)
+-    if (filesystem::exists("/vendor_extra")) {
++    // stack through vendor blobs, mounted on /vendor_extra. The directory
++    // itself is in every system image (BOARD_ROOT_EXTRA_FOLDERS).
++    if (!filesystem::is_empty("/vendor_extra", error) && !error) {
+         Log::info("Halium vendor (/vendor_extra) detected; skipping GPU auto-detection");
+         base::SetProperty("waydroid.init.done", "1");
+         return 0;

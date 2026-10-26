@@ -24,6 +24,7 @@ declare -A MAP=(
   [prebuilts_tools-lineage]=prebuilts/tools-lineage
   [system_core]=system/core
   [system_sepolicy]=system/sepolicy
+  [vendor_extra_init]=vendor/extra/init
   [vendor_lineage]=vendor/lineage
 )
 for d in "$P"/*/; do

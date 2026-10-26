@@ -71,6 +71,7 @@ those that needed changes for 23.2.
 | prebuilts/tools-lineage | arm64 mogrify | DGX |
 | system/core | Waydroid's ashmem EPERM fallback, refreshed | Waydroid, port |
 | system/sepolicy | getopt() results in an int (char is unsigned on arm64) | DGX |
+| vendor/extra/init | waydroid-init detects Halium by a populated /vendor_extra | new |
 | vendor/lineage | build-manifest.xml runs repo with the host python3 on arm64 | new |
 
 Not taken from the DGX set: vendor/lineage kernel host tools (Waydroid
@@ -192,6 +193,15 @@ In the order they appeared.
     prebuilts/build-tools is built without `_ssl` (the linux-x86 one has
     it). The rule uses `/usr/bin/python3` on arm64 hosts
     (`patches/vendor_lineage`).
+
+23. **At runtime: SurfaceFlinger aborts with `Failed to create a valid
+    texture`** on a mainline host (HackberryPi, V3D). `waydroid-init`
+    logged `Halium vendor (/vendor_extra) detected; skipping GPU
+    auto-detection`: it tested whether `/vendor_extra` exists, and
+    `BOARD_ROOT_EXTRA_FOLDERS` puts that directory into every system image,
+    so the minigbm allocator was never started. It now tests for a
+    populated directory, which only a Halium host's bind mount gives
+    (`patches/vendor_extra_init`).
 
 Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
 adds `-Wno-everything` and drops the version-gated flags.
