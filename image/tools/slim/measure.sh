@@ -1,12 +1,12 @@
 #!/bin/sh
-# Measures the running Waydroid container (docs/slim.md). Runs on the device
+# Measures the running Deckard container (docs/slim.md). Runs on the device
 # as root: ssh root@device sh -s [cpu-seconds] < measure.sh
 # Prints key=value lines, then the 25 processes with the most PSS.
 set -u
-cg=/sys/fs/cgroup/lxc.payload.waydroid
+cg=/sys/fs/cgroup/lxc.payload.deckard
 window=${1:-60}
 ac() {
-	timeout 20 lxc-attach -P /var/lib/waydroid/lxc -n waydroid --clear-env -- /system/bin/sh -c \
+	timeout 20 lxc-attach -P /var/lib/deckard/lxc -n deckard --clear-env -- /system/bin/sh -c \
 		"export PATH=/system/bin:/apex/com.android.runtime/bin; $1" 2>/dev/null
 }
 pids() {

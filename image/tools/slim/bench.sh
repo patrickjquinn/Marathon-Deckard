@@ -6,11 +6,11 @@
 # apps, and frame times while scrolling Android Settings by touch.
 set -u
 lock=/run/deckard-session.lock
-cg=/sys/fs/cgroup/lxc.payload.waydroid
+cg=/sys/fs/cgroup/lxc.payload.deckard
 apply=${1:-true}
 u() { su user -c "XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus $1"; }
 ac() {
-	timeout 60 lxc-attach -P /var/lib/waydroid/lxc -n waydroid --clear-env -- /system/bin/sh -c \
+	timeout 60 lxc-attach -P /var/lib/deckard/lxc -n deckard --clear-env -- /system/bin/sh -c \
 		"export PATH=/system/bin:/apex/com.android.runtime/bin; $1" 2>/dev/null
 }
 tap() { MARATHON_TOUCH_WIDTH=720 MARATHON_TOUCH_HEIGHT=720 marathon-touchctl "$@"; }
@@ -22,9 +22,9 @@ if ! grep -q '^slim ' "$lock" 2>/dev/null; then
 	trap 'rm -f "$lock"' EXIT
 fi
 
-u 'systemctl --user stop marathon-waydroid.service'
+u 'systemctl --user stop deckard-session.service deckard-bridge.service'
 for i in $(seq 60); do
-	[ "$(lxc-info -P /var/lib/waydroid/lxc -n waydroid -s 2>/dev/null | awk '{ print $2 }')" = STOPPED ] && break
+	[ "$(lxc-info -P /var/lib/deckard/lxc -n deckard -s 2>/dev/null | awk '{ print $2 }')" = STOPPED ] && break
 	sleep 1
 done
 sh -c "$apply" || { echo "apply failed"; exit 1; }
@@ -32,9 +32,9 @@ sync
 sleep 20
 a0=$(awk '/^MemAvailable/ { print $2 }' /proc/meminfo)
 t0=$(cut -d' ' -f1 /proc/uptime)
-u 'systemctl --user start marathon-waydroid.service'
+u 'systemctl --user start deckard-session.service deckard-bridge.service'
 for i in $(seq 600); do
-	[ "$(timeout 5 lxc-attach -P /var/lib/waydroid/lxc -n waydroid -- /system/bin/getprop sys.boot_completed 2>/dev/null)" = 1 ] && break
+	[ "$(timeout 5 lxc-attach -P /var/lib/deckard/lxc -n deckard -- /system/bin/getprop sys.boot_completed 2>/dev/null)" = 1 ] && break
 	sleep 0.5
 done
 t1=$(cut -d' ' -f1 /proc/uptime)
@@ -71,7 +71,7 @@ for p in net.gsantner.markor com.nononsenseapps.feeder; do
 	echo "cold_launch_ms_$p=$(echo $times | tr ' ' '\n' | sort -n | sed -n 2p) ($times )"
 done
 
-u 'busctl --user call org.marathonos.Shell /org/marathonos/Shell/Navigation org.marathonos.Shell.Navigation1 LaunchApp s waydroid.com.android.settings' >/dev/null
+u 'busctl --user call org.marathonos.Shell /org/marathonos/Shell/Navigation org.marathonos.Shell.Navigation1 LaunchApp s deckard.com.android.settings' >/dev/null
 sleep 4
 ac "dumpsys gfxinfo com.android.settings reset" >/dev/null
 for i in 1 2 3 4 5 6; do
