@@ -86,7 +86,8 @@ channels select nothing.
   `config_base`/`config_3`/`config_4` with Marathon's `cgroup:rw` and its two
   hooks, and `waydroid.seccomp`), compiled in. `config_nodes` is rendered from
   `lxc/config_nodes`, upstream's `generate_nodes_lxc_config` as a template
-  (`?path` lines are mounted when the host has the path). `waydroid.cfg` and
+  (`?path` lines are mounted when the host has the path), plus a tmpfs on
+  `/metadata`, where Android 15+ keeps its aconfig flag storage. `waydroid.cfg` and
   `waydroid_base.prop` follow upstream's `setup_config` and `make_base_props`; `[properties]` overrides apply;
   `overlay_rw` and `overlay_work` are dropped as upstream does. Everything is
   published in one transaction that restores its predecessors on failure.

@@ -33,4 +33,5 @@ tmpfs mnt_extra tmpfs nodev
 tmpfs tmp tmpfs nodev
 tmpfs var tmpfs nodev
 tmpfs run tmpfs nodev
+tmpfs metadata tmpfs nodev,mode=0755
 ?/system/etc/libnfc-nci.conf system/etc/libnfc-nci.conf none bind,optional

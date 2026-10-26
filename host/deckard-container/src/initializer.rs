@@ -818,6 +818,7 @@ mod tests {
             "tmpfs tmp tmpfs nodev".to_owned(),
             "tmpfs var tmpfs nodev".to_owned(),
             "tmpfs run tmpfs nodev".to_owned(),
+            "tmpfs metadata tmpfs nodev,mode=0755".to_owned(),
         ] {
             let _ = writeln!(expected, "lxc.mount.entry = {line} 0 0");
         }
