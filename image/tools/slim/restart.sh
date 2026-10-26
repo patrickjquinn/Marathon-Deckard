@@ -23,6 +23,8 @@ echo "slim measure $(date +%s)" > "$lock"
 trap 'rm -f "$lock"' EXIT
 
 user 'systemctl --user stop deckard-session.service deckard-bridge.service'
+# The container service too: its ExecStartPre applies the overlay.
+systemctl stop deckard-container.service
 for i in $(seq 60); do
 	[ "$(lxc-info -P /var/lib/deckard/lxc -n deckard -s 2>/dev/null | awk '{ print $2 }')" = STOPPED ] && break
 	sleep 1
