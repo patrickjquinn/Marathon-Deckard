@@ -82,6 +82,12 @@ channels select nothing.
   cleared, the updater disabled, and `system_datetime`/`vendor_datetime` come
   from its `images.cfg` (`0` without one). Otherwise `/var/lib/waydroid/images`
   is used and the configured OTA keys are kept. No images: an explicit error.
+- Deckard keeps exactly one image set on a device. With the packaged
+  directory in use, Init deletes the instance's own `images/system.img` and
+  `vendor.img` after publishing. An image update replaces the previous images
+  (write the new ones, verify them, then delete the old ones); nothing keeps
+  side-by-side copies or backups, and rolling back means installing the
+  previous release.
 - The LXC `config` comes from the templates in `lxc/` (upstream's
   `config_base`/`config_3`/`config_4` with Marathon's `cgroup:rw` and its two
   hooks, and `waydroid.seccomp`), compiled in. `config_nodes` is rendered from

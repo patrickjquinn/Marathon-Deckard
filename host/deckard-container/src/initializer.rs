@@ -466,6 +466,28 @@ impl Init<'_> {
         Ok(outputs)
     }
 
+    /// With the packaged images in use, the instance's own copy is a second
+    /// image set the device keeps for nothing: Deckard keeps exactly one.
+    fn remove_superseded_images(&self) -> Result<()> {
+        let Images::Preinstalled(dir) = &self.images else {
+            return Ok(());
+        };
+        let installed = self.instance.work.join("images");
+        if installed == *dir {
+            return Ok(());
+        }
+        for name in ["system.img", "vendor.img"] {
+            match fs::remove_file(installed.join(name)) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into());
+                }
+                _ => {}
+            }
+        }
+        let _ = fs::remove_dir(&installed);
+        Ok(())
+    }
+
     /// Publishes the instance and drops what it replaced. Cancellation and
     /// the deadline are checked before each step up to publication; nothing
     /// is replaced on error.
@@ -536,7 +558,10 @@ impl Init<'_> {
             .stage(&staging, rendered, &check)
             .and_then(|outputs| publish_with_rollback(&outputs, &staging));
         match published {
-            Ok(_) => Ok(fs::remove_dir_all(&staging)?),
+            Ok(_) => {
+                fs::remove_dir_all(&staging)?;
+                self.remove_superseded_images()
+            }
             Err(error) => {
                 if !has_backup(&staging) {
                     let _ = fs::remove_dir_all(&staging);
@@ -893,6 +918,10 @@ mod tests {
         )?;
         assert_eq!(images, Images::Preinstalled(shipped.clone()));
         fixture.run(images, false)?;
+        for image in ["system.img", "vendor.img"] {
+            assert!(!fixture.instance.work.join("images").join(image).exists());
+            assert!(shipped.join(image).exists());
+        }
         let cfg = fixture.read("waydroid.cfg")?;
         assert!(cfg.contains("system_ota = None\n"));
         assert!(cfg.contains("system_datetime = 0\n"));

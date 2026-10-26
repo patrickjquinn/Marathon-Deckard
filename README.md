@@ -59,6 +59,16 @@ The kernel needs binderfs, cgroup v2 and the usual LXC options. The container
 uses Waydroid's Wayland hwcomposer, so the GPU needs a Mesa driver with
 linux-dmabuf support.
 
+## Android images
+
+Android's `system.img` and `vendor.img` (about 1.4 GB for LineageOS 23.2)
+reach a phone in the `deckard-images` package, under
+`/usr/share/deckard/images`. A phone keeps exactly one image set: an update
+replaces the previous images (the new ones written and verified, then the old
+ones deleted), Init removes any instance copy once the packaged set is in use,
+and nothing keeps side-by-side copies or backups. Rolling back means
+installing the previous release.
+
 ## Building
 
 The host side is a Cargo workspace:
