@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 05:01:48 +0000
+Subject: [PATCH] Include stdlib.h for malloc and free in format.h
+
+fmt::detail::allocator calls malloc and free, but format.h never
+included <stdlib.h>; it relied on the C++ headers pulling it in. The
+libc++ that ships with clang-r596125 (LLVM 22) trims those transitive
+includes, so rootcanal's libbt-rootcanal (log.cc, hci/address.cc) failed
+with "use of undeclared identifier 'malloc'". Upstream fmt 11.1 adds the
+same include.
+
+Change-Id: I0bc6e3ad2fe6e7ca2bb15b527ddf61085f9fb560
+---
+ include/fmt/format.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/fmt/format.h b/include/fmt/format.h
+index ffe4fe0..0ecd5cc 100644
+--- a/include/fmt/format.h
++++ b/include/fmt/format.h
+@@ -48,6 +48,7 @@
+ #  include <initializer_list>  // std::initializer_list
+ #  include <limits>            // std::numeric_limits
+ #  include <new>               // std::bad_alloc
++#  include <stdlib.h>          // malloc, free
+ #  if defined(__GLIBCXX__) && !defined(_GLIBCXX_USE_DUAL_ABI)
+ // Workaround for pre gcc 5 libstdc++.
+ #    include <memory>  // std::allocator_traits

@@ -57,6 +57,7 @@ those that needed changes for 23.2.
 | build/make | aarch64 host: HOST_ARCH=arm64, linux-arm64 prebuilts, HOST_OUT linux_musl-arm64 | DGX, port |
 | build/soong | aarch64 host: RUSTC_BOOTSTRAP, no second host arch, musl loader in sbox | DGX, port |
 | build/soong | clang version checks honour LLVM_PREBUILTS_VERSION; clang-22 warning flags | new |
+| external/fmtlib | format.h includes stdlib.h for malloc (clang 22 libc++) | new |
 | external/jemalloc_new | LG_PAGE 16 on aarch64 hosts | new |
 | external/pulseaudio | link libsndfile_linux | new |
 | external/rust/android-crates-io | aarch64-paging arm64 variant for the device only | DGX |
@@ -171,6 +172,12 @@ In the order they appeared.
 19. **clang 22: `-Werror,-Wnullable-to-nonnull-conversion` in abseil's
     `string_view.h`** (from DnsResolver's flags). Kept as a warning for
     clang ≥ r596125.
+
+20. **rootcanal: `use of undeclared identifier 'malloc'` in fmtlib's
+    `format.h`.** fmt 11.0.2 calls malloc and free without including
+    `<stdlib.h>`, and clang-r596125's libc++ no longer includes it
+    transitively. `format.h` now includes it, as fmt 11.1 does
+    (`patches/external_fmtlib`).
 
 Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
 adds `-Wno-everything` and drops the version-gated flags.

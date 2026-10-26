@@ -10,6 +10,7 @@ declare -A MAP=(
   [bionic]=bionic [build_make]=build/make [build_soong]=build/soong
   [external_cronet]=external/cronet
   [external_flatbuffers]=external/flatbuffers
+  [external_fmtlib]=external/fmtlib
   [external_jemalloc_new]=external/jemalloc_new
   [external_pulseaudio]=external/pulseaudio
   [external_rust_android-crates-io]=external/rust/android-crates-io
