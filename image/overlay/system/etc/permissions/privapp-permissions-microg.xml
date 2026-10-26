@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- microG Services and Companion (docs/microg.md). Granted: what location
      and push need. Denied: Wi-Fi and cell scanning (location comes from
-     Marathon), telephony, USB and FIDO, other users, dumps, installing. -->
+     Marathon), telephony, USB and FIDO, credential provider service,
+     other users, dumps, installing. -->
 <permissions>
     <privapp-permissions package="com.google.android.gms">
         <permission name="android.permission.INSTALL_LOCATION_PROVIDER"/>
@@ -16,6 +17,8 @@
         <deny-permission name="android.permission.START_ACTIVITIES_FROM_BACKGROUND"/>
         <deny-permission name="android.permission.DUMP"/>
         <deny-permission name="android.permission.INTERACT_ACROSS_USERS"/>
+        <deny-permission name="android.permission.PROVIDE_DEFAULT_ENABLED_CREDENTIAL_SERVICE"/>
+        <deny-permission name="android.permission.PROVIDE_REMOTE_CREDENTIALS"/>
     </privapp-permissions>
     <privapp-permissions package="com.android.vending">
         <deny-permission name="android.permission.INSTALL_PACKAGES"/>
