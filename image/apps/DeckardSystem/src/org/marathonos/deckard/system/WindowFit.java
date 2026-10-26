@@ -4,6 +4,7 @@ import android.app.TaskStackListener;
 import android.content.ComponentName;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -21,6 +22,9 @@ import java.util.Map;
  * display. Waydroid gives each task its own Wayland window the size of the
  * display, so a task that fills the display fills its Marathon window.
  * deckard-wm's logic, run in this app's process instead of its own runtime.
+ * On Android 16 tasks stay as Waydroid launches them, fullscreen: a freeform
+ * task outside a desktop desk crashes the window manager shell in SystemUI,
+ * which Android 16 needs to show the keyboard.
  */
 final class WindowFit {
     private static final String TAG = "DeckardWindowFit";
@@ -32,6 +36,7 @@ final class WindowFit {
     private static final long SETTLE_MS = 30;
     private static final long RETRY_MS = 2000;
     private static final long RECLAIM_MS = 1000;
+    private static final boolean FIT_TASKS = Build.VERSION.SDK_INT < 36;
 
     private static Object atm;
     private static Method getAllRootTaskInfos;
@@ -136,6 +141,7 @@ final class WindowFit {
     }
 
     private static void fitAll() {
+        if (!FIT_TASKS) return;
         try {
             Rect full = displayBounds();
             if (full == null) return;
