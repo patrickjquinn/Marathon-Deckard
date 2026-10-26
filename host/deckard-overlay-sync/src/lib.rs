@@ -11,22 +11,30 @@ use deckard_host_tools::{cfg, files};
 use rustix::fs::{AtFlags, FileType, Mode, Timespec, Timestamps};
 use rustix::process::{Gid, Uid};
 
+/// LineageOS 20's system and vendor images (2026-09-27), the only ones some
+/// overlay files are built for.
 const SYSTEM: &str = "1790477549";
-/// Overlay files built for one image: (`waydroid.cfg` key, its value, file).
-const GUARDS: &[(&str, &str, &str)] = &[
-    ("vendor_datetime", "1790486210", android::COMPOSER),
-    (
-        "system_datetime",
-        SYSTEM,
-        "system/apex/com.android.permission/priv-app/PermissionController@TQ3A.230901.001/PermissionController.apk",
-    ),
-    ("system_datetime", SYSTEM, "system/etc/init/hw/init.rc"),
-    ("system_datetime", SYSTEM, "system/etc/init/atrace.rc"),
-    ("system_datetime", SYSTEM, "system/etc/init/audioserver.rc"),
-    ("system_datetime", SYSTEM, "system/etc/init/bpfloader.rc"),
-    ("system_datetime", SYSTEM, "system/etc/init/dmesgd.rc"),
-    ("system_datetime", SYSTEM, "system/etc/init/llkd.rc"),
-    ("system_datetime", SYSTEM, "system/etc/init/perfetto.rc"),
+const VENDOR: &str = "1790486210";
+/// Overlay files built for that system image: patched or trimmed copies of
+/// its own files, which another image must not get.
+const SYSTEM_FILES: &[&str] = &[
+    "system/apex/com.android.permission/priv-app/PermissionController@TQ3A.230901.001/PermissionController.apk",
+    "system/etc/init/hw/init.rc",
+    "system/etc/init/hw/init.zygote64_32.rc",
+    "system/etc/init/atrace.rc",
+    "system/etc/init/audioserver.rc",
+    "system/etc/init/bpfloader.rc",
+    "system/etc/init/dmesgd.rc",
+    "system/etc/init/llkd.rc",
+    "system/etc/init/perfetto.rc",
+    "system/etc/cgroups.json",
+    "system/etc/task_profiles.json",
+    "system/etc/task_profiles/cgroups_28.json",
+    "system/etc/task_profiles/cgroups_29.json",
+    "system/etc/task_profiles/cgroups_30.json",
+    "system/etc/task_profiles/task_profiles_28.json",
+    "system/etc/task_profiles/task_profiles_29.json",
+    "system/etc/task_profiles/task_profiles_30.json",
 ];
 
 #[derive(Debug, Clone)]
@@ -84,7 +92,15 @@ pub fn sync(paths: &Paths) -> io::Result<()> {
     copy_tree(&src, &dst, Path::new(""), &mut copied, &mut HashMap::new())?;
     write_lines(&list, &copied)?;
     let config = files::read_optional(&paths.work.join("waydroid.cfg"))?;
-    for &(key, expected, path) in GUARDS {
+    let vendor = [android::COMPOSER];
+    let guards = [
+        ("system_datetime", SYSTEM, SYSTEM_FILES),
+        ("vendor_datetime", VENDOR, &vendor[..]),
+    ];
+    for (key, expected, path) in guards
+        .into_iter()
+        .flat_map(|(key, expected, paths)| paths.iter().map(move |path| (key, expected, *path)))
+    {
         let have = cfg::get(&config, key).unwrap_or_default();
         if have != expected {
             remove_file(&safe_target(&dst, Path::new(path))?)?;
