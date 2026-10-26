@@ -15,3 +15,11 @@ service.sf.prime_shader_cache=0
 # the list; older images ignore it). Each one's instance is unused by its
 # caller; measured with the regression apps (docs/slim.md, E4).
 ro.deckard.skip_system_services=AdServicesManagerService$Lifecycle,OnDevicePersonalizationSystemService$Lifecycle,ProfilingService$Lifecycle,SelectionToolbarManagerService,HealthConnectManagerService,DeviceLockService,WearableSensingManagerService,SoundTriggerService,SoundTriggerMiddlewareService$Lifecycle,AttestationVerificationManagerService,BinaryTransparencyService,IntrusionDetectionService,AdvancedProtectionService$Lifecycle,TradeInModeService,AppFunctionManagerService,DynamicInstrumentationManagerService,EmergencyAffordanceService
+# SurfaceFlinger on work durations that fit one frame, not the image's phase
+# offsets, which hold each app frame a period longer; -1 unsets the offsets,
+# without which SurfaceFlinger aborts in this mode.
+debug.sf.use_phase_offsets_as_durations=1
+ro.surface_flinger.vsync_event_phase_offset_ns=-1
+ro.surface_flinger.vsync_sf_event_phase_offset_ns=-1
+debug.sf.late.sf.duration=5000000
+debug.sf.late.app.duration=11666666
