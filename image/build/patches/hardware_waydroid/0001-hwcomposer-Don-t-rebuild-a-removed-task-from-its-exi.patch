@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 21:56:05 +0000
+Subject: [PATCH] hwcomposer: Don't rebuild a removed task from its exit frames
+
+Closing a card's last toplevel forces a wayland reconnect, and Android's
+taskRemoved arrives before the task's exit animation has stopped drawing.
+forget_task then dropped the close-pending mark with the task, so the
+next frames' TID layers self-healed the task and created a new toplevel
+for it: on Marathon the closed app's card came back for about 0.6 s,
+until the second taskRemoved closed it again.
+
+Keep each removed task's removal time for 3 s; task_closing reports such
+a task as closing, so its teardown frames get no window. taskCreated for
+a reused ID clears the mark.
+---
+ hwcomposer/WaydroidWindow.cpp |  1 +
+ hwcomposer/wayland-hwc.cpp    | 11 ++++++++++-
+ hwcomposer/wayland-hwc.h      |  3 +++
+ 3 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/hwcomposer/WaydroidWindow.cpp b/hwcomposer/WaydroidWindow.cpp
+index 71b8818..fac3216 100644
+--- a/hwcomposer/WaydroidWindow.cpp
++++ b/hwcomposer/WaydroidWindow.cpp
+@@ -181,6 +181,7 @@ Return<void> WaydroidWindow::taskCreated(uint32_t taskID, const hidl_string& pac
+         if (mDisplay->forget_task(tid) && mDisplay->ctl->wl_alive.load())
+             wl_display_flush(mDisplay->ctl->display);
+     }
++    mDisplay->removed_tasks.erase(tid);
+     auto &task = mDisplay->tasks[tid];
+     task.appID = packageName;
+     task.component = componentName;
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index f055988..5476b8a 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -3453,7 +3453,11 @@ wayland_log_handler (const char *format, va_list args)
+ bool display::task_closing(const std::string &tid) {
+     std::scoped_lock lock(windowsMutex);
+     auto it = tasks.find(tid);
+-    return it != tasks.end() && it->second.closing;
++    if (it != tasks.end())
++        return it->second.closing;
++    auto gone = removed_tasks.find(tid);
++    return gone != removed_tasks.end() &&
++           std::chrono::steady_clock::now() - gone->second < std::chrono::seconds(3);
+ }
+ 
+ /* A close-pending task whose taskRemoved never arrived (lost oneway call,
+@@ -3473,6 +3477,11 @@ void display::expire_closing_marks() {
+  * Returns whether a card was closed, so the caller can flush wayland once. */
+ bool display::forget_task(const std::string &tid) {
+     tasks.erase(tid);
++    auto now = std::chrono::steady_clock::now();
++    std::erase_if(removed_tasks, [&](const auto &gone) {
++        return now - gone.second >= std::chrono::seconds(3);
++    });
++    removed_tasks[tid] = now;
+ 
+     /* task_streams is keyed by the numeric ID; entries self-healed from a
+      * layer name are decimal too, but parse defensively. */
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index dad7449..26d3f4f 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -631,6 +631,9 @@ struct display {
+      * pushes any @1.3 task event; until then consumers fall back to the old
+      * prop/layer heuristics so an unpatched platform jar keeps working. */
+     std::map<std::string, task_info> tasks;
++    /* When each task left the table: its exit animation still draws a few
++     * frames, which must not self-heal it back into a card. */
++    std::map<std::string, std::chrono::steady_clock::time_point> removed_tasks;
+     bool task_events_seen = false;
+     /* Sequence number of the last taskListSnapshot; for the dump only. */
+     uint32_t task_generation = 0;
+-- 
+2.55.0
+

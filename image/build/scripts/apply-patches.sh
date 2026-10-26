@@ -20,6 +20,7 @@ declare -A MAP=(
   [external_rust_android-crates-io]=external/rust/android-crates-io
   [frameworks_libs_binary_translation]=frameworks/libs/binary_translation
   [hardware_interfaces]=hardware/interfaces
+  [hardware_waydroid]=hardware/waydroid
   [hardware_ril]=hardware/ril
   [packages_modules_Permission]=packages/modules/Permission
   [prebuilts_build-tools]=prebuilts/build-tools
