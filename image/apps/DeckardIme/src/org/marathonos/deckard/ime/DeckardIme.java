@@ -39,7 +39,9 @@ public final class DeckardIme extends InputMethodService implements Bridge.Liste
             final WindowManager.LayoutParams lp = window.getAttributes();
             lp.alpha = 0f;
             window.setAttributes(lp);
-            window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+            // Not FLAG_NOT_TOUCHABLE: Android 16 doesn't take a non-touchable
+            // window for the IME's, and never shows it. Touches pass through
+            // the empty touchable region of onComputeInsets instead.
         }
         bridge = new Bridge(this, main);
         bridge.start();
