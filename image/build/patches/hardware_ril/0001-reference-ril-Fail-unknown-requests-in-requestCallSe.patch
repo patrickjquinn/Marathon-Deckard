@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 05:03:50 +0000
+Subject: [PATCH] reference-ril: Fail unknown requests in requestCallSelection
+
+The switch's default case only asserts, so in release builds (NDEBUG)
+an unexpected request fell through to at_send_command() with an
+uninitialized atCommand. clang-r596125 (22) reports this as
+-Werror,-Wsometimes-uninitialized. Complete the request with
+RIL_E_REQUEST_NOT_SUPPORTED and return instead.
+
+Change-Id: I72c3abb552132a87d8cb502b52a8c250226b1f75
+---
+ reference-ril/reference-ril.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/reference-ril/reference-ril.c b/reference-ril/reference-ril.c
+index b2c4270..c82c3df 100644
+--- a/reference-ril/reference-ril.c
++++ b/reference-ril/reference-ril.c
+@@ -555,6 +555,8 @@ static void requestCallSelection(
+             break;
+         default:
+             assert(0);
++            RIL_onRequestComplete(t, RIL_E_REQUEST_NOT_SUPPORTED, NULL, 0);
++            return;
+     }
+     at_send_command(atCommand, NULL);
+     // Success or failure is ignored by the upper layer here.

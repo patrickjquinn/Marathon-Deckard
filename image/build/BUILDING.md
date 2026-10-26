@@ -63,6 +63,7 @@ those that needed changes for 23.2.
 | external/rust/android-crates-io | aarch64-paging arm64 variant for the device only | DGX |
 | frameworks/libs/binary_translation | dummy riscv64-to-x86_64 intrinsics generator on arm64 hosts | new (DGX's needs 24.0 defaults) |
 | hardware/interfaces | 2.7 external camera provider prefer32 | new |
+| hardware/ril | reference-ril fails unknown call-selection requests | new |
 | prebuilts/build-tools | bison, flex, m4, make for the arm64 host | DGX |
 | prebuilts/clang/host/linux-x86 | llvm build tools from the arm64 clang | DGX, port |
 | prebuilts/jdk/jdk21 | arm64 javap and friends | DGX |
@@ -178,6 +179,12 @@ In the order they appeared.
     `<stdlib.h>`, and clang-r596125's libc++ no longer includes it
     transitively. `format.h` now includes it, as fmt 11.1 does
     (`patches/external_fmtlib`).
+
+21. **reference-ril: `variable 'atCommand' is used uninitialized whenever
+    switch default is taken [-Werror,-Wsometimes-uninitialized]`.** The
+    default case only asserts, so with NDEBUG it sent an uninitialized
+    command. It now completes the request with
+    `RIL_E_REQUEST_NOT_SUPPORTED` and returns (`patches/hardware_ril`).
 
 Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
 adds `-Wno-everything` and drops the version-gated flags.
