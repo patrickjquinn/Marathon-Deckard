@@ -71,6 +71,7 @@ those that needed changes for 23.2.
 | prebuilts/tools-lineage | arm64 mogrify | DGX |
 | system/core | Waydroid's ashmem EPERM fallback, refreshed | Waydroid, port |
 | system/sepolicy | getopt() results in an int (char is unsigned on arm64) | DGX |
+| vendor/lineage | build-manifest.xml runs repo with the host python3 on arm64 | new |
 
 Not taken from the DGX set: vendor/lineage kernel host tools (Waydroid
 builds no kernel), system/librustutils no_std (no such module on 23.2),
@@ -185,6 +186,12 @@ In the order they appeared.
     default case only asserts, so with NDEBUG it sent an uninitialized
     command. It now completes the request with
     `RIL_E_REQUEST_NOT_SUPPORTED` and returns (`patches/hardware_ril`).
+
+22. **build-manifest.xml: `ModuleNotFoundError: No module named '_ssl'`.**
+    `repo` imports ssl, and the linux-arm64 `py3-cmd` in
+    prebuilts/build-tools is built without `_ssl` (the linux-x86 one has
+    it). The rule uses `/usr/bin/python3` on arm64 hosts
+    (`patches/vendor_lineage`).
 
 Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
 adds `-Wno-everything` and drops the version-gated flags.
