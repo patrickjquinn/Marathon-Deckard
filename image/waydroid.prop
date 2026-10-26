@@ -11,3 +11,7 @@ ro.lmk.psi_complete_stall_ms=0
 # SurfaceFlinger doesn't prime RenderEngine's shader cache at boot: 35 MiB of
 # anonymous memory for composition the hwcomposer never asks it to do.
 service.sf.prime_shader_cache=0
+# System services Deckard's 23.2 image leaves out (SystemServiceManager reads
+# the list; older images ignore it). Each one's instance is unused by its
+# caller; measured with the regression apps (docs/slim.md, E4).
+ro.deckard.skip_system_services=AdServicesManagerService$Lifecycle,OnDevicePersonalizationSystemService$Lifecycle,ProfilingService$Lifecycle,SelectionToolbarManagerService,HealthConnectManagerService,DeviceLockService,WearableSensingManagerService,SoundTriggerService,SoundTriggerMiddlewareService$Lifecycle,AttestationVerificationManagerService,BinaryTransparencyService,IntrusionDetectionService,AdvancedProtectionService$Lifecycle,TradeInModeService,AppFunctionManagerService,DynamicInstrumentationManagerService,EmergencyAffordanceService
