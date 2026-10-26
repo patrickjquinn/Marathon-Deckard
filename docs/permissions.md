@@ -211,3 +211,14 @@ isn't a privacy switch. So there is nothing for the prompt to defer to yet.
 4. Dismissing a prompt (back, Home) gives CANCELED, and the flags stay
    unchanged.
 5. With deckard-bridge stopped, Android's dialog and permission page are shown.
+
+## Android 16
+
+Android 16's APEXes are not flattened, so the APK swap above cannot work on
+LineageOS 23.2. Deckard's 23.2 image carries the hook in source instead:
+`MarathonGrantView` (adapted to Android 16's view handler interface, which
+adds the rationale message and `setResultListener`) is added to
+PermissionController, and GrantPermissionsActivity creates it in place of
+the handheld handler (Marathon-Deckard branch `image/lineage-23.2`,
+`image/build/patches/packages_modules_Permission`). Requests that need the
+photo picker get Android's dialog.

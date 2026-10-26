@@ -185,3 +185,13 @@ Unit tests: Marathon-Shell `Shell_RemoteTextInput` (16 cases), Marathon-Deckard
 - A forked hwcomposer speaking text-input-v3 per surface (spec §9) would remove
   the deckard-bridge hop and the package-to-window mapping (`waydroid.<package>`),
   and would tie the editor to the exact surface rather than the package.
+
+## Android 16
+
+Android 16's window manager registers an input method window as the IME's
+only if it is touchable (`WindowManagerService.addWindow`, meant for stylus
+ink windows). DeckardIme's window used `FLAG_NOT_TOUCHABLE`, so on LineageOS
+23.2 no editor got an IME layering target and every show request failed at
+`PHASE_WM_SET_REMOTE_TARGET_IME_VISIBILITY`. The flag is gone; touches pass
+through the empty touchable region `onComputeInsets` reports. SystemUI must
+run on that image (docs/slim.md).

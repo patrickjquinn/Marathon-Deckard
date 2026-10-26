@@ -596,3 +596,24 @@ boot image.
   focus fallback (requested; the shell's keyboard-enter fix made it
   rarely needed).
 
+
+## LineageOS 23.2 (Android 16)
+
+Deckard's own 23.2 image keeps the same overlay, with these differences
+(checked on the HackberryPi, 2026-10-26):
+
+- SystemUI stays. Waydroid 23.2 makes the display freeform, so the IME's
+  control target is SystemUI's `DisplayImeController`; without it no
+  keyboard is shown. It needs `org.lineageos.globalactions.xml`, which stays
+  too.
+- LineageSetupWizard replaces Provision on this image and is hidden the same
+  way; `deckard-slim.rc` marks the device provisioned and set up.
+- App tasks stay fullscreen (WindowFit fits them only below SDK 36): a
+  freeform task outside a desktop desk crashes SystemUI's window manager
+  shell.
+- The Android 13 copies of `init.rc`, the cgroup and task profile files, the
+  zygote rc, the composer HAL and PermissionController are left out by
+  `deckard-overlay-sync` (`system_datetime`/`vendor_datetime` guards), and
+  Marathon's fonts by `deckard-fonts-sync`, until they are generated for
+  this image. The permission prompt hook is in the image's own
+  PermissionController instead ([permissions.md](permissions.md)).
