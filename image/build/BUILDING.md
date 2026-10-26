@@ -71,6 +71,7 @@ those that needed changes for 23.2.
 | prebuilts/rust | prebuilt musl std on a native arm64 host | DGX, port (code is in prebuilts/rust/soong on 23.2) |
 | prebuilts/tools-lineage | arm64 mogrify | DGX |
 | system/core | Waydroid's ashmem EPERM fallback, refreshed | Waydroid, port |
+| system/core | ueventd coldboot reads uevent files instead of writing them | new |
 | system/sepolicy | getopt() results in an int (char is unsigned on arm64) | DGX |
 | vendor/extra/init | waydroid-init detects Halium by a populated /vendor_extra | new |
 | vendor/lineage | build-manifest.xml runs repo with the host python3 on arm64 | new |
@@ -203,6 +204,20 @@ In the order they appeared.
     so the minigbm allocator was never started. It now tests for a
     populated directory, which only a Halium host's bind mount gives
     (`patches/vendor_extra_init`).
+
+24. **At runtime: the host's touchscreen delivers each touch dozens of
+    times after a day of container restarts.** Waydroid's ueventd
+    regenerates coldboot events by writing `add` to every uevent file
+    through a detached read-write sysfs mount, and in a container that
+    sysfs is the host's: every Android boot made the host kernel announce
+    all its devices again (736 synthetic uevents on a HackberryPi, counted
+    with a kprobe on `kobject_synth_uevent`), and Marathon's shell opened
+    another reader on the touchscreen for each one. Just reverting the
+    write leaves apexd waiting for `/dev/loop-control` and
+    `/dev/block/loopN`, and init reboots to the bootloader. Coldboot now
+    builds each event from what the uevent file reads back
+    (`patches/system_core`): the nodes are created and the host sees
+    nothing.
 
 ## Deckard in the image
 

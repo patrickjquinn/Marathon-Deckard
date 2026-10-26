@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 18:51:26 +0000
+Subject: [PATCH] ueventd: Read coldboot uevents instead of triggering them
+
+Waydroid's "Regenerate uevent on detached sysfs mount" let coldboot
+write "add" to every uevent file through a fresh read-write sysfs
+mount. In a container that sysfs is the host's: each Android boot made
+the host kernel announce all its devices again (736 synthetic uevents
+on a HackberryPi). Marathon's shell opened another reader on the
+touchscreen for every announcement, and after a day of container
+restarts it received each touch dozens of times.
+
+Coldboot now builds each add event from what the uevent file reads
+back, plus DEVPATH from the walk and SUBSYSTEM from the subsystem link,
+and hands it to the same callback. ueventd still creates the nodes
+Android needs at boot (apexd waits for /dev/loop-control,
+/dev/block/loopN and /dev/device-mapper), and the host sees nothing.
+Hotplug events after coldboot still arrive over netlink.
+
+Change-Id: Idadfea1c370040bfa2f5460cc39af55159b71856
+---
+ init/uevent_listener.cpp | 74 +++++++++++++++++-----------------------
+ init/uevent_listener.h   |  3 +-
+ 2 files changed, 33 insertions(+), 44 deletions(-)
+
+diff --git a/init/uevent_listener.cpp b/init/uevent_listener.cpp
+index 7bccd25..82a1773 100644
+--- a/init/uevent_listener.cpp
++++ b/init/uevent_listener.cpp
+@@ -17,10 +17,9 @@
+ #include "uevent_listener.h"
+ 
+ #include <fcntl.h>
++#include <limits.h>
+ #include <poll.h>
+ #include <string.h>
+-#include <sys/mount.h>
+-#include <sys/syscall.h>
+ #include <unistd.h>
+ 
+ #include <memory>
+@@ -129,28 +128,40 @@ ReadUeventResult UeventListener::ReadUevent(Uevent* uevent) const {
+     return ReadUeventResult::kSuccess;
+ }
+ 
+-// RegenerateUevents*() walks parts of the /sys tree and pokes the uevent files to cause the kernel
+-// to regenerate device add uevents that have already happened.  This is particularly useful when
+-// starting ueventd, to regenerate all of the uevents that it had previously missed.
++// RegenerateUevents*() walks parts of the /sys tree and replays the device add uevents that have
++// already happened, so ueventd sees the devices it missed before it started.
+ //
+-// We drain any pending events from the netlink socket every time we poke another uevent file to
+-// make sure we don't overrun the socket's buffer.
++// In a container /sys is the host's, and writing "add" to its uevent files would make the host
++// kernel announce its devices again to everything on the host. Instead each event is rebuilt from
++// what the uevent file reads back.
+ //
+ 
+-ListenerAction UeventListener::RegenerateUeventsForDir(DIR* d,
++ListenerAction UeventListener::RegenerateUeventsForDir(DIR* d, const std::string& path,
+                                                        const ListenerCallback& callback) const {
+     int dfd = dirfd(d);
+ 
+-    int fd = openat(dfd, "uevent", O_WRONLY | O_CLOEXEC);
++    int fd = openat(dfd, "uevent", O_RDONLY | O_CLOEXEC);
+     if (fd >= 0) {
+-        write(fd, "add\n", 4);
++        char buf[UEVENT_MSG_LEN];
++        ssize_t n = read(fd, buf, sizeof(buf) - 1);
+         close(fd);
+ 
+-        Uevent uevent;
+-        ReadUeventResult result;
+-        while ((result = ReadUevent(&uevent)) != ReadUeventResult::kFailed) {
+-            // Skip processing the uevent if it is invalid.
+-            if (result == ReadUeventResult::kInvalid) continue;
++        char subsystem[PATH_MAX];
++        ssize_t s = readlinkat(dfd, "subsystem", subsystem, sizeof(subsystem) - 1);
++        if (n >= 0 && s > 0) {
++            subsystem[s] = '\0';
++            const char* name = strrchr(subsystem, '/');
++            std::string msg = "ACTION=add";
++            msg += '\0';
++            msg += "DEVPATH=" + path.substr(strlen("/sys"));
++            msg += '\0';
++            msg += std::string("SUBSYSTEM=") + (name ? name + 1 : subsystem);
++            msg += '\0';
++            for (ssize_t i = 0; i < n; i++) msg += buf[i] == '\n' ? '\0' : buf[i];
++            msg += '\0';
++
++            Uevent uevent;
++            ParseEvent(msg.c_str(), &uevent);
+             if (callback(uevent) == ListenerAction::kStop) return ListenerAction::kStop;
+         }
+     }
+@@ -166,7 +177,8 @@ ListenerAction UeventListener::RegenerateUeventsForDir(DIR* d,
+         if (d2 == 0) {
+             close(fd);
+         } else {
+-            if (RegenerateUeventsForDir(d2.get(), callback) == ListenerAction::kStop) {
++            if (RegenerateUeventsForDir(d2.get(), path + "/" + de->d_name, callback) ==
++                ListenerAction::kStop) {
+                 return ListenerAction::kStop;
+             }
+         }
+@@ -181,39 +193,15 @@ ListenerAction UeventListener::RegenerateUeventsForPath(const std::string& path,
+     std::unique_ptr<DIR, decltype(&closedir)> d(opendir(path.c_str()), closedir);
+     if (!d) return ListenerAction::kContinue;
+ 
+-    return RegenerateUeventsForDir(d.get(), callback);
++    return RegenerateUeventsForDir(d.get(), path, callback);
+ }
+ 
+-static const char* kRegenerationPaths[] = {"devices"};
++static const char* kRegenerationPaths[] = {"/sys/devices"};
+ 
+ void UeventListener::RegenerateUevents(const ListenerCallback& callback) const {
+-    int fsfd, mntfd;
+-
+-    if ((fsfd = syscall(__NR_fsopen, "sysfs", FSOPEN_CLOEXEC)) == -1) {
+-        PLOG(FATAL) << "Failed to create sysfs mount context";
+-    }
+-
+-    syscall(__NR_fsconfig, fsfd, FSCONFIG_CMD_CREATE, NULL, NULL, 0);
+-
+-    if ((mntfd = syscall(__NR_fsmount, fsfd, FSMOUNT_CLOEXEC, 0)) == -1) {
+-        PLOG(FATAL) << "Failed to initialize sysfs mount";
+-    }
+-
+-    // Remount sysfs in read-write mode
+-    if (close(fsfd), (fsfd = syscall(__NR_fspick, mntfd, "", FSPICK_EMPTY_PATH)) == -1) {
+-        PLOG(FATAL) << "Failed to reconfigure sysfs mount";
+-    }
+-
+-    syscall(__NR_fsconfig, fsfd, FSCONFIG_SET_FLAG, "rw", NULL, 0);
+-    syscall(__NR_fsconfig, fsfd, FSCONFIG_CMD_RECONFIGURE, NULL, NULL, 0);
+-    close(fsfd);
+-
+     for (const auto path : kRegenerationPaths) {
+-        std::unique_ptr<DIR, decltype(&closedir)> d(fdopendir(openat(mntfd, path, O_DIRECTORY | O_CLOEXEC)), closedir);
+-        if (RegenerateUeventsForDir(d.get(), callback) == ListenerAction::kStop) break;
++        if (RegenerateUeventsForPath(path, callback) == ListenerAction::kStop) return;
+     }
+-
+-    close(mntfd);
+ }
+ 
+ void UeventListener::Poll(const ListenerCallback& callback,
+diff --git a/init/uevent_listener.h b/init/uevent_listener.h
+index 2772860..8f31906 100644
+--- a/init/uevent_listener.h
++++ b/init/uevent_listener.h
+@@ -57,7 +57,8 @@ class UeventListener {
+ 
+   private:
+     ReadUeventResult ReadUevent(Uevent* uevent) const;
+-    ListenerAction RegenerateUeventsForDir(DIR* d, const ListenerCallback& callback) const;
++    ListenerAction RegenerateUeventsForDir(DIR* d, const std::string& path,
++                                           const ListenerCallback& callback) const;
+ 
+     android::base::unique_fd device_fd_;
+ };
