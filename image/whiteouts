@@ -97,6 +97,7 @@ system/product/priv-app/OneTimeInitializer
 system/product/priv-app/SettingsIntelligence
 system/system_ext/priv-app/EmergencyInfo
 system/system_ext/priv-app/Provision
+system/system_ext/priv-app/LineageSetupWizard
 system/system_ext/priv-app/QuickAccessWallet
 system/system_ext/priv-app/Seedvault
 system/system_ext/priv-app/StorageManager
@@ -106,7 +107,6 @@ system/system_ext/priv-app/WaydroidUpdater
 system/apex/com.android.ondevicepersonalization/app/OnDevicePersonalization
 system/apex/com.android.tethering/app/HalfSheetUX
 system/apex/com.android.wifi/app/OsuLogin
-system/system_ext/priv-app/SystemUI
 system/product/app/Jelly
 system/priv-app/DocumentsUI
 system/product/overlay/DocumentsUIOverlay.apk
@@ -128,4 +128,3 @@ system/system_ext/priv-app/SimpleDeviceConfig
 system/product/etc/permissions/org.lineageos.profiles.xml
 system/product/etc/permissions/org.lineageos.livedisplay.xml
 system/product/etc/permissions/org.lineageos.health.xml
-system/product/etc/permissions/org.lineageos.globalactions.xml
