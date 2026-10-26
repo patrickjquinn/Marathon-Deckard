@@ -64,6 +64,7 @@ those that needed changes for 23.2.
 | frameworks/libs/binary_translation | dummy riscv64-to-x86_64 intrinsics generator on arm64 hosts | new (DGX's needs 24.0 defaults) |
 | hardware/interfaces | 2.7 external camera provider prefer32 | new |
 | hardware/ril | reference-ril fails unknown call-selection requests | new |
+| packages/modules/Permission | PermissionController asks through Marathon's prompt (MarathonGrantView) | Deckard |
 | prebuilts/build-tools | bison, flex, m4, make for the arm64 host | DGX |
 | prebuilts/clang/host/linux-x86 | llvm build tools from the arm64 clang | DGX, port |
 | prebuilts/jdk/jdk21 | arm64 javap and friends | DGX |
@@ -202,6 +203,15 @@ In the order they appeared.
     so the minigbm allocator was never started. It now tests for a
     populated directory, which only a Halium host's bind mount gives
     (`patches/vendor_extra_init`).
+
+## Deckard in the image
+
+Besides the build fixes, one patch carries Deckard behaviour that Android
+16 no longer allows from Deckard's overlay: `packages_modules_Permission`
+adds `MarathonGrantView` to PermissionController, so runtime permission
+questions are asked by Marathon's prompt (Marathon-Deckard
+`docs/permissions.md`). On Lineage 20 that was an APK swap over the
+flattened APEX; 23.2's APEXes are not flattened.
 
 Soong's `LLVM_NEXT=true` (meant for testing a newer clang) is not used: it
 adds `-Wno-everything` and drops the version-gated flags.

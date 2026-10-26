@@ -17,6 +17,7 @@ declare -A MAP=(
   [frameworks_libs_binary_translation]=frameworks/libs/binary_translation
   [hardware_interfaces]=hardware/interfaces
   [hardware_ril]=hardware/ril
+  [packages_modules_Permission]=packages/modules/Permission
   [prebuilts_build-tools]=prebuilts/build-tools
   [prebuilts_clang_host_linux-x86]=prebuilts/clang/host/linux-x86
   [prebuilts_jdk_jdk21]=prebuilts/jdk/jdk21
