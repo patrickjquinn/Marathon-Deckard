@@ -1,7 +1,8 @@
 //! Binder for the host binaries, over rsbinder: the `IPlatform` client and
 //! the local services Android calls (`waydroidhardware`,
 //! `waydroidusermonitor`). Requests carry libgbinder's `aidl3` header and use
-//! Android 11's service-manager codes.
+//! the service-manager codes of `service_manager_protocol`: Android 11's
+//! (`aidl3`) or Android 16's (`aidl6`).
 
 use std::fs;
 use std::io::Write;
@@ -23,8 +24,6 @@ use crate::Result;
 const PLATFORM: &str = android::PLATFORM.0;
 const PLATFORM_INTERFACE: &str = android::PLATFORM.1;
 const SERVICE_MANAGER: &str = "android.os.IServiceManager";
-const CHECK_SERVICE: u32 = 2;
-const ADD_SERVICE: u32 = 3;
 const DUMP_FLAG_PRIORITY_DEFAULT: i32 = 8;
 const STRICT_MODE_PENALTY_GATHER: i32 = 0x40 << 16;
 const UNSET_WORK_SOURCE: i32 = -1;
@@ -36,18 +35,37 @@ const MAX_STRING_BYTES: usize = 4096;
 const MAX_APPS: usize = 4096;
 const MAX_CATEGORIES: usize = 64;
 
-/// The Binder device of `waydroid.cfg`.
+/// The Binder device of `waydroid.cfg` and its service manager's codes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinderConfig {
     pub device: PathBuf,
+    manager: Manager,
+}
+
+/// `checkService` and `addService` transaction codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Manager {
+    check: u32,
+    add: u32,
+}
+
+impl Manager {
+    fn for_protocol(protocol: &str) -> Option<Self> {
+        match protocol {
+            "aidl3" => Some(Self { check: 2, add: 3 }),
+            "aidl6" => Some(Self { check: 3, add: 5 }),
+            _ => None,
+        }
+    }
 }
 
 impl BinderConfig {
     /// Reads the `[waydroid]` Binder settings of `waydroid.cfg`.
     ///
     /// # Errors
-    /// The file is unreadable, its device name is missing or unsafe, or it
-    /// names a protocol other than `aidl3`.
+    /// The file is unreadable, its device name is missing or unsafe, its
+    /// Binder protocol is not `aidl3`, or its service-manager protocol is
+    /// neither `aidl3` nor `aidl6`.
     pub fn from_file(path: &Path) -> Result<Self> {
         Self::parse(&fs::read_to_string(path)?)
     }
@@ -63,13 +81,15 @@ impl BinderConfig {
         if !safe {
             return Err("invalid Binder device name".into());
         }
-        for key in ["service_manager_protocol", "binder_protocol"] {
-            if cfg::get(text, key).is_some_and(|protocol| protocol != "aidl3") {
-                return Err(format!("unsupported {key}: only aidl3 is spoken").into());
-            }
+        if cfg::get(text, "binder_protocol").is_some_and(|protocol| protocol != "aidl3") {
+            return Err("unsupported binder_protocol: only aidl3 is spoken".into());
         }
+        let protocol = cfg::get(text, "service_manager_protocol").unwrap_or("aidl3");
+        let manager = Manager::for_protocol(protocol)
+            .ok_or_else(|| format!("unsupported service_manager_protocol: {protocol}"))?;
         Ok(Self {
             device: Path::new("/dev").join(binder),
+            manager,
         })
     }
 }
@@ -108,8 +128,8 @@ fn call(
     Ok(reply)
 }
 
-fn check_service(name: &str) -> Result<Option<SIBinder>> {
-    let mut reply = call(&manager()?, SERVICE_MANAGER, CHECK_SERVICE, |data| {
+fn check_service(config: &BinderConfig, name: &str) -> Result<Option<SIBinder>> {
+    let mut reply = call(&manager()?, SERVICE_MANAGER, config.manager.check, |data| {
         data.write(name)
     })?;
     Ok(reply.read()?)
@@ -188,7 +208,7 @@ impl Platform {
         init(config)?;
         let start = Instant::now();
         loop {
-            match check_service(PLATFORM) {
+            match check_service(config, PLATFORM) {
                 Ok(Some(binder)) => return Ok(Self(binder)),
                 Err(error) if start.elapsed() >= MANAGER_TIMEOUT => {
                     return Err(format!("Binder service manager did not appear: {error}").into());
@@ -323,8 +343,13 @@ impl DeathRecipient for Died {
     }
 }
 
-fn add_service(manager: &SIBinder, name: &str, service: &SIBinder) -> Result<()> {
-    call(manager, SERVICE_MANAGER, ADD_SERVICE, |data| {
+fn add_service(
+    config: &BinderConfig,
+    manager: &SIBinder,
+    name: &str,
+    service: &SIBinder,
+) -> Result<()> {
+    call(manager, SERVICE_MANAGER, config.manager.add, |data| {
         data.write(name)?;
         data.write(service)?;
         data.write(&false)?;
@@ -357,7 +382,7 @@ pub fn serve<S: Service>(config: &BinderConfig, service: S, stop: Arc<AtomicBool
         if let Err(error) = manager.link_to_death_arc(&died) {
             eprintln!("{}: cannot watch the service manager: {error}", S::NAME);
         }
-        if let Err(error) = add_service(&manager, S::NAME, &binder) {
+        if let Err(error) = add_service(config, &manager, S::NAME, &binder) {
             eprintln!("{}: registration failed: {error}", S::NAME);
         }
         let _ = deaths.recv();
@@ -375,6 +400,14 @@ mod tests {
             "[waydroid]\nbinder = anbox-binder\nservice_manager_protocol = aidl3\n[properties]\nbinder = x\n",
         )?;
         assert_eq!(config.device, Path::new("/dev/anbox-binder"));
+        assert_eq!(config.manager, Manager { check: 2, add: 3 });
+        let android16 =
+            BinderConfig::parse("[waydroid]\nbinder = b\nservice_manager_protocol = aidl6\n")?;
+        assert_eq!(android16.manager, Manager { check: 3, add: 5 });
+        assert!(
+            BinderConfig::parse("[waydroid]\nbinder = b\nservice_manager_protocol = aidl5\n")
+                .is_err()
+        );
         assert!(BinderConfig::parse("[waydroid]\nbinder = ../mem\n").is_err());
         assert!(BinderConfig::parse("[waydroid]\nbinder_protocol = aidl3\n").is_err());
         assert!(BinderConfig::parse("[waydroid]\nbinder = b\nbinder_protocol = aidl4\n").is_err());

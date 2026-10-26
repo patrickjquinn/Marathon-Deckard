@@ -65,10 +65,11 @@ Python, `am start`, or a shell, and needs neither libgbinder nor GLib.
 
 Requests are written as libgbinder's `aidl3` protocol wrote them: the
 strict-mode word `0x400000`, work source `-1` and the `SYST` header before the
-interface name, and Android 11's service-manager codes (`checkService` 2,
-`addService` 3). rsbinder's own service-manager hub is not used, because on
-Linux it speaks Android 16's codes. `waydroid.cfg` naming a protocol other than
-`aidl3` is refused. Local services register again when the service manager
+interface name. The service-manager codes follow `service_manager_protocol`:
+Android 11's for `aidl3` (`checkService` 2, `addService` 3) and Android 16's
+for `aidl6` (`checkService` 3, `addService` 5). rsbinder's own service-manager
+hub is not used, because on Linux it speaks only Android 16's codes.
+`waydroid.cfg` naming another protocol is refused. Local services register again when the service manager
 dies.
 
 Build an AArch64 dynamic-musl executable as the package does:
