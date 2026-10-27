@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 20:34:40 +0000
+Subject: [PATCH] apexd: Publish the sysfs mount only once it is read-write
+
+OpenSysfsMount() stored the fresh sysfs mount in sysfs_mntfd before
+remounting it read-write, and every caller tested sysfs_mntfd without a
+lock. APEXes are activated on several threads, so another thread could
+open a loop device's queue attributes through the still read-only
+mount: "Failed to open /sys/block/loop3/queue/read_ahead_kb: Read-only
+file system", and apexd-bootstrap fails, which reboots Android.
+
+Until now ueventd's coldboot had already made the container's sysfs
+read-write before apexd ran, which hid the race. With ueventd no longer
+writing to sysfs it failed on two boots out of four. The mount is now
+set up once, under std::call_once, and published after the remount.
+
+Change-Id: I46b5c37ef9ba7f05a32e2d92396ef9726deb68fc
+---
+ apexd/apexd_loop.cpp | 41 ++++++++++++++++++++++++-----------------
+ 1 file changed, 24 insertions(+), 17 deletions(-)
+
+diff --git a/apexd/apexd_loop.cpp b/apexd/apexd_loop.cpp
+index 1e08ad3..e205d24 100644
+--- a/apexd/apexd_loop.cpp
++++ b/apexd/apexd_loop.cpp
+@@ -80,27 +80,34 @@ void LoopbackDeviceUniqueFd::MaybeCloseBad() {
+   }
+ }
+ 
++// Opens a read-write sysfs mount once. sysfs_mntfd is published only after the
++// remount, so concurrent activations never see the read-only mount.
+ static void OpenSysfsMount() {
+-  int fsfd;
++  static std::once_flag once;
++  std::call_once(once, [] {
++    int fsfd, mntfd;
+ 
+-  if ((fsfd = syscall(__NR_fsopen, "sysfs", FSOPEN_CLOEXEC)) == -1) {
+-    PLOG(FATAL) << "Failed to create sysfs mount context";
+-  }
++    if ((fsfd = syscall(__NR_fsopen, "sysfs", FSOPEN_CLOEXEC)) == -1) {
++      PLOG(FATAL) << "Failed to create sysfs mount context";
++    }
+ 
+-  syscall(__NR_fsconfig, fsfd, FSCONFIG_CMD_CREATE, NULL, NULL, 0);
++    syscall(__NR_fsconfig, fsfd, FSCONFIG_CMD_CREATE, NULL, NULL, 0);
+ 
+-  if ((sysfs_mntfd = syscall(__NR_fsmount, fsfd, FSMOUNT_CLOEXEC, 0)) == -1) {
+-    PLOG(FATAL) << "Failed to initialize sysfs mount";
+-  }
++    if ((mntfd = syscall(__NR_fsmount, fsfd, FSMOUNT_CLOEXEC, 0)) == -1) {
++      PLOG(FATAL) << "Failed to initialize sysfs mount";
++    }
+ 
+-  // Remount sysfs in read-write mode
+-  if (close(fsfd), (fsfd = syscall(__NR_fspick, sysfs_mntfd, "", FSPICK_EMPTY_PATH)) == -1) {
+-    PLOG(FATAL) << "Failed to reconfigure sysfs mount";
+-  }
++    // Remount sysfs in read-write mode
++    if (close(fsfd), (fsfd = syscall(__NR_fspick, mntfd, "", FSPICK_EMPTY_PATH)) == -1) {
++      PLOG(FATAL) << "Failed to reconfigure sysfs mount";
++    }
+ 
+-  syscall(__NR_fsconfig, fsfd, FSCONFIG_SET_FLAG, "rw", NULL, 0);
+-  syscall(__NR_fsconfig, fsfd, FSCONFIG_CMD_RECONFIGURE, NULL, NULL, 0);
+-  close(fsfd);
++    syscall(__NR_fsconfig, fsfd, FSCONFIG_SET_FLAG, "rw", NULL, 0);
++    syscall(__NR_fsconfig, fsfd, FSCONFIG_CMD_RECONFIGURE, NULL, NULL, 0);
++    close(fsfd);
++
++    sysfs_mntfd = mntfd;
++  });
+ }
+ 
+ static bool ReadFileAtDirToString(borrowed_fd dirfd, const std::string& path, std::string* content) {
+@@ -114,7 +121,7 @@ Result<void> ConfigureScheduler(const std::string& device_path) {
+     return Error() << "Invalid argument " << device_path;
+   }
+ 
+-  if (sysfs_mntfd == -1) OpenSysfsMount();
++  OpenSysfsMount();
+ 
+   const std::string device_name = Basename(device_path);
+ 
+@@ -320,7 +327,7 @@ Result<void> ConfigureQueueDepth(const std::string& loop_device_path,
+ Result<void> ConfigureReadAhead(const std::string& device_path) {
+   ATRACE_NAME("ConfigureReadAhead");
+   CHECK(StartsWith(device_path, "/dev/"));
+-  if (sysfs_mntfd == -1) OpenSysfsMount();
++  OpenSysfsMount();
+   std::string device_name = Basename(device_path);
+ 
+   std::string sysfs_device =

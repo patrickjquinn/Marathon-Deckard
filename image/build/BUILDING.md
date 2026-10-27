@@ -70,6 +70,7 @@ those that needed changes for 23.2.
 | prebuilts/jdk/jdk21 | arm64 javap and friends | DGX |
 | prebuilts/rust | prebuilt musl std on a native arm64 host | DGX, port (code is in prebuilts/rust/soong on 23.2) |
 | prebuilts/tools-lineage | arm64 mogrify | DGX |
+| system/apex | apexd publishes its detached sysfs mount only once it is read-write | new |
 | system/core | Waydroid's ashmem EPERM fallback, refreshed | Waydroid, port |
 | system/core | ueventd coldboot reads uevent files instead of writing them | new |
 | system/sepolicy | getopt() results in an int (char is unsigned on arm64) | DGX |
@@ -218,6 +219,16 @@ In the order they appeared.
     builds each event from what the uevent file reads back
     (`patches/system_core`): the nodes are created and the host sees
     nothing.
+
+25. **At runtime, after 24: `apexd-bootstrap: Could not create loop device
+    for /system/apex/com.android.tzdata.apex: Failed to open
+    /sys/block/loop3/queue/read_ahead_kb: Read-only file system`**, and
+    init reboots Android to the bootloader. Waydroid's apexd patch opens a
+    detached sysfs mount to configure loop devices, but published it before
+    remounting it read-write, without a lock, while APEXes activate on
+    several threads. ueventd's coldboot used to make the container's sysfs
+    read-write first, which hid the race. The mount is now set up once and
+    published after the remount (`patches/system_apex`).
 
 ## Deckard in the image
 
