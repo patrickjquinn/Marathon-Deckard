@@ -1,0 +1,105 @@
+From 5d95f5e825a6517afc3a16def2b3486ecbf82c40 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Tue, 27 Oct 2026 20:21:40 +0000
+Subject: [PATCH] device: Set app IO priorities through BFQ's weight
+
+Android's IO priority profiles write io.weight, which only the io.cost
+controller provides. The host schedules its disk with BFQ, whose
+cgroup file is io.bfq.weight, so every profile change failed and
+logged two kernel lines: about 9,000 a day on the HackberryPi, and no
+IO priority between apps.
+
+A vendor task_profiles.json redefines the four IO profiles with the
+same properties and values against bfq.weight (1-1000, so low 100 and
+normal 1000 keep their ratio). On the HackberryPi the io.weight errors
+stopped and Android's processes carry io.bfq.weight 100 or 1000.
+---
+ configs/task_profiles.json | 60 ++++++++++++++++++++++++++++++++++++++
+ device.mk                  |  4 +++
+ 2 files changed, 64 insertions(+)
+ create mode 100644 configs/task_profiles.json
+
+diff --git a/configs/task_profiles.json b/configs/task_profiles.json
+new file mode 100644
+index 0000000..db84684
+--- /dev/null
++++ b/configs/task_profiles.json
+@@ -0,0 +1,60 @@
++{
++  "Profiles": [
++    {
++      "Name": "LowIoPriority",
++      "Actions": [
++        {
++          "Name": "SetCgroupV2Attribute",
++          "Params": {
++            "Controller": "io",
++            "Interface": "bfq.weight",
++            "PropertyName": "ro.cgroup2.io.weight.low",
++            "DefaultValue": "100"
++          }
++        }
++      ]
++    },
++    {
++      "Name": "NormalIoPriority",
++      "Actions": [
++        {
++          "Name": "SetCgroupV2Attribute",
++          "Params": {
++            "Controller": "io",
++            "Interface": "bfq.weight",
++            "PropertyName": "ro.cgroup2.io.weight.default",
++            "DefaultValue": "1000"
++          }
++        }
++      ]
++    },
++    {
++      "Name": "HighIoPriority",
++      "Actions": [
++        {
++          "Name": "SetCgroupV2Attribute",
++          "Params": {
++            "Controller": "io",
++            "Interface": "bfq.weight",
++            "PropertyName": "ro.cgroup2.io.weight.default",
++            "DefaultValue": "1000"
++          }
++        }
++      ]
++    },
++    {
++      "Name": "MaxIoPriority",
++      "Actions": [
++        {
++          "Name": "SetCgroupV2Attribute",
++          "Params": {
++            "Controller": "io",
++            "Interface": "bfq.weight",
++            "PropertyName": "ro.cgroup2.io.weight.default",
++            "DefaultValue": "1000"
++          }
++        }
++      ]
++    }
++  ]
++}
+diff --git a/device.mk b/device.mk
+index 28e5062..3ebe3ff 100644
+--- a/device.mk
++++ b/device.mk
+@@ -78,6 +78,10 @@ PRODUCT_PACKAGES += \
+ PRODUCT_COPY_FILES += \
+     $(LOCAL_PATH)/configs/external_camera_config.xml:$(TARGET_COPY_OUT_VENDOR)/etc/external_camera_config.xml
+ 
++# The host schedules the disk with BFQ, which has io.bfq.weight, not io.weight
++PRODUCT_COPY_FILES += \
++    $(LOCAL_PATH)/configs/task_profiles.json:$(TARGET_COPY_OUT_VENDOR)/etc/task_profiles.json
++
+ # Display
+ PRODUCT_PACKAGES += \
+     android.hardware.graphics.allocator@2.0-impl \
+-- 
+2.55.0
+
