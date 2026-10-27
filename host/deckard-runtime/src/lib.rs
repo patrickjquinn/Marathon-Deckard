@@ -238,6 +238,28 @@ fn apply(data_home: &Path, config: &BinderConfig, event: Option<monitor::Event>)
     }
 }
 
+/// Android 16's package callback to the user monitor never fires, but the
+/// bridge owns `deckard.<package>` on the session bus while an app is
+/// installed. Any change of owner asks Android about that package again.
+fn follow_bridge(events: &mpsc::SyncSender<monitor::Event>, resync: &AtomicBool) -> Result<()> {
+    let bus = Connection::session()?;
+    let changes = zbus::blocking::fdo::DBusProxy::new(&bus)?.receive_name_owner_changed()?;
+    for change in changes {
+        let Ok(args) = change.args() else { continue };
+        let Some(package) = args.name().strip_prefix(names::APP_ID_PREFIX) else {
+            continue;
+        };
+        let event = monitor::Event::Package {
+            package: package.to_owned(),
+            removed: false,
+        };
+        if events.try_send(event).is_err() {
+            resync.store(true, Ordering::Release);
+        }
+    }
+    Ok(())
+}
+
 /// Exports the launchers once Android is ready, then follows Android's
 /// user monitor callbacks instead of polling the catalog.
 fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()> {
@@ -250,9 +272,16 @@ fn monitor_installed_apps(data_home: &Path, stop: &Arc<AtomicBool>) -> Result<()
     };
     let service_config = config.clone();
     let service_stop = Arc::clone(stop);
+    let bridge_events = service.events.clone();
+    let bridge_resync = Arc::clone(&resync);
     thread::spawn(move || {
         if let Err(error) = binder::serve(&service_config, service, service_stop) {
             eprintln!("deckard-runtime: Android user monitor unavailable: {error}");
+        }
+    });
+    thread::spawn(move || {
+        if let Err(error) = follow_bridge(&bridge_events, &bridge_resync) {
+            eprintln!("deckard-runtime: not following the bridge's apps: {error}");
         }
     });
     // A later userUnlocked callback exports the catalog.
