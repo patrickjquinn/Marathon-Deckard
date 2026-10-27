@@ -51,6 +51,7 @@ const MAX_FILES: usize = 32;
 const MAX_TASKS: usize = 8;
 const MAX_BYTES: u64 = 1 << 30;
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+const FOLLOW_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(630);
 const XFER_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const WRITE_FAILED: &str = "cannot write the transfer";
@@ -728,6 +729,7 @@ impl Intents {
         match json::string(m, "t") {
             "open" => self.open(m),
             "pick" => self.pick(m),
+            "follow" => self.follow(json::string(m, "pkg")),
             "pick_done" => self.pick_done(json::string(m, "id")),
             "pick_cancel" => {
                 sync::lock(&self.state)
@@ -736,6 +738,22 @@ impl Intents {
             }
             _ => {}
         }
+    }
+
+    /// The Android app in front opened another app's task (an install
+    /// confirmation, a permission prompt), or one returned: Marathon shows
+    /// that app's window too, as Android would.
+    fn follow(&self, pkg: &str) {
+        if !ids::is_package_name(pkg) {
+            return eprintln!("deckard-bridge: follow refused: bad package");
+        }
+        let id = keel::app_id(pkg);
+        let bus = self.bus.clone();
+        self.tasks.spawn(&self.bus, "deckard-follow", async move {
+            if !expect_window(&bus, &id, FOLLOW_TIMEOUT).await {
+                eprintln!("deckard-bridge: the Shell would not show {id}");
+            }
+        });
     }
 
     fn open(&self, m: &Map<String, Value>) {

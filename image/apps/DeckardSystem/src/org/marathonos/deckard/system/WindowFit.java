@@ -236,6 +236,7 @@ final class WindowFit {
 
     private static String pendingFocus;
     private static String marathonFront = "";
+    private static String lastShown = "";
     private static final Runnable FOCUS = WindowFit::applyFocus;
     private static final Runnable RECLAIM = WindowFit::reclaim;
 
@@ -249,6 +250,7 @@ final class WindowFit {
      */
     static void focus(String pkg) {
         if (handler == null || pkg == null) return;
+        if (!marathonFront.isEmpty()) lastShown = marathonFront;
         marathonFront = pkg;
         pendingFocus = pkg;
         handler.removeCallbacks(FOCUS);
@@ -256,14 +258,48 @@ final class WindowFit {
     }
 
     /**
-     * Android moved its focus on its own (an app started an activity) while
-     * Marathon shows another Android app, or none: a second later, unless
-     * Marathon showed the new one meanwhile, the focus goes back, or every
-     * touch lands in the hidden task. With none, Deckard's home goes back on top.
+     * Android moved its focus on its own: the app in front opened another
+     * app's task (an install confirmation, a permission prompt, a share
+     * target), or one returned. Marathon shows that app too, as Android
+     * would. With no Android app in Marathon's front, Android's home goes
+     * back on top instead.
      */
     private static void reclaim() {
-        pendingFocus = marathonFront;
-        applyFocus();
+        if (marathonFront.isEmpty()) {
+            pendingFocus = "";
+            applyFocus();
+            return;
+        }
+        String focused = focusedPackage();
+        if (focused == null || focused.equals(marathonFront)) return;
+        follow(focused);
+    }
+
+    private static void follow(String pkg) {
+        try {
+            HostLink.get().send(new org.json.JSONObject().put("t", "follow").put("pkg", pkg));
+            Log.i(TAG, "following " + pkg + " in front of '" + marathonFront + "'");
+        } catch (Throwable t) {
+            Log.w(TAG, "follow failed", t);
+        }
+    }
+
+    /** The package of the focused app task, or null when none is. */
+    private static String focusedPackage() {
+        try {
+            List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
+            for (Object root : roots) {
+                if (intField(root, "displayId") != DISPLAY || !isFocused(root)) continue;
+                Object windowConfig = windowConfiguration(root);
+                int type = (int) windowConfig.getClass().getMethod("getActivityType").invoke(windowConfig);
+                if (type != ACTIVITY_TYPE_STANDARD && type != ACTIVITY_TYPE_UNDEFINED) return null;
+                ComponentName base = (ComponentName) root.getClass().getField("baseActivity").get(root);
+                return base == null ? null : base.getPackageName();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "focused task unknown", t);
+        }
+        return null;
     }
 
     /** Deckard's home on top of every app task, focused. */
@@ -297,7 +333,10 @@ final class WindowFit {
     private static void applyFocus() {
         String pkg = pendingFocus;
         if (pkg.isEmpty()) {
-            showHome();
+            // A dialog that closed hands Android's focus back to its caller.
+            String focused = focusedPackage();
+            if (focused != null && !lastShown.isEmpty() && !focused.equals(lastShown)) follow(focused);
+            else showHome();
             return;
         }
         try {
