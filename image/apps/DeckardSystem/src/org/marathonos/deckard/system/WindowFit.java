@@ -33,6 +33,7 @@ final class WindowFit {
     private static final int WINDOWING_MODE_FREEFORM = 5;
     private static final int ACTIVITY_TYPE_UNDEFINED = 0;
     private static final int ACTIVITY_TYPE_STANDARD = 1;
+    private static final int ACTIVITY_TYPE_HOME = 2;
     private static final long SETTLE_MS = 30;
     private static final long RETRY_MS = 2000;
     private static final long RECLAIM_MS = 1000;
@@ -237,33 +238,61 @@ final class WindowFit {
     private static final Runnable RECLAIM = WindowFit::reclaim;
 
     /**
-     * Marathon brought waydroid.<pkg> to the front. Android normally learns
-     * that from the hwcomposer's keyboard enter; this covers the times it
-     * doesn't. Debounced, and a no-op when Android already agrees.
+     * Marathon brought deckard.<pkg> to the front, or "" when it shows no
+     * Android app. Android normally learns the front app from the
+     * hwcomposer's keyboard enter; this covers the times it doesn't, and puts
+     * Deckard's home on top when Marathon shows none, so the app last in
+     * front pauses as on a phone whose user went home. Debounced, and a
+     * no-op when Android already agrees.
      */
     static void focus(String pkg) {
         if (handler == null || pkg == null) return;
         marathonFront = pkg;
-        if (pkg.isEmpty()) return;
         pendingFocus = pkg;
         handler.removeCallbacks(FOCUS);
         handler.postDelayed(FOCUS, 150);
     }
 
     /**
-     * Android moved its focus on its own (an app started an activity, or
-     * `waydroid app launch`) while Marathon still shows another Android app:
-     * a second later, unless Marathon showed the new one meanwhile, the
-     * focus goes back, or every touch lands in the hidden task.
+     * Android moved its focus on its own (an app started an activity) while
+     * Marathon shows another Android app, or none: a second later, unless
+     * Marathon showed the new one meanwhile, the focus goes back, or every
+     * touch lands in the hidden task. With none, Deckard's home goes back on top.
      */
     private static void reclaim() {
-        if (marathonFront.isEmpty()) return;
         pendingFocus = marathonFront;
         applyFocus();
     }
 
+    /** Deckard's home on top of every app task, focused. */
+    private static void showHome() {
+        try {
+            List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
+            for (Object root : roots) {
+                if (intField(root, "displayId") != DISPLAY) continue;
+                Object windowConfig = windowConfiguration(root);
+                int type = (int) windowConfig.getClass().getMethod("getActivityType").invoke(windowConfig);
+                if (type != ACTIVITY_TYPE_HOME) continue;
+                if (isFocused(root)) return;
+                Object wct = wctClass.newInstance();
+                wctReorder.invoke(wct, root.getClass().getField("token").get(root), true);
+                applyTransaction.invoke(windowOrganizer, wct);
+                setFocusedTask.invoke(atm, intField(root, "taskId"));
+                Log.i(TAG, "home in front: Marathon shows no Android app");
+                return;
+            }
+            Log.w(TAG, "no home task to put in front");
+        } catch (Throwable t) {
+            Log.w(TAG, "home failed", t);
+        }
+    }
+
     private static void applyFocus() {
         String pkg = pendingFocus;
+        if (pkg.isEmpty()) {
+            showHome();
+            return;
+        }
         try {
             List<?> roots = (List<?>) getAllRootTaskInfos.invoke(atm);
             for (Object root : roots) {
