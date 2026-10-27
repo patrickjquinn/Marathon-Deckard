@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 14:13:34 +0000
+Subject: [PATCH] SystemServiceManager: Skip the services a device lists
+
+Deckard runs Android as an app runtime in a container and has no use
+for several system services that SystemServer starts unconditionally
+(health connect, ad services, on-device personalization, the
+intelligence managers and others). Let ro.deckard.skip_system_services
+name them by simple class name ($ for nested classes): startService and
+startServiceFromJar then log the skip and return null without loading
+the class. Only for services whose caller ignores the instance; the
+list is the device's to measure and keep.
+
+Change-Id: I5e654ba69d5e5d8449a474990a2429ac136cbe67
+---
+ .../android/server/SystemServiceManager.java  | 30 +++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/services/core/java/com/android/server/SystemServiceManager.java b/services/core/java/com/android/server/SystemServiceManager.java
+index 66d7aded5..f430ad6f6 100644
+--- a/services/core/java/com/android/server/SystemServiceManager.java
++++ b/services/core/java/com/android/server/SystemServiceManager.java
+@@ -27,6 +27,7 @@ import android.content.pm.PackageManager;
+ import android.content.pm.UserInfo;
+ import android.os.Environment;
+ import android.os.SystemClock;
++import android.os.SystemProperties;
+ import android.os.Trace;
+ import android.os.UserHandle;
+ import android.util.ArraySet;
+@@ -150,6 +151,9 @@ public final class SystemServiceManager implements Dumpable {
+      */
+     @android.ravenwood.annotation.RavenwoodKeep
+     public SystemService startService(String className) {
++        if (isSkipped(className)) {
++            return null;
++        }
+         final Class<SystemService> serviceClass = loadClassFromLoader(className,
+                 this.getClass().getClassLoader());
+         return startService(serviceClass);
+@@ -165,6 +169,9 @@ public final class SystemServiceManager implements Dumpable {
+      * @return The service instance.
+      */
+     public SystemService startServiceFromJar(String className, String path) {
++        if (isSkipped(className)) {
++            return null;
++        }
+         PathClassLoader pathClassLoader =
+                 SystemServerClassLoaderFactory.getOrCreateClassLoader(
+                         path, this.getClass().getClassLoader(), isJarInTestApex(path));
+@@ -172,6 +179,26 @@ public final class SystemServiceManager implements Dumpable {
+         return startService(serviceClass);
+     }
+ 
++    /**
++     * Whether the device leaves this service out: its simple class name (with
++     * {@code $} for nested classes) is listed in {@code ro.deckard.skip_system_services}.
++     * Only for services whose instance their caller does not use.
++     */
++    private static boolean isSkipped(String className) {
++        final String list = SystemProperties.get("ro.deckard.skip_system_services", "");
++        if (list.isEmpty()) {
++            return false;
++        }
++        final String simple = className.substring(className.lastIndexOf('.') + 1);
++        for (String name : list.split(",")) {
++            if (name.trim().equals(simple)) {
++                Slog.i(TAG, "Skipping " + className + " (ro.deckard.skip_system_services)");
++                return true;
++            }
++        }
++        return false;
++    }
++
+     /**
+      * Returns true if the jar is in a test APEX.
+      */
+@@ -226,6 +253,9 @@ public final class SystemServiceManager implements Dumpable {
+                     methodName = "<init>",
+                     methodParameterTypePatterns = {@TypePattern(constant = Context.class)}))
+     public <T extends SystemService> T startService(Class<T> serviceClass) {
++        if (isSkipped(serviceClass.getName())) {
++            return null;
++        }
+         try {
+             final String name = serviceClass.getName();
+             Slog.i(TAG, "Starting " + name);

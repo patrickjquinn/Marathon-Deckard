@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 15:08:29 +0000
+Subject: [PATCH] SystemUI: Skip the startables a device lists
+
+On Deckard's container SystemUI stays only for the window manager shell
+(the IME's control target for per-app windows); its bars, keyguard and
+most other parts never show. Let ro.deckard.skip_systemui_startables
+name CoreStartables to leave out by simple class name ($ for nested
+classes). They are not created and count as started, so startables
+that depend on them still run. The list is the device's to measure
+and keep.
+
+Change-Id: I3bd399244045e550085a305da380fae7b2a913b4
+---
+ .../impl/SystemUIApplicationImpl.java         | 34 +++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/application/impl/SystemUIApplicationImpl.java b/packages/SystemUI/src/com/android/systemui/application/impl/SystemUIApplicationImpl.java
+index 00887f7b4..5fa7df5f0 100644
+--- a/packages/SystemUI/src/com/android/systemui/application/impl/SystemUIApplicationImpl.java
++++ b/packages/SystemUI/src/com/android/systemui/application/impl/SystemUIApplicationImpl.java
+@@ -25,6 +25,7 @@ import android.content.Intent;
+ import android.content.IntentFilter;
+ import android.content.res.Configuration;
+ import android.os.Process;
++import android.os.SystemProperties;
+ import android.os.Trace;
+ import android.tracing.perfetto.InitArguments;
+ import android.util.Log;
+@@ -60,6 +61,7 @@ import java.lang.reflect.InvocationTargetException;
+ import java.util.ArrayDeque;
+ import java.util.Comparator;
+ import java.util.HashSet;
++import java.util.LinkedHashMap;
+ import java.util.Map;
+ import java.util.Set;
+ import java.util.StringJoiner;
+@@ -268,6 +270,9 @@ public class SystemUIApplicationImpl extends SystemUIApplication implements
+         if (mServicesStarted) {
+             return;
+         }
++        // Startables the device leaves out count as started, so their dependents still start.
++        HashSet<Class<?>> startedStartables = new HashSet<>();
++        startables = withoutSkipped(startables, startedStartables);
+         mServices = new CoreStartable[startables.size() + (vendorComponent == null ? 0 : 1)];
+ 
+         if (!mBootCompleteCache.isBootComplete()) {
+@@ -290,8 +295,6 @@ public class SystemUIApplicationImpl extends SystemUIApplication implements
+                 Trace.TRACE_TAG_APP);
+         log.traceBegin(metricsPrefix);
+ 
+-        HashSet<Class<?>> startedStartables = new HashSet<>();
+-
+         // Perform a form of topological sort:
+         // 1) Iterate through a queue of all non-started startables
+         //   If the startable has all of its dependencies met
+@@ -391,6 +394,33 @@ public class SystemUIApplicationImpl extends SystemUIApplication implements
+         mServicesStarted = true;
+     }
+ 
++    /**
++     * The startables without those whose simple class names ({@code $} for nested classes)
++     * are listed in {@code ro.deckard.skip_systemui_startables}; those go into {@code skipped}.
++     */
++    private static Map<Class<?>, Provider<CoreStartable>> withoutSkipped(
++            Map<Class<?>, Provider<CoreStartable>> startables, Set<Class<?>> skipped) {
++        String list = SystemProperties.get("ro.deckard.skip_systemui_startables", "");
++        if (list.isEmpty()) {
++            return startables;
++        }
++        Set<String> names = new HashSet<>();
++        for (String name : list.split(",")) {
++            names.add(name.trim());
++        }
++        Map<Class<?>, Provider<CoreStartable>> kept = new LinkedHashMap<>();
++        for (Map.Entry<Class<?>, Provider<CoreStartable>> entry : startables.entrySet()) {
++            String name = entry.getKey().getName();
++            if (names.contains(name.substring(name.lastIndexOf('.') + 1))) {
++                Log.i(TAG, "Skipping " + name + " (ro.deckard.skip_systemui_startables)");
++                skipped.add(entry.getKey());
++            } else {
++                kept.put(entry.getKey(), entry.getValue());
++            }
++        }
++        return kept;
++    }
++
+     private static void notifyBootCompleted(CoreStartable coreStartable) {
+         if (Trace.isEnabled()) {
+             Trace.traceBegin(
