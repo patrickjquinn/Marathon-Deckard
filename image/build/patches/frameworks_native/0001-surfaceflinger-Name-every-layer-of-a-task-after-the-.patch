@@ -1,0 +1,112 @@
+From 24489be119dc70707a13ccb9f0dc92726eb1ac08 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Tue, 27 Oct 2026 19:31:50 +0000
+Subject: [PATCH] surfaceflinger: Name every layer of a task after the task for
+ the composer
+
+The Waydroid hwcomposer gives each Android task its own Wayland window
+and finds a layer's task from its "TID:<task>#<package>" name. Layers an
+app creates under its window, such as the SurfaceControl a video player
+draws into, have names of their own, so the composer could not place
+them: TikTok's video never reached its window.
+
+Carry the nearest TID name down the snapshot tree and send that to the
+composer as the layer name.
+
+Change-Id: Ie970eb672a297eeaa185681ace86ed12b73d567e
+---
+ .../CompositionEngine/include/compositionengine/LayerFE.h   | 3 +++
+ .../surfaceflinger/CompositionEngine/src/OutputLayer.cpp    | 2 +-
+ services/surfaceflinger/FrontEnd/LayerSnapshot.h            | 2 ++
+ services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp   | 6 ++++++
+ services/surfaceflinger/LayerFE.cpp                         | 4 ++++
+ services/surfaceflinger/LayerFE.h                           | 1 +
+ 6 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFE.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFE.h
+index a9b0f81..caf8636 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFE.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFE.h
+@@ -179,6 +179,9 @@ public:
+     // Gets some kind of identifier for the layer for debug purposes.
+     virtual const char* getDebugName() const = 0;
+ 
++    // The name the composer groups layers by: the task's for any layer in one.
++    virtual const char* getCompositionName() const { return getDebugName(); }
++
+     // Gets the sequence number: a serial number that uniquely identifies a Layer
+     virtual int32_t getSequence() const = 0;
+ 
+diff --git a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+index 07e5ad0..b1a9062 100644
+--- a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+@@ -579,7 +579,7 @@ void OutputLayer::writeOutputDependentGeometryStateToHWC(HWC2::Layer* hwcLayer,
+               to_string(error).c_str(), static_cast<int32_t>(error));
+     }
+ 
+-    if (auto error = hwcLayer->setLayerName(getLayerFE().getDebugName());
++    if (auto error = hwcLayer->setLayerName(getLayerFE().getCompositionName());
+             error != hal::Error::NONE) {
+             ALOGE("[%s] Failed to set layer name: %s (%d)", getLayerFE().getDebugName(),
+                   to_string(error).c_str(), static_cast<int32_t>(error));
+diff --git a/services/surfaceflinger/FrontEnd/LayerSnapshot.h b/services/surfaceflinger/FrontEnd/LayerSnapshot.h
+index 35d8afe..c0c7a7a 100644
+--- a/services/surfaceflinger/FrontEnd/LayerSnapshot.h
++++ b/services/surfaceflinger/FrontEnd/LayerSnapshot.h
+@@ -80,6 +80,8 @@ struct LayerSnapshot : public compositionengine::LayerFECompositionState {
+     int32_t sequence;
+     std::string name;
+     std::string debugName;
++    // The nearest "TID:<task>#..." name at or above this layer.
++    std::string taskName;
+     bool contentOpaque;
+     bool layerOpaqueFlagSet;
+     RoundedCornerState roundedCorner;
+diff --git a/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp b/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp
+index 813656a..ad3b6f7 100644
+--- a/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp
++++ b/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp
+@@ -754,6 +754,12 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
+              RequestedLayerState::Changes::FrameRate | RequestedLayerState::Changes::GameMode);
+     snapshot.changes |= parentChanges;
+     if (args.displayChanges) snapshot.changes |= RequestedLayerState::Changes::Geometry;
++    // Layers an app creates itself, such as a player's SurfaceControl, take their task's name.
++    if (snapshot.name.rfind("TID:", 0) == 0) {
++        snapshot.taskName = snapshot.name;
++    } else if (snapshot.taskName != parentSnapshot.taskName) {
++        snapshot.taskName = parentSnapshot.taskName;
++    }
+     snapshot.reachability = LayerSnapshot::Reachability::Reachable;
+     snapshot.clientChanges |= (parentSnapshot.clientChanges & layer_state_t::AFFECTS_CHILDREN);
+     // mark the content as dirty if the parent state changes can dirty the child's content (for
+diff --git a/services/surfaceflinger/LayerFE.cpp b/services/surfaceflinger/LayerFE.cpp
+index eafcb41..f8ed2a3 100644
+--- a/services/surfaceflinger/LayerFE.cpp
++++ b/services/surfaceflinger/LayerFE.cpp
+@@ -375,6 +375,10 @@ const char* LayerFE::getDebugName() const {
+     return mName.c_str();
+ }
+ 
++const char* LayerFE::getCompositionName() const {
++    return mSnapshot && !mSnapshot->taskName.empty() ? mSnapshot->taskName.c_str() : mName.c_str();
++}
++
+ const LayerMetadata* LayerFE::getMetadata() const {
+     return &mSnapshot->layerMetadata;
+ }
+diff --git a/services/surfaceflinger/LayerFE.h b/services/surfaceflinger/LayerFE.h
+index 2f0fda6..7388d21 100644
+--- a/services/surfaceflinger/LayerFE.h
++++ b/services/surfaceflinger/LayerFE.h
+@@ -48,6 +48,7 @@ public:
+     const compositionengine::LayerFECompositionState* getCompositionState() const override;
+     bool onPreComposition(bool updatingOutputGeometryThisFrame) override;
+     const char* getDebugName() const override;
++    const char* getCompositionName() const override;
+     int32_t getSequence() const override;
+     bool hasRoundedCorners() const override;
+     void setWasClientComposed(const sp<Fence>&) override;
+-- 
+2.55.0
+

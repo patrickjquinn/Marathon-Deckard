@@ -1,0 +1,31 @@
+From 2fe49c8a611455b34ef110547bb23a5965c90e4e Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Tue, 27 Oct 2026 19:31:37 +0000
+Subject: [PATCH 3/4] hwcomposer: Don't abort when the compositor rejects a
+ dmabuf
+
+A failed create_immed took the whole composer service down. Log it
+instead: the buffer stays inert, and the next frame tries again.
+---
+ hwcomposer/gralloc_handler.cpp | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
+index 9f27f4d..3f9a338 100644
+--- a/hwcomposer/gralloc_handler.cpp
++++ b/hwcomposer/gralloc_handler.cpp
+@@ -107,11 +107,9 @@ std::unique_ptr<buffer> create_shm_wl_buffer(wl_conn *conn, const buffer_metadat
+ }
+ 
+ namespace {
+-    //TODO: Implement failure handling for dmabuf
+     void create_failed(void *data __unused, zwp_linux_buffer_params_v1 *params __unused)
+     {
+         ALOGE("%s: zwp_linux_buffer_params.create_immed failed.", __func__);
+-        abort();
+     }
+ 
+     const struct zwp_linux_buffer_params_v1_listener params_listener = {
+-- 
+2.55.0
+

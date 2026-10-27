@@ -9,6 +9,7 @@ T=$(readlink -f "$1"); P=$(readlink -f "$(dirname "$0")/../patches")
 declare -A MAP=(
   [device_waydroid_waydroid]=device/waydroid/waydroid
   [frameworks_base]=frameworks/base
+  [frameworks_native]=frameworks/native
   [system_memory_lmkd]=system/memory/lmkd
   [system_apex]=system/apex
   [bionic]=bionic [build_make]=build/make [build_soong]=build/soong

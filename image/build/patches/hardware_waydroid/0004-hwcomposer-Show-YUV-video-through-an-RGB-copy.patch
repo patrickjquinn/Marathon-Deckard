@@ -1,0 +1,308 @@
+From 33c20b342f25e75857242fd6c3909c0ac2e867fe Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Tue, 27 Oct 2026 19:31:37 +0000
+Subject: [PATCH 4/4] hwcomposer: Show YUV video through an RGB copy
+
+Apps that decode video themselves (TikTok) post YV12 buffers straight
+to the hwcomposer, which sent them on as three-plane dmabufs. Marathon
+neither advertises nor imports planar YUV, so it rejected the buffer
+with a protocol error; the hwcomposer reconnected every half second and
+every Android window went black.
+
+Draw each YUV frame on the hwcomposer's EGL thread into a BGRA buffer
+of its own and send that, linear, as ARGB8888. Where the buffer cannot
+be allocated linear, convert on the CPU into SHM with libyuv instead.
+That fallback costs a fifth of a core on a 576x1024 video, as it reads
+uncached memory; the GPU path costs 3%.
+---
+ hwcomposer/Android.bp          |  1 +
+ hwcomposer/egl-tools.cpp       | 82 ++++++++++++++++++++++++++++++++++
+ hwcomposer/egl-tools.h         |  1 +
+ hwcomposer/gralloc_handler.cpp | 63 ++++++++++++++++++++++++++
+ hwcomposer/gralloc_handler.h   |  7 ++-
+ hwcomposer/hwcomposer.cpp      |  4 +-
+ hwcomposer/wayland-hwc.h       |  4 ++
+ 7 files changed, 160 insertions(+), 2 deletions(-)
+
+diff --git a/hwcomposer/Android.bp b/hwcomposer/Android.bp
+index 0e60820..f0ce55d 100644
+--- a/hwcomposer/Android.bp
++++ b/hwcomposer/Android.bp
+@@ -45,6 +45,7 @@ cc_library_shared {
+         "libffi",
+         "libwayland_extension_client_protocols",
+         "libxkbcommon",
++        "libyuv_static",
+     ],
+     srcs: [
+         "extension.cpp",
+diff --git a/hwcomposer/egl-tools.cpp b/hwcomposer/egl-tools.cpp
+index d91e58f..92696ac 100644
+--- a/hwcomposer/egl-tools.cpp
++++ b/hwcomposer/egl-tools.cpp
+@@ -119,6 +119,88 @@ void egl_render_to_pixels(struct display* display, struct buffer* buf) {
+     eglDestroyImageKHR(display->egl_dpy, image);
+ }
+ 
++namespace {
++GLuint yuv_program() {
++    static GLuint program = 0;
++    if (program)
++        return program;
++    const char *vs =
++            "attribute vec2 pos;\n"
++            "varying vec2 uv;\n"
++            "void main() { uv = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); }\n";
++    const char *fs =
++            "#extension GL_OES_EGL_image_external : require\n"
++            "precision mediump float;\n"
++            "uniform samplerExternalOES tex;\n"
++            "varying vec2 uv;\n"
++            "void main() { gl_FragColor = vec4(texture2D(tex, uv).rgb, 1.0); }\n";
++    GLuint shaders[2] = { glCreateShader(GL_VERTEX_SHADER), glCreateShader(GL_FRAGMENT_SHADER) };
++    glShaderSource(shaders[0], 1, &vs, nullptr);
++    glShaderSource(shaders[1], 1, &fs, nullptr);
++    program = glCreateProgram();
++    for (GLuint shader : shaders) {
++        glCompileShader(shader);
++        glAttachShader(program, shader);
++    }
++    glBindAttribLocation(program, 0, "pos");
++    glLinkProgram(program);
++    GLint linked = GL_FALSE;
++    glGetProgramiv(program, GL_LINK_STATUS, &linked);
++    if (!linked)
++        ALOGE("yuv_program: link failed");
++    return program;
++}
++
++void draw_yuv(struct display* display, struct buffer* buf) {
++    const auto &metadata = buf->metadata;
++    android::sp<android::GraphicBuffer> source = new android::GraphicBuffer(
++            (native_handle_t*)buf->handle, android::GraphicBuffer::WRAP_HANDLE,
++            metadata.width, metadata.height, metadata.format, 1 /* layers */,
++            (uint64_t) android::GraphicBuffer::USAGE_HW_TEXTURE, metadata.pixel_stride);
++    EGLint image_attrs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
++    EGLImageKHR src = eglCreateImageKHR(display->egl_dpy, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
++                                        (EGLClientBuffer) source->getNativeBuffer(), image_attrs);
++    EGLImageKHR dst = eglCreateImageKHR(display->egl_dpy, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
++                                        (EGLClientBuffer) buf->converted->getNativeBuffer(), image_attrs);
++    if (src == EGL_NO_IMAGE_KHR || dst == EGL_NO_IMAGE_KHR) {
++        ALOGE("draw_yuv: eglCreateImageKHR failed: %s", eglStrError(eglGetError()));
++    } else {
++        GLuint textures[2];
++        glGenTextures(2, textures);
++        glBindTexture(GL_TEXTURE_EXTERNAL_OES, textures[0]);
++        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++        glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, src);
++        glBindTexture(GL_TEXTURE_2D, textures[1]);
++        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, dst);
++        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textures[1], 0);
++
++        static const GLfloat quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
++        glViewport(0, 0, metadata.width, metadata.height);
++        glUseProgram(yuv_program());
++        glBindTexture(GL_TEXTURE_EXTERNAL_OES, textures[0]);
++        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
++        glEnableVertexAttribArray(0);
++        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++        // The compositor samples the buffer as soon as it is committed.
++        glFinish();
++
++        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
++        glDeleteTextures(2, textures);
++    }
++    if (src != EGL_NO_IMAGE_KHR)
++        eglDestroyImageKHR(display->egl_dpy, src);
++    if (dst != EGL_NO_IMAGE_KHR)
++        eglDestroyImageKHR(display->egl_dpy, dst);
++}
++}
++
++void egl_convert_yuv(struct display* display, struct buffer* buf) {
++    display->egl_work_queue.emplace_back(std::bind(draw_yuv, display, buf));
++    sem_post(&display->egl_go);
++    sem_wait(&display->egl_done);
++}
++
+ void* egl_loop(void* data) {
+     struct display* display = (struct display*) data;
+     egl_init(display);
+diff --git a/hwcomposer/egl-tools.h b/hwcomposer/egl-tools.h
+index fce2dd4..d58b922 100644
+--- a/hwcomposer/egl-tools.h
++++ b/hwcomposer/egl-tools.h
+@@ -29,3 +29,4 @@
+ 
+ void* egl_loop(void* data);
+ void egl_render_to_pixels(struct display* display, struct buffer* buf);
++void egl_convert_yuv(struct display* display, struct buffer* buf);
+diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
+index 3f9a338..65a0516 100644
+--- a/hwcomposer/gralloc_handler.cpp
++++ b/hwcomposer/gralloc_handler.cpp
+@@ -25,6 +25,7 @@
+ 
+ #include "gralloc_handler.h"
+ 
++#include <cinttypes>
+ #include <cstdint>
+ #include <memory>
+ 
+@@ -42,6 +43,7 @@
+ #include <ui/GraphicBufferMapper.h>
+ #include <gralloc_handle.h>
+ #include <cros_gralloc/cros_gralloc_handle.h>
++#include <libyuv/convert_argb.h>
+ 
+ #include "linux-dmabuf-unstable-v1-client-protocol.h"
+ #include "wayland-android-client-protocol.h"
+@@ -61,6 +63,11 @@ namespace {
+             case HAL_PIXEL_FORMAT_RGBA_8888:
+                 fmt = WL_SHM_FORMAT_ARGB8888;
+                 break;
++            case HAL_PIXEL_FORMAT_YV12:
++            case HAL_PIXEL_FORMAT_YCBCR_420_888:
++            case HAL_PIXEL_FORMAT_YCRCB_420_SP:
++                fmt = WL_SHM_FORMAT_XRGB8888;
++                break;
+             default:
+                 ALOGE("Cannot convert hal format to shm format %u", hal_format);
+                 return -EINVAL;
+@@ -306,7 +313,31 @@ std::unique_ptr<buffer> create_buffer_gbm(wl_conn *conn, const buffer_metadata&
+     auto *drm_handle = reinterpret_cast<const gralloc_handle_t *>(handle);
+     return create_dmabuf_wl_buffer(conn, metadata, drm_handle->prime_fd, -1 /* compute drm format */, drm_handle->stride, 0 /* offset */, drm_handle->modifier, handle);
+ }
++std::unique_ptr<buffer> create_converted_wl_buffer(wl_conn *conn, const buffer_metadata& metadata, buffer_handle_t handle) {
++    android::sp<android::GraphicBuffer> rgb = new android::GraphicBuffer(
++            metadata.width, metadata.height, HAL_PIXEL_FORMAT_BGRA_8888, 1,
++            GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER, "deckard-yuv");
++    if (rgb->initCheck() != android::OK) {
++        ALOGE("create_converted_wl_buffer: allocating %ux%u failed", metadata.width, metadata.height);
++        return nullptr;
++    }
++    auto *cros = reinterpret_cast<const cros_gralloc_handle *>(rgb->handle);
++    if (cros->format_modifier != DRM_FORMAT_MOD_LINEAR) {
++        ALOGE("create_converted_wl_buffer: modifier 0x%" PRIx64 " is not linear", (uint64_t)cros->format_modifier);
++        return nullptr;
++    }
++    auto buf = create_dmabuf_wl_buffer(conn, metadata, cros->fds[0], DRM_FORMAT_ARGB8888, cros->strides[0],
++                                       cros->offsets[0], DRM_FORMAT_MOD_LINEAR, handle);
++    buf->converted = rgb;
++    return buf;
++}
+ std::unique_ptr<buffer> create_buffer_cros(wl_conn *conn, const buffer_metadata& metadata, buffer_handle_t handle) {
++    // Compositors that cannot import planar YUV kill the connection over it.
++    if (is_yuv_format(metadata.format)) {
++        if (auto buf = create_converted_wl_buffer(conn, metadata, handle))
++            return buf;
++        return create_shm_wl_buffer(conn, metadata, handle);
++    }
+     auto *cros_handle = reinterpret_cast<const cros_gralloc_handle *>(handle);
+     return create_dmabuf_wl_buffer(conn, metadata, cros_handle->fds[0], cros_handle->format, cros_handle->strides[0], cros_handle->offsets[0], cros_handle->format_modifier, handle);
+ }
+@@ -396,6 +427,38 @@ bool cpu_render_to_pixels(buffer *buffer) {
+     return ok;
+ }
+ 
++bool is_yuv_format(uint32_t hal_format) {
++    return hal_format == HAL_PIXEL_FORMAT_YV12
++        || hal_format == HAL_PIXEL_FORMAT_YCBCR_420_888
++        || hal_format == HAL_PIXEL_FORMAT_YCRCB_420_SP;
++}
++
++void update_shm_buffer_yuv(buffer *buffer) {
++    const auto &metadata = buffer->metadata;
++    android_ycbcr ycbcr {};
++    android::Rect bounds(metadata.width, metadata.height);
++    if (android::GraphicBufferMapper::get().lockYCbCr(buffer->handle, GRALLOC_USAGE_SW_READ_OFTEN,
++                                                      bounds, &ycbcr) != android::OK) {
++        ALOGE("update_shm_buffer_yuv: lock failed for %p", buffer->handle);
++        return;
++    }
++    auto *dst = static_cast<uint8_t *>(buffer->shm_data);
++    int dst_stride = metadata.width * 4;
++    auto *y = static_cast<const uint8_t *>(ycbcr.y);
++    auto *cb = static_cast<const uint8_t *>(ycbcr.cb);
++    auto *cr = static_cast<const uint8_t *>(ycbcr.cr);
++    int ys = ycbcr.ystride, cs = ycbcr.cstride;
++    int w = metadata.width, h = metadata.height;
++    // libyuv's ARGB is the B,G,R,A byte order WL_SHM_FORMAT_XRGB8888 wants.
++    if (ycbcr.chroma_step == 1)
++        libyuv::I420ToARGB(y, ys, cb, cs, cr, cs, dst, dst_stride, w, h);
++    else if (cr == cb + 1)
++        libyuv::NV12ToARGB(y, ys, cb, cs, dst, dst_stride, w, h);
++    else
++        libyuv::NV21ToARGB(y, ys, cr, cs, dst, dst_stride, w, h);
++    android::GraphicBufferMapper::get().unlock(buffer->handle);
++}
++
+ namespace {
+ void update_shm_buffer_generic(display *display, buffer *buffer) {
+     display->egl_work_queue.emplace_back(std::bind(egl_render_to_pixels, display, buffer));
+diff --git a/hwcomposer/gralloc_handler.h b/hwcomposer/gralloc_handler.h
+index e84c423..cd5af5b 100644
+--- a/hwcomposer/gralloc_handler.h
++++ b/hwcomposer/gralloc_handler.h
+@@ -37,6 +37,8 @@ std::unique_ptr<buffer> create_dmabuf_wl_buffer(wl_conn *conn, const buffer_meta
+ std::unique_ptr<buffer> create_android_wl_buffer(wl_conn *conn, const buffer_metadata& metadata, buffer_handle_t target,
+                                                  const wl_buffer_listener *listener = nullptr, void *listener_data = nullptr);
+ bool cpu_render_to_pixels(buffer *buffer);
++bool is_yuv_format(uint32_t hal_format);
++void update_shm_buffer_yuv(buffer *buffer);
+ 
+ 
+ class gralloc_handler {
+@@ -63,6 +65,9 @@ class gralloc_handler {
+         return create_buffer_impl(conn, metadata, handle);
+     }
+     void update_shm_buffer(display *display, buffer *buffer) const {
+-        update_shm_buffer_impl(display, buffer);
++        if (is_yuv_format(buffer->metadata.format))
++            update_shm_buffer_yuv(buffer);
++        else
++            update_shm_buffer_impl(display, buffer);
+     }
+ };
+\ No newline at end of file
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index 5b6f69e..4b927c4 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -156,7 +156,9 @@ namespace {
+                       creates, pdev->display->ctl->buffer_map.size());
+         }
+ 
+-        if (buf->isShm)
++        if (buf->converted)
++            egl_convert_yuv(pdev->display, buf.get());
++        else if (buf->isShm)
+             gralloc_handler.update_shm_buffer(pdev->display, buf.get());
+         return buf;
+     }
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 4fc907e..3b5471d 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -57,6 +57,7 @@
+ #define EGL_EGLEXT_PROTOTYPES
+ #include <EGL/egl.h>
+ #include <EGL/eglext.h>
++#include <ui/GraphicBuffer.h>
+ 
+ #include <condition_variable>
+ #include <functional>
+@@ -149,6 +150,9 @@ struct buffer {
+     void *shm_data = nullptr;
+     int size = 0;
+ 
++    /* The RGB copy a YUV frame is drawn into, and which the compositor shows. */
++    android::sp<android::GraphicBuffer> converted;
++
+     ~buffer();
+ };
+ 
+-- 
+2.55.0
+

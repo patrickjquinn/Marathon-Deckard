@@ -1,0 +1,123 @@
+From 1fba7df169ea799a6bd94e2d5b909ea1e0dbf9a9 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Tue, 27 Oct 2026 19:31:29 +0000
+Subject: [PATCH 2/4] hwcomposer: Keep wl_buffers while the same layers show
+
+Every geometry change dropped the whole buffer cache, so each frame of
+a video surface, which changes geometry on every frame, imported all of
+the window's buffers into the compositor again. Keep the cache while
+the layer set is unchanged, bounded at 64 entries.
+
+SurfaceFlinger also hands the same gralloc buffer over under a new
+handle per transaction. Key cached buffers by minigbm's unique buffer
+id as well, so those are recognised, and a reused handle can no longer
+match a different buffer's entry.
+---
+ hwcomposer/gralloc_handler.cpp |  3 ++-
+ hwcomposer/hwcomposer.cpp      | 26 ++++++++++++++++++++++++--
+ hwcomposer/wayland-hwc.h       | 11 ++++++-----
+ 3 files changed, 32 insertions(+), 8 deletions(-)
+
+diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
+index 4fd087b..9f27f4d 100644
+--- a/hwcomposer/gralloc_handler.cpp
++++ b/hwcomposer/gralloc_handler.cpp
+@@ -296,7 +296,8 @@ buffer_metadata get_buffer_metadata_cros(display *, hwc_layer_1_t *layer, size_t
+             handle->height,
+             handle->width,
+             handle->pixel_stride,
+-            static_cast<uint32_t>(handle->droid_format)
++            static_cast<uint32_t>(handle->droid_format),
++            handle->id
+     };
+ }
+ 
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index dbb5632..5b6f69e 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -88,6 +88,9 @@ namespace {
+         return src;
+     }
+ 
++    /* Buffers of the layers showing: a few per window, a few per video. */
++    constexpr size_t kMaxCachedBuffers = 64;
++
+     std::shared_ptr<buffer> find_cached_buffer(waydroid_hwc_composer_device_1 *pdev, const buffer_metadata &metadata, buffer_handle_t handle) {
+         auto it = pdev->display->ctl->buffer_map.find(handle);
+         if (it != pdev->display->ctl->buffer_map.end()) {
+@@ -100,6 +103,19 @@ namespace {
+                 return it->second;
+             }
+         }
++        // The same buffer can come back under a new handle (each transaction
++        // imports its own); with the allocator's unique id it is still known.
++        if (metadata.id != 0) {
++            for (auto &[known, buf] : pdev->display->ctl->buffer_map) {
++                if (buf->metadata == metadata) {
++                    auto alias = buf;
++                    // An SHM copy is refilled from the handle every frame.
++                    alias->handle = handle;
++                    pdev->display->ctl->buffer_map.emplace(handle, alias);
++                    return alias;
++                }
++            }
++        }
+         return nullptr;
+     }
+ 
+@@ -839,14 +855,20 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+             names += '|';
+         }
+         geom_count++;
++        // Cached wl_buffers stay while the same layers show: a video
++        // surface changes geometry every frame, and importing every layer's
++        // buffers into the compositor again each time costs a frame's work.
++        auto &cache = pdev->display->ctl->buffer_map;
+         if (names != last_names) {
+             ALOGI("geometry changed #%u, layer set changed: %s", geom_count, names.c_str());
+             last_names = names;
++            cache.clear();
++        } else if (cache.size() > kMaxCachedBuffers) {
++            cache.clear();
+         } else if (geom_count % 120 == 0) {
+             ALOGI("geometry changed #%u with same layer set: %s (map=%zu)",
+-                  geom_count, names.c_str(), pdev->display->ctl->buffer_map.size());
++                  geom_count, names.c_str(), cache.size());
+         }
+-        pdev->display->ctl->buffer_map.clear();
+     }
+ 
+     auto& mode = pdev->selected_mode;
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 26d3f4f..4fc907e 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -120,18 +120,19 @@ struct buffer_metadata {
+     uint32_t width;
+     uint32_t pixel_stride;
+     uint32_t format;
++    /* The allocator's unique buffer id where it has one (minigbm), so a
++     * handle reused for a new buffer never matches the old one's entry. */
++    uint32_t id = 0;
+ };
+ constexpr bool operator==(const buffer_metadata &lhs, const buffer_metadata &rhs) {
+     return lhs.height == rhs.height
+            && lhs.width == rhs.width
+            && lhs.pixel_stride == rhs.pixel_stride
+-           && lhs.format == rhs.format;
++           && lhs.format == rhs.format
++           && lhs.id == rhs.id;
+ }
+ constexpr bool operator!=(const buffer_metadata &lhs, const buffer_metadata &rhs) {
+-    return lhs.height != rhs.height
+-           || lhs.width != rhs.width
+-           || lhs.pixel_stride != rhs.pixel_stride
+-           || lhs.format != rhs.format;
++    return !(lhs == rhs);
+ }
+ 
+ struct buffer {
+-- 
+2.55.0
+
