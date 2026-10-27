@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 15:05:41 +0000
+Subject: [PATCH] device: Drop the simulated Bluetooth HAL
+
+android.hardware.bluetooth@1.1-service.sim ran in every Deckard
+container (10 MB PSS on the HackberryPi) although Marathon owns
+Bluetooth and Deckard's feature list leaves android.hardware.bluetooth
+out, so Android's Bluetooth service never starts to use it. Remove it
+and its VINTF declaration.
+---
+ device.mk    | 4 ----
+ manifest.xml | 9 ---------
+ 2 files changed, 13 deletions(-)
+
+diff --git a/device.mk b/device.mk
+index a8a21b8..28e5062 100644
+--- a/device.mk
++++ b/device.mk
+@@ -68,10 +68,6 @@ PRODUCT_COPY_FILES += \
+     frameworks/av/services/audiopolicy/config/r_submix_audio_policy_configuration.xml:$(TARGET_COPY_OUT_VENDOR)/etc/r_submix_audio_policy_configuration.xml \
+     frameworks/av/services/audiopolicy/config/usb_audio_policy_configuration.xml:$(TARGET_COPY_OUT_VENDOR)/etc/usb_audio_policy_configuration.xml
+ 
+-# Bluetooth HAL
+-PRODUCT_PACKAGES += \
+-    android.hardware.bluetooth@1.1-service.sim
+-
+ # Camera
+ USE_CAMERA_V4L2_HAL := true
+ 
+diff --git a/manifest.xml b/manifest.xml
+index af1bce4..5901789 100644
+--- a/manifest.xml
++++ b/manifest.xml
+@@ -44,15 +44,6 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+             <instance>default</instance>
+         </interface>
+     </hal>
+-    <hal format="hidl">
+-        <name>android.hardware.bluetooth</name>
+-        <transport>hwbinder</transport>
+-        <version>1.1</version>
+-        <interface>
+-            <name>IBluetoothHci</name>
+-            <instance>default</instance>
+-        </interface>
+-    </hal>
+     <hal format="hidl">
+         <name>android.hardware.camera.provider</name>
+         <transport>hwbinder</transport>
