@@ -2,6 +2,8 @@ package org.marathonos.deckard.system;
 
 import android.app.TaskStackListener;
 import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
@@ -281,7 +283,12 @@ final class WindowFit {
                 Log.i(TAG, "home in front: Marathon shows no Android app");
                 return;
             }
-            Log.w(TAG, "no home task to put in front");
+            // None yet this boot: start it, which puts it in front.
+            Context c = (Context) Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication").invoke(null);
+            c.startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            Log.i(TAG, "home started: Marathon shows no Android app");
         } catch (Throwable t) {
             Log.w(TAG, "home failed", t);
         }
