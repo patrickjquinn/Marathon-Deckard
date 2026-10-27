@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Mon, 26 Oct 2026 13:53:58 +0000
+Subject: [PATCH] lmkd: Parse /proc/zoneinfo with up to 16 memory nodes
+
+zoneinfo_parse gave up with "/proc/zoneinfo parse error" when a third
+memory node appeared, so on a Raspberry Pi 5 kernel, which splits memory
+into 8 fake NUMA nodes, every pressure event failed ("Failed to get free
+memory!") and lmkd never killed anything. Allow 16 nodes, arm64's usual
+NODES_SHIFT; the array is only walked up to node_count and costs about
+1 KB a node on the stack.
+
+Change-Id: I7fb2f25fe7c51b61ab8cbeddd2ec3ac9da182339
+---
+ lmkd.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lmkd.cpp b/lmkd.cpp
+index c179e74..44d6135 100644
+--- a/lmkd.cpp
++++ b/lmkd.cpp
+@@ -379,8 +379,8 @@ struct zoneinfo_node {
+     union zoneinfo_node_fields fields;
+ };
+ 
+-/* for now two memory nodes is more than enough */
+-#define MAX_NR_NODES 2
++/* Raspberry Pi 5 kernels split memory into 8 fake NUMA nodes (numa=fake=8). */
++#define MAX_NR_NODES 16
+ 
+ struct zoneinfo {
+     int node_count;
