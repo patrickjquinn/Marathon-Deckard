@@ -420,11 +420,42 @@ fn main() -> Result<(), Error> {
         .unwrap_or_else(env::temp_dir)
         .join("deckard-login");
     if !marker.exists() && fs::write(marker, []).is_ok() {
-        thread::sleep(Duration::from_secs(3));
+        wait_until_calm();
         if runtime.at_login() {
             let _ = future::block_on(runtime::call_unit(bus.inner(), UnitCall::Start));
         }
     }
     future::block_on(bus.inner().closed());
     Ok(())
+}
+
+/// Android's boot reads most of a gigabyte. At login it waits for the
+/// shell's own start to settle (or a minute and a half): started 3 s after
+/// login it took 145 s to boot and stalled the shell's first launches.
+fn wait_until_calm() {
+    let some = |resource: &str| -> f64 {
+        fs::read_to_string(format!("/proc/pressure/{resource}"))
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .next()?
+                    .split_whitespace()
+                    .find_map(|field| field.strip_prefix("avg10="))?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or(0.0)
+    };
+    let mut calm = 0;
+    for _ in 0..90 {
+        thread::sleep(Duration::from_secs(1));
+        calm = if some("io") < 10.0 && some("cpu") < 20.0 {
+            calm + 1
+        } else {
+            0
+        };
+        if calm == 3 {
+            return;
+        }
+    }
 }

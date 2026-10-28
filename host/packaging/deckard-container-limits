@@ -14,3 +14,7 @@ max=$((mb * 40 / 100))
 [ "$max" -ge $((high + 512)) ] || max=$((high + 512))
 echo "${high}M" > "$cg/memory.high"
 echo "${max}M" > "$cg/memory.max"
+# Below the session when both want the CPU or the disk: Android's boot no
+# longer stalls the shell, and an idle shell leaves Android all of it.
+echo 50 > "$cg/cpu.weight"
+echo 25 > "$cg/io.bfq.weight" 2>/dev/null || true
