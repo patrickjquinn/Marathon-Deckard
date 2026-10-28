@@ -1,0 +1,245 @@
+From 32ec65edcd53b8ed71584c4da8198f176356510f Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 01:03:20 +0000
+Subject: [PATCH] hwcomposer: Convert each video frame once, keeping its GPU
+ objects
+
+A YUV frame was converted on every composition, though a frame still on
+screen cannot have changed (the app animating over a held video frame
+asked for it again), and each conversion imported both buffers into
+EGL and destroyed them again. Now a buffer shown in the composition
+before is not converted again, and its frame's and copy's EGL images
+and textures stay with it, freed on the EGL thread when it goes.
+
+debug.deckard.yuv_timing logs the conversion's cost: 1.8 ms a frame for
+TikTok's 576x1024 video on the HackberryPi.
+---
+ hwcomposer/egl-tools.cpp   | 109 +++++++++++++++++++++++++++----------
+ hwcomposer/egl-tools.h     |   2 +
+ hwcomposer/hwcomposer.cpp  |   8 ++-
+ hwcomposer/hwcomposer.h    |   3 +
+ hwcomposer/wayland-hwc.cpp |   2 +
+ hwcomposer/wayland-hwc.h   |   7 +++
+ 6 files changed, 102 insertions(+), 29 deletions(-)
+
+diff --git a/hwcomposer/egl-tools.cpp b/hwcomposer/egl-tools.cpp
+index 92696ac..0e99852 100644
+--- a/hwcomposer/egl-tools.cpp
++++ b/hwcomposer/egl-tools.cpp
+@@ -33,6 +33,11 @@
+ #include <GLES2/gl2ext.h>
+ 
+ #include <semaphore.h>
++#include <cinttypes>
++#include <mutex>
++#include <vector>
++#include <cutils/properties.h>
++#include <utils/Timers.h>
+ #include <ui/GraphicBuffer.h>
+ 
+ const char* eglStrError(EGLint err)
+@@ -151,7 +156,32 @@ GLuint yuv_program() {
+     return program;
+ }
+ 
+-void draw_yuv(struct display* display, struct buffer* buf) {
++struct YuvObjects {
++    EGLImageKHR images[2];
++    GLuint textures[2];
++};
++std::mutex released_lock;
++std::vector<YuvObjects> released;
++
++void free_released(EGLDisplay dpy) {
++    std::vector<YuvObjects> gone;
++    {
++        std::lock_guard<std::mutex> lock(released_lock);
++        gone.swap(released);
++    }
++    for (const auto &o : gone) {
++        glDeleteTextures(2, o.textures);
++        for (EGLImageKHR image : o.images)
++            if (image != EGL_NO_IMAGE_KHR)
++                eglDestroyImageKHR(dpy, image);
++    }
++}
++
++// The frame's image and its copy's, with their textures, kept with the
++// buffer: importing both every frame cost more than drawing.
++bool yuv_objects(struct display* display, struct buffer* buf) {
++    if (buf->yuv_image)
++        return true;
+     const auto &metadata = buf->metadata;
+     android::sp<android::GraphicBuffer> source = new android::GraphicBuffer(
+             (native_handle_t*)buf->handle, android::GraphicBuffer::WRAP_HANDLE,
+@@ -164,35 +194,58 @@ void draw_yuv(struct display* display, struct buffer* buf) {
+                                         (EGLClientBuffer) buf->converted->getNativeBuffer(), image_attrs);
+     if (src == EGL_NO_IMAGE_KHR || dst == EGL_NO_IMAGE_KHR) {
+         ALOGE("draw_yuv: eglCreateImageKHR failed: %s", eglStrError(eglGetError()));
+-    } else {
+-        GLuint textures[2];
+-        glGenTextures(2, textures);
+-        glBindTexture(GL_TEXTURE_EXTERNAL_OES, textures[0]);
+-        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+-        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+-        glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, src);
+-        glBindTexture(GL_TEXTURE_2D, textures[1]);
+-        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, dst);
+-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textures[1], 0);
+-
+-        static const GLfloat quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+-        glViewport(0, 0, metadata.width, metadata.height);
+-        glUseProgram(yuv_program());
+-        glBindTexture(GL_TEXTURE_EXTERNAL_OES, textures[0]);
+-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
+-        glEnableVertexAttribArray(0);
+-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+-        // The compositor samples the buffer as soon as it is committed.
+-        glFinish();
+-
+-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+-        glDeleteTextures(2, textures);
++        if (src != EGL_NO_IMAGE_KHR)
++            eglDestroyImageKHR(display->egl_dpy, src);
++        if (dst != EGL_NO_IMAGE_KHR)
++            eglDestroyImageKHR(display->egl_dpy, dst);
++        return false;
+     }
+-    if (src != EGL_NO_IMAGE_KHR)
+-        eglDestroyImageKHR(display->egl_dpy, src);
+-    if (dst != EGL_NO_IMAGE_KHR)
+-        eglDestroyImageKHR(display->egl_dpy, dst);
++    glGenTextures(2, buf->yuv_textures);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, buf->yuv_textures[0]);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, src);
++    glBindTexture(GL_TEXTURE_2D, buf->yuv_textures[1]);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, dst);
++    buf->yuv_source = source;
++    buf->yuv_image = src;
++    buf->rgb_image = dst;
++    return true;
+ }
++
++void draw_yuv(struct display* display, struct buffer* buf) {
++    static const bool timing = property_get_bool("debug.deckard.yuv_timing", false);
++    static int64_t total_ns = 0, frames = 0;
++    const int64_t start = timing ? systemTime(SYSTEM_TIME_MONOTONIC) : 0;
++
++    free_released(display->egl_dpy);
++    if (!yuv_objects(display, buf))
++        return;
++    const auto &metadata = buf->metadata;
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, buf->yuv_textures[1], 0);
++    static const GLfloat quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
++    glViewport(0, 0, metadata.width, metadata.height);
++    glUseProgram(yuv_program());
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, buf->yuv_textures[0]);
++    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
++    glEnableVertexAttribArray(0);
++    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++    // The compositor samples the buffer as soon as it is committed.
++    glFinish();
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
++
++    if (timing) {
++        total_ns += systemTime(SYSTEM_TIME_MONOTONIC) - start;
++        if (++frames % 120 == 0)
++            ALOGI("draw_yuv: %.2f ms a frame over %" PRId64 " frames", total_ns / 1e6 / frames, frames);
++    }
++}
++}
++
++void egl_release_yuv(struct buffer* buf) {
++    std::lock_guard<std::mutex> lock(released_lock);
++    released.push_back({{(EGLImageKHR) buf->yuv_image, (EGLImageKHR) buf->rgb_image},
++                        {buf->yuv_textures[0], buf->yuv_textures[1]}});
+ }
+ 
+ void egl_convert_yuv(struct display* display, struct buffer* buf) {
+diff --git a/hwcomposer/egl-tools.h b/hwcomposer/egl-tools.h
+index d58b922..39bc5e0 100644
+--- a/hwcomposer/egl-tools.h
++++ b/hwcomposer/egl-tools.h
+@@ -30,3 +30,5 @@
+ void* egl_loop(void* data);
+ void egl_render_to_pixels(struct display* display, struct buffer* buf);
+ void egl_convert_yuv(struct display* display, struct buffer* buf);
++/* Frees a converted buffer's GPU objects on the EGL thread, from any thread. */
++void egl_release_yuv(struct buffer* buf);
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index 4b927c4..775ec0b 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -156,8 +156,13 @@ namespace {
+                       creates, pdev->display->ctl->buffer_map.size());
+         }
+ 
+-        if (buf->converted)
++        // A buffer still on screen cannot have been refilled: shown again in
++        // the next composition (the app animates, the video holds its frame),
++        // its copy is current.
++        if (buf->converted && buf->converted_at + 1 < pdev->compositions)
+             egl_convert_yuv(pdev->display, buf.get());
++        if (buf->converted)
++            buf->converted_at = pdev->compositions;
+         else if (buf->isShm)
+             gralloc_handler.update_shm_buffer(pdev->display, buf.get());
+         return buf;
+@@ -781,6 +786,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+         return 0;
+ 
+     auto *pdev = static_cast<waydroid_hwc_composer_device_1 *>(dev);
++    pdev->compositions++;
+ 
+     hwc_display_contents_1_t* contents = displays[HWC_DISPLAY_PRIMARY];
+     assert(contents);
+diff --git a/hwcomposer/hwcomposer.h b/hwcomposer/hwcomposer.h
+index 954fe71..dfc134c 100644
+--- a/hwcomposer/hwcomposer.h
++++ b/hwcomposer/hwcomposer.h
+@@ -71,6 +71,9 @@ struct waydroid_hwc_composer_device_1 : hwc_composer_device_1_t {
+     std::map<std::string, std::vector<std::string>> blacklisted_apps;
+ 
+     std::atomic<bool> vsync_callback_enabled;
++    /* Counts compositions (hwc_set), for buffers to know whether they were
++     * in the one before. */
++    uint64_t compositions = 1;
+     std::atomic<uint64_t> last_vsync_ns;
+ 
+     int timeline_fd;
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index 5476b8a..8f815ce 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -89,6 +89,8 @@ using ::android::hardware::hidl_string;
+ struct buffer;
+ 
+ buffer::~buffer() {
++    if (yuv_image || rgb_image)
++        egl_release_yuv(this);
+     if (wl_buffer) {
+         if (conn && !conn->proxies_valid)
+             ALOGE("buffer %p outlived its connection; wl_display_disconnect already freed its wl_buffer", this);
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 3b5471d..86b446f 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -152,6 +152,13 @@ struct buffer {
+ 
+     /* The RGB copy a YUV frame is drawn into, and which the compositor shows. */
+     android::sp<android::GraphicBuffer> converted;
++    /* The composition it was last drawn for. */
++    uint64_t converted_at = 0;
++    /* The GPU's views of the frame and of its copy, made once (egl-tools). */
++    android::sp<android::GraphicBuffer> yuv_source;
++    void *yuv_image = nullptr;
++    void *rgb_image = nullptr;
++    unsigned yuv_textures[2] = {0, 0};
+ 
+     ~buffer();
+ };
+-- 
+2.55.0
+
