@@ -23,3 +23,6 @@ ro.surface_flinger.vsync_event_phase_offset_ns=-1
 ro.surface_flinger.vsync_sf_event_phase_offset_ns=-1
 debug.sf.late.sf.duration=5000000
 debug.sf.late.app.duration=11666666
+# Marathon draws an app's launch, splash included: no Android splash after it
+# (frameworks/base patch; older images ignore it).
+ro.deckard.starting_windows=false
