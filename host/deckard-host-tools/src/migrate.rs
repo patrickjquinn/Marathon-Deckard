@@ -21,7 +21,8 @@ use crate::{files, names};
 
 const JOURNAL_VERSION: u32 = 2;
 /// Version 1 journals predate the Android image's own rename: a complete one
-/// resumes to take [`Step::Names`] and [`Step::Properties`].
+/// resumes to take [`Step::Names`] and [`Step::Properties`], and retakes
+/// [`Step::LxcConfig`] for the renamed seccomp profile.
 const OLDEST_JOURNAL_VERSION: u32 = 1;
 const SYSTEM_JOURNAL: &str = "/var/lib/deckard-migration.json";
 const LEGACY_WORK: &str = "/var/lib/waydroid";
@@ -548,6 +549,7 @@ fn transact(direction: Direction, home: Option<&Path>) -> io::Result<()> {
             if journal.version < JOURNAL_VERSION {
                 journal.version = JOURNAL_VERSION;
                 journal.complete = false;
+                journal.done.retain(|step| *step != Step::LxcConfig);
                 if let Some((from, to)) = &plan.data {
                     journal.apps = android_apps(if from.exists() { from } else { to });
                 }
