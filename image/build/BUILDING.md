@@ -2,7 +2,7 @@
 
 LineageOS 23.2 (Android 16 QPR2, SDK 36) with Waydroid's dev/lineage-23.2
 device, vendor and hardware trees, product
-`lineage_waydroid_arm64_only-bp4a-userdebug`, built natively on aarch64 Linux.
+`lineage_deckard_arm64_only-bp4a-userdebug`, built natively on aarch64 Linux.
 AOSP supports only x86_64 hosts; this directory holds what an arm64 host
 needs. Reference machine: Apple M1 (8 cores, 16 GB), Fedora Asahi Remix 44,
 16K-page kernel.
@@ -16,7 +16,10 @@ The arm64-host patch set started from
 1. Source: `repo init -u https://github.com/LineageOS/android -b lineage-23.2
    --depth=1 -g default,-darwin,-mips`, add Waydroid's local manifests
    (`vendor/extra/manifest_scripts/manifests-36` of
-   waydroid/android_vendor_waydroid dev/lineage-23.2), `repo sync`.
+   waydroid/android_vendor_waydroid dev/lineage-23.2) and Deckard's
+   `manifests/03-deckard.xml`, which checks Waydroid's device and hardware
+   projects out under Deckard's names and leaves out the two it does not
+   build, then `repo sync`.
 2. Waydroid's patches: `. build/envsetup.sh; apply-waydroid-patches`.
    One of 194 conflicts (system/core ashmem, see below); `apply-patches.sh`
    carries a refreshed copy.

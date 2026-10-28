@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 08:19:25 +0000
+Subject: [PATCH] device: Compile SystemUI and Settings from their profiles
+
+Both were compiled in full ('speed'). Deckard's SystemUI keeps only the
+window-manager shell and the keyboard, and its 70 MB odex was 58 MiB of
+its 179 MiB. The Trebuchet launchers in the same list are not used.
+---
+ device.mk | 11 +++++------
+ 1 file changed, 5 insertions(+), 6 deletions(-)
+
+diff --git a/device.mk b/device.mk
+index ba587a6..cdf1808 100644
+--- a/device.mk
++++ b/device.mk
+@@ -360,12 +360,11 @@ PRODUCT_COPY_FILES += \
+ # Fingerprint spoof for GApps
+ BUILD_FINGERPRINT := google/sabrina_prod_stable/sabrina:12/STTE.240615.007/12033466:user/release-keys
+ else
+-# Dex preopt
+-PRODUCT_DEXPREOPT_SPEED_APPS += \
+-    Settings \
+-    SystemUI \
+-    Trebuchet \
+-    TrebuchetQuickStep
++# SystemUI and Settings with their profiles, not fully compiled: SystemUI's
++# speed odex alone was 58 MiB of its memory. dalvik.vm.systemuicompilerfilter
++# keeps the device from recompiling it at speed.
++PRODUCT_PROPERTY_OVERRIDES += \
++    dalvik.vm.systemuicompilerfilter=speed-profile
+ 
+ # Fingerprint spoof for GApps
+ BUILD_FINGERPRINT := google/tangorpro/tangorpro:16/BP4A.260205.001/14624666:user/release-keys
+-- 
+2.55.0
+

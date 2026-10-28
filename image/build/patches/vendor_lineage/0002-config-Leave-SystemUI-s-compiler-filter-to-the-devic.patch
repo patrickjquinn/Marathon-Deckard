@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 08:19:44 +0000
+Subject: [PATCH] config: Leave SystemUI's compiler filter to the device
+
+Lineage compiles SystemUI in full for every device; a device that keeps
+only part of it can compile it from its profile.
+
+Change-Id: I2c141fc91c389857e52fd953dcce17b705b9acd4
+---
+ config/common.mk | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/config/common.mk b/config/common.mk
+index f927424..bf2af61 100644
+--- a/config/common.mk
++++ b/config/common.mk
+@@ -250,8 +250,7 @@ endif
+ 
+ # SystemUI
+ PRODUCT_DEXPREOPT_SPEED_APPS += \
+-    CarSystemUI \
+-    SystemUI
++    CarSystemUI
+ 
+ PRODUCT_PRODUCT_PROPERTIES += \
+     dalvik.vm.systemuicompilerfilter=speed
+-- 
+2.55.0
+

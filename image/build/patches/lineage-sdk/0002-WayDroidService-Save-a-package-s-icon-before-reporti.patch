@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 07:26:30 +0000
+Subject: [PATCH] WayDroidService: Save a package's icon before reporting the
+ package
+
+The host writes the app's launcher as soon as it hears of the package,
+and a launcher read before its icon exists shows the fallback icon. The
+same change went into frameworks/waydroid, whose service this image does
+not run.
+
+Change-Id: I8f9576d904219741949d798e626a2c391d759eb3
+---
+ .../java/org/lineageos/platform/internal/WayDroidService.java | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/WayDroidService.java b/lineage/lib/main/java/org/lineageos/platform/internal/WayDroidService.java
+index 9677195..4ea5351 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/WayDroidService.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/WayDroidService.java
+@@ -414,10 +414,10 @@ public class WayDroidService extends LineageSystemService {
+         mPackageMonitor = new PackageMonitor() {
+             @Override
+             public void onPackageAdded(String packageName, int uid) {
++                saveApplicationIcon(packageName);
+                 if (mUM != null) {
+                     mUM.packageStateChanged(UserMonitor.WAYDROID_PACKAGE_ADDED, packageName, uid);
+                 }
+-                saveApplicationIcon(packageName);
+             }
+ 
+             @Override
+@@ -432,10 +432,10 @@ public class WayDroidService extends LineageSystemService {
+ 
+             @Override
+             public void onPackageUpdateFinished(String packageName, int uid) {
++                saveApplicationIcon(packageName);
+                 if (mUM != null) {
+                     mUM.packageStateChanged(UserMonitor.WAYDROID_PACKAGE_UPDATED, packageName, uid);
+                 }
+-                saveApplicationIcon(packageName);
+             }
+         };
+ 
+-- 
+2.55.0
+

@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 08:18:58 +0000
+Subject: [PATCH] device: Build ART for the read-barrier collector
+
+The build chose ART's userfaultfd collector, which needs the kernel's
+CONFIG_USERFAULTFD. The HackberryPi's kernel has none, so ART fell back to
+the read-barrier collector at runtime and rejected the boot image and
+every app's and service's odex for the other collector ('read barrier
+state mismatch'): each boot compiled the boot image in memory (3 s) and
+JIT-compiled the framework (9 s of zygote CPU), system_server ran
+services.jar interpreted, and 238 MiB of recompiled code sat in /data.
+---
+ device.mk | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/device.mk b/device.mk
+index d7c60a3..8a6d2de 100644
+--- a/device.mk
++++ b/device.mk
+@@ -34,6 +34,11 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/product_launched_with_p.mk)
+ # Disable compressed APEX
+ OVERRIDE_PRODUCT_COMPRESSED_APEX := false
+ 
++# ART's userfaultfd collector needs CONFIG_USERFAULTFD, which Deckard's hosts
++# lack: ART falls back to the read-barrier collector and rejects every oat
++# file built for the other one.
++PRODUCT_ENABLE_UFFD_GC := false
++
+ # VNDK
+ # Android 16 deprecates VNDK, but Halium vendors (e.g. Android 14, ro.vndk.version=34)
+ # still require a matching VNDK APEX. Without it linkerconfig aborts with
+-- 
+2.55.0
+

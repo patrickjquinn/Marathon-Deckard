@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 08:19:14 +0000
+Subject: [PATCH] device: Skip the boot animation
+
+Lineage's animation plays to its end, and Android only reports boot
+complete after it: 5 s of every boot behind a window Marathon never
+shows.
+---
+ device.mk | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/device.mk b/device.mk
+index 8a6d2de..ba587a6 100644
+--- a/device.mk
++++ b/device.mk
+@@ -248,6 +248,11 @@ PRODUCT_PROPERTY_OVERRIDES += \
+     media.sf.hwaccel=1
+ endif
+ 
++# Boot animation: nobody sees it (Marathon shows Android's windows only once
++# it has booted), and boot waits for it to finish.
++PRODUCT_PROPERTY_OVERRIDES += \
++    debug.sf.nobootanimation=1
++
+ # Memtrack
+ PRODUCT_PACKAGES += \
+     android.hardware.memtrack@1.0-impl \
+-- 
+2.55.0
+

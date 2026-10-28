@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Deckard's names for Waydroid's device and hardware projects, and the
+     two Waydroid projects the image does not build. -->
+<manifest>
+  <remove-project name="waydroid/android_device_waydroid_waydroid" />
+  <remove-project name="waydroid/android_hardware_waydroid" />
+  <remove-project name="WayDroid-ATV/android_frameworks_waydroid" />
+  <remove-project name="WayDroid-ATV/android_packages_apps_WaydroidUpdater" />
+  <project path="device/deckard/deckard" name="waydroid/android_device_waydroid_waydroid" remote="ghub" clone-depth="1" revision="refs/heads/dev/lineage-23.2" />
+  <project path="hardware/deckard" name="waydroid/android_hardware_waydroid" remote="ghub" clone-depth="1" revision="refs/heads/dev/lineage-23.2" />
+</manifest>

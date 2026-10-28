@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 07:26:12 +0000
+Subject: [PATCH] WayDroidService: Keep the package monitor
+
+Since Android 14 PackageManager holds a PackageMonitor's callback, and the
+callback holds the monitor through a WeakReference. The monitor lived in a
+local variable, so once it was collected no package was ever reported to
+the host's user monitor.
+
+Change-Id: I9bbdcd88dbca7c8710d21223891a48294d663df6
+---
+ .../org/lineageos/platform/internal/WayDroidService.java    | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/WayDroidService.java b/lineage/lib/main/java/org/lineageos/platform/internal/WayDroidService.java
+index f451298..9677195 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/WayDroidService.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/WayDroidService.java
+@@ -112,6 +112,8 @@ public class WayDroidService extends LineageSystemService {
+     private Context mContext;
+     private PackageManager mPm = null;
+     private UserMonitor mUM = null;
++    // PackageManager holds the monitor's callback, which holds the monitor weakly.
++    private PackageMonitor mPackageMonitor;
+     private Hardware mWaydroidHardware = null;
+     private Notifications mWaydroidNotifications = null;
+     private NotificationManager mNotificationManager = null;
+@@ -409,7 +411,7 @@ public class WayDroidService extends LineageSystemService {
+     }
+ 
+     private void registerPackageMonitor() {
+-        PackageMonitor monitor = new PackageMonitor() {
++        mPackageMonitor = new PackageMonitor() {
+             @Override
+             public void onPackageAdded(String packageName, int uid) {
+                 if (mUM != null) {
+@@ -437,7 +439,7 @@ public class WayDroidService extends LineageSystemService {
+             }
+         };
+ 
+-        monitor.register(mContext, BackgroundThread.getHandler().getLooper(), UserHandle.ALL, true);
++        mPackageMonitor.register(mContext, BackgroundThread.getHandler().getLooper(), UserHandle.ALL, true);
+     }
+ 
+     private static long idCounter = 0;
+-- 
+2.55.0
+

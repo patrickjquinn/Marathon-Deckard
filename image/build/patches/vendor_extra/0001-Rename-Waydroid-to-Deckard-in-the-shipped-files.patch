@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 07:53:41 +0000
+Subject: [PATCH] Rename Waydroid to Deckard in the shipped files
+
+The upstream patch sets and their scripts keep Waydroid's names.
+---
+ waydroid.prop => deckard.prop                     | 0
+ hostaidls.conf                                    | 2 +-
+ product.mk                                        | 4 ++--
+ rootdir/Android.mk                                | 4 ++--
+ rootdir/etc/{init.waydroid.rc => init.deckard.rc} | 8 ++++----
+ 5 files changed, 9 insertions(+), 9 deletions(-)
+ rename waydroid.prop => deckard.prop (100%)
+ rename rootdir/etc/{init.waydroid.rc => init.deckard.rc} (91%)
+
+diff --git a/waydroid.prop b/deckard.prop
+similarity index 100%
+rename from waydroid.prop
+rename to deckard.prop
+diff --git a/hostaidls.conf b/hostaidls.conf
+index 0a093f6..e5d9229 100644
+--- a/hostaidls.conf
++++ b/hostaidls.conf
+@@ -1,4 +1,4 @@
+-# Host AIDL services to pass through from the Halium host into the Waydroid
++# Host AIDL services to pass through from the Halium host into the Deckard
+ # container (analogous to hosthals.xml for HIDL). One service name per line;
+ # '#' starts a comment. A line that is a prefix of a service name also matches.
+ 
+diff --git a/product.mk b/product.mk
+index 91d9d58..e807f2e 100644
+--- a/product.mk
++++ b/product.mk
+@@ -24,7 +24,7 @@ PRODUCT_COPY_FILES += \
+ 
+ # Init
+ PRODUCT_PACKAGES += \
+-    init.waydroid.rc
++    init.deckard.rc
+ 
+ # Dummy libnfc-nci.conf
+ PRODUCT_PACKAGES += \
+@@ -32,7 +32,7 @@ PRODUCT_PACKAGES += \
+ 
+ # Properties
+ PRODUCT_COPY_FILES += \
+-    $(LOCAL_PATH)/waydroid.prop:$(TARGET_COPY_OUT_VENDOR)/waydroid.prop
++    $(LOCAL_PATH)/deckard.prop:$(TARGET_COPY_OUT_VENDOR)/deckard.prop
+ 
+ # PC mode
+ PRODUCT_PACKAGES += \
+diff --git a/rootdir/Android.mk b/rootdir/Android.mk
+index e681fc0..c4f1a36 100644
+--- a/rootdir/Android.mk
++++ b/rootdir/Android.mk
+@@ -1,10 +1,10 @@
+ LOCAL_PATH := $(call my-dir)
+ 
+ include $(CLEAR_VARS)
+-LOCAL_MODULE            := init.waydroid.rc
++LOCAL_MODULE            := init.deckard.rc
+ LOCAL_MODULE_TAGS       := optional
+ LOCAL_MODULE_CLASS      := ETC
+-LOCAL_SRC_FILES         := etc/init.waydroid.rc
++LOCAL_SRC_FILES         := etc/init.deckard.rc
+ LOCAL_MODULE_PATH       := $(TARGET_OUT_ETC)/init
+ include $(BUILD_PREBUILT)
+ 
+diff --git a/rootdir/etc/init.waydroid.rc b/rootdir/etc/init.deckard.rc
+similarity index 91%
+rename from rootdir/etc/init.waydroid.rc
+rename to rootdir/etc/init.deckard.rc
+index 6201145..f76a61f 100644
+--- a/rootdir/etc/init.waydroid.rc
++++ b/rootdir/etc/init.deckard.rc
+@@ -3,12 +3,12 @@ on boot
+     chmod 0755 /sys/kernel/debug
+     chmod 0755 /sys/kernel/debug/tracing
+ 
+-on property:ro.waydroid.running_in_docker=1 && property:sys.boot_completed=1
++on property:ro.deckard.running_in_docker=1 && property:sys.boot_completed=1
+     start adbd
+ 
+ on post-fs-data
+     mkdir /data/icons 0775 system system
+-    mkdir /data/waydroid_tmp 0755 host system
++    mkdir /data/deckard_tmp 0755 host system
+ 
+ service vendor.audio-hal-2-0 /vendor/bin/hw/android.hardware.audio@2.0-service
+     override
+@@ -39,7 +39,7 @@ service vendor.audio-hal /vendor/bin/hw/android.hardware.audio.service
+     task_profiles ProcessCapacityHigh HighPerformance
+     onrestart restart audioserver
+ 
+-service vendor.hwcomposer-2-1 /vendor/bin/hw/android.hardware.graphics.composer@2.1-service --desktop_file_hint=Waydroid.desktop
++service vendor.hwcomposer-2-1 /vendor/bin/hw/android.hardware.graphics.composer@2.1-service --desktop_file_hint=Deckard.desktop
+     override
+     class hal animation
+     user host
+@@ -71,5 +71,5 @@ service vendor.camera-provider-2-4 /vendor/bin/hw/android.hardware.camera.provid
+ on property:ro.vndk.version=28
+     mount none /dev/null /vendor_extra/lib/libmedia_codecserviceregistrant.so ro bind
+ 
+-on property:persist.waydroid.multi_windows=true
++on property:persist.deckard.multi_windows=true
+     mount none /system/etc/hidden_xml/pc.xml /system/etc/permissions/pc.xml ro bind
+-- 
+2.55.0
+

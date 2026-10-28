@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 07:54:10 +0000
+Subject: [PATCH] device: Drop the Waydroid updater
+
+Deckard installs Android's images itself; the updater app checked
+Waydroid's servers for images Deckard does not use.
+---
+ device.mk | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/device.mk b/device.mk
+index 20fc28f..d7c60a3 100644
+--- a/device.mk
++++ b/device.mk
+@@ -332,10 +332,6 @@ $(call inherit-product-if-exists, vendor/intel/proprietary/houdini/native_bridge
+ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += persist.sys.nativebridge=1
+ endif
+ 
+-# Updater
+-PRODUCT_PACKAGES += \
+-    DeckardUpdater
+-
+ # DocumentsUI
+ PRODUCT_PACKAGES += \
+     DocumentsUI
+-- 
+2.55.0
+

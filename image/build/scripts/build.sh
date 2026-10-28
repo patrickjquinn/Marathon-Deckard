@@ -1,12 +1,12 @@
 #!/bin/bash
 # Build a lineage-23.2 Waydroid target on an aarch64 host.
 #   usage: build.sh <lineage tree> <log file> <m arguments...>
-#   env:   LUNCH (default lineage_waydroid_arm64_only-bp4a-userdebug)
+#   env:   LUNCH (default lineage_deckard_arm64_only-bp4a-userdebug)
 #          JOBS  (default 4)
 # Example: build.sh /mnt/deckard-build/lineage /tmp/sys.log systemimage
 set -uo pipefail
 T=$(readlink -f "$1") LOG=$2; shift 2
-LUNCH=${LUNCH:-lineage_waydroid_arm64_only-bp4a-userdebug}
+LUNCH=${LUNCH:-lineage_deckard_arm64_only-bp4a-userdebug}
 JOBS=${JOBS:-4}
 mkdir -p "$T/../tmp"
 # env -i: interactive shell functions (a grep wrapper, ...) must not reach

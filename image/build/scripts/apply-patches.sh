@@ -7,10 +7,14 @@
 set -euo pipefail
 T=$(readlink -f "$1"); P=$(readlink -f "$(dirname "$0")/../patches")
 declare -A MAP=(
-  [device_waydroid_waydroid]=device/waydroid/waydroid
+  [device_deckard_deckard]=device/deckard/deckard
   [frameworks_base]=frameworks/base
   [frameworks_native]=frameworks/native
-  [frameworks_waydroid]=frameworks/waydroid
+  [lineage-sdk]=lineage-sdk
+  [frameworks_av]=frameworks/av
+  [external_minigbm]=external/minigbm
+  [external_stagefright-plugins]=external/stagefright-plugins
+  [vendor_extra]=vendor/extra
   [system_memory_lmkd]=system/memory/lmkd
   [system_apex]=system/apex
   [bionic]=bionic [build_make]=build/make [build_soong]=build/soong
@@ -19,10 +23,11 @@ declare -A MAP=(
   [external_fmtlib]=external/fmtlib
   [external_jemalloc_new]=external/jemalloc_new
   [external_pulseaudio]=external/pulseaudio
+  [external_alsa-plugins]=external/alsa-plugins
   [external_rust_android-crates-io]=external/rust/android-crates-io
   [frameworks_libs_binary_translation]=frameworks/libs/binary_translation
   [hardware_interfaces]=hardware/interfaces
-  [hardware_waydroid]=hardware/waydroid
+  [hardware_deckard]=hardware/deckard
   [hardware_ril]=hardware/ril
   [packages_modules_Permission]=packages/modules/Permission
   [prebuilts_build-tools]=prebuilts/build-tools
