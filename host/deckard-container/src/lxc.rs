@@ -189,17 +189,6 @@ impl ContainerManager {
         }
         Ok(())
     }
-
-    /// # Errors
-    /// LXC does not stop or an unmount or network step fails.
-    pub fn stop(&self) -> Result<()> {
-        self.lxc.stop()?;
-        if self.lxc.status()? != State::Stopped {
-            return Err("refusing to unmount a live container".into());
-        }
-        self.mounts.unmount()?;
-        self.network.stop()
-    }
 }
 
 /// # Errors

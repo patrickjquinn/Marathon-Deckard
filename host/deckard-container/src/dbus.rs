@@ -199,6 +199,8 @@ struct Backend {
     hardware_sender: Sender<HardwareRequest>,
     hardware_stop: Option<Arc<AtomicBool>>,
     suspend_stops: bool,
+    /// Android is stopped but its mounts and network are still up.
+    teardown_pending: bool,
 }
 
 impl Backend {
@@ -258,6 +260,7 @@ impl Backend {
     }
 
     fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
+        self.finish_stop()?;
         let stopped = self.manager.lxc.status()? == State::Stopped;
         crate::ensure(
             stopped,
@@ -280,11 +283,36 @@ impl Backend {
     }
 
     fn stop(&mut self) -> Result<()> {
+        self.halt()?;
+        self.finish_stop()
+    }
+
+    /// Stops Android, leaving its mounts and network to [`Self::finish_stop`].
+    fn halt(&mut self) -> Result<()> {
         if let Some(stop) = self.hardware_stop.take() {
             stop.store(true, Ordering::Relaxed);
         }
-        self.manager.stop()?;
-        Stage::new(&self.manager.network.runtime).release()
+        let lxc = &self.manager.lxc;
+        lxc.stop()?;
+        crate::ensure(
+            lxc.status()? == State::Stopped,
+            "refusing to unmount a live container",
+        )?;
+        self.teardown_pending = true;
+        Ok(())
+    }
+
+    /// Unmounting syncs the overlays' upper filesystem, all of /var: seconds
+    /// after Android wrote a lot.
+    fn finish_stop(&mut self) -> Result<()> {
+        if !self.teardown_pending {
+            return Ok(());
+        }
+        self.manager.mounts.unmount()?;
+        self.manager.network.stop()?;
+        Stage::new(&self.manager.network.runtime).release()?;
+        self.teardown_pending = false;
+        Ok(())
     }
 
     fn hardware(&mut self, request: HardwareRequest) -> Result<HardwareOutcome> {
@@ -382,6 +410,7 @@ impl ContainerService {
             hardware_sender,
             hardware_stop: None,
             suspend_stops: false,
+            teardown_pending: false,
         };
         let state = ServiceState {
             backend,
@@ -440,6 +469,7 @@ impl ContainerService {
         {
             return Err("the container is running without a session; stop it first".into());
         }
+        state.backend.finish_stop()?;
         let result = work();
         if let Some((fields, uid)) = resume
             && let Err(error) = state.backend.start(&fields, uid)
@@ -551,7 +581,7 @@ impl ContainerService {
         let caller = Caller::of(conn, &header).await?;
         self.locked(move |state| {
             state.authorize_control(caller)?;
-            state.backend.stop().map_err(failed)?;
+            state.backend.halt().map_err(failed)?;
             if let Some(session) = state.session.take()
                 && quit_session
             {
@@ -559,7 +589,18 @@ impl ContainerService {
             }
             Ok(())
         })
-        .await
+        .await?;
+        let state = Arc::clone(&self.state);
+        thread::spawn(move || {
+            let finished = match state.lock() {
+                Ok(mut state) => state.backend.finish_stop(),
+                Err(_) => Err("state lock poisoned".into()),
+            };
+            if let Err(error) = finished {
+                eprintln!("deckard-containerd: cannot finish stopping Android: {error}");
+            }
+        });
+        Ok(())
     }
 
     async fn freeze(
