@@ -8,7 +8,7 @@
     <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="33" />
 
     <!-- Android's activity manager needs a home; Marathon's is the real one.
-         The hwcomposer never maps this package (waydroid.blacklist_apps).
+         The hwcomposer never maps this package (deckard.blacklist_apps).
          Platform-signed so it runs in DeckardSystem's process, not its own. -->
     <application
         android:label="Deckard Home"

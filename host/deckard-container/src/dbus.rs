@@ -205,12 +205,12 @@ struct Backend {
 
 impl Backend {
     fn config_path(&self) -> PathBuf {
-        self.manager.mounts.work.join("waydroid.cfg")
+        self.manager.mounts.work.join("deckard.cfg")
     }
 
-    /// Reads `waydroid.cfg` and prepares the Binder and device nodes.
+    /// Reads `deckard.cfg` and prepares the Binder and device nodes.
     fn prepare_production(&mut self) -> Result<()> {
-        let base = self.manager.mounts.work.join("waydroid_base.prop");
+        let base = self.manager.mounts.work.join("deckard_base.prop");
         let initialized = self.initialized() && base.is_file();
         crate::ensure(initialized, "Android is not initialized")?;
         let text = config::read(&self.config_path())?;
@@ -487,7 +487,7 @@ impl ContainerService {
         result
     }
 
-    /// Acts on one admitted `waydroidhardware` request.
+    /// Acts on one admitted `deckardhardware` request.
     ///
     /// # Errors
     /// No session is tracked or the request fails.

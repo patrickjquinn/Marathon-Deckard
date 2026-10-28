@@ -1,4 +1,4 @@
-//! Writing `waydroid.cfg`; reading is `deckard_host_tools::cfg`.
+//! Writing `deckard.cfg`; reading is `deckard_host_tools::cfg`.
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -26,7 +26,7 @@ pub fn get_or_default<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     cfg::get(text, key).or(default.map(|(_, value)| *value))
 }
 
-/// `text` with `updates` written into `[waydroid]` (created if missing);
+/// `text` with `updates` written into `[deckard]` (created if missing);
 /// other lines and sections are kept.
 ///
 /// # Errors
@@ -34,16 +34,16 @@ pub fn get_or_default<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 /// would break the line format.
 pub fn set(text: &str, updates: &[(&str, &str)]) -> Result<String> {
     if text.contains(['\0', '\r']) {
-        return Err("invalid waydroid.cfg".into());
+        return Err("invalid deckard.cfg".into());
     }
     for (key, value) in updates {
         if key.is_empty() || value.contains(['\n', '\r', '\0']) || value.len() > 4096 {
-            return Err(format!("invalid waydroid.cfg value for {key}").into());
+            return Err(format!("invalid deckard.cfg value for {key}").into());
         }
     }
     let mut result = String::new();
     let mut seen: Vec<String> = Vec::new();
-    let mut in_waydroid = false;
+    let mut in_deckard = false;
     let mut found = false;
     let append_missing = |result: &mut String, seen: &[String]| {
         for (key, value) in updates {
@@ -54,15 +54,15 @@ pub fn set(text: &str, updates: &[(&str, &str)]) -> Result<String> {
     };
     for line in text.lines() {
         if let Some(name) = cfg::section(line) {
-            if in_waydroid {
+            if in_deckard {
                 append_missing(&mut result, &seen);
             }
-            in_waydroid = name.eq_ignore_ascii_case("waydroid");
-            if in_waydroid && found {
-                return Err("duplicate [waydroid] section".into());
+            in_deckard = name.eq_ignore_ascii_case("deckard");
+            if in_deckard && found {
+                return Err("duplicate [deckard] section".into());
             }
-            found |= in_waydroid;
-        } else if in_waydroid
+            found |= in_deckard;
+        } else if in_deckard
             && let Some((key, _)) = line.split_once('=')
             && let key = key.trim().to_ascii_lowercase()
             && let Some((name, value)) = updates.iter().find(|(name, _)| *name == key)
@@ -77,10 +77,10 @@ pub fn set(text: &str, updates: &[(&str, &str)]) -> Result<String> {
         result.push_str(line);
         result.push('\n');
     }
-    if in_waydroid {
+    if in_deckard {
         append_missing(&mut result, &seen);
     } else if !found {
-        result.push_str("[waydroid]\n");
+        result.push_str("[deckard]\n");
         append_missing(&mut result, &[]);
     }
     Ok(result)
@@ -122,11 +122,11 @@ mod tests {
 
     #[test]
     fn set_updates_appends_and_keeps_other_sections() -> Result<()> {
-        let text = "[waydroid]\nArch = old\nmount_overlays = False\n[properties]\narch = keep\n";
+        let text = "[deckard]\nArch = old\nmount_overlays = False\n[properties]\narch = keep\n";
         let result = set(text, &[("arch", "arm64"), ("binder", "binder")])?;
         assert_eq!(
             result,
-            "[waydroid]\narch = arm64\nmount_overlays = False\nbinder = binder\n[properties]\narch = keep\n"
+            "[deckard]\narch = arm64\nmount_overlays = False\nbinder = binder\n[properties]\narch = keep\n"
         );
         assert_eq!(cfg::get(&result, "binder"), Some("binder"));
         assert_eq!(cfg::get(&result, "missing"), None);
@@ -134,15 +134,15 @@ mod tests {
         assert_eq!(get_or_default(&result, "mount_overlays"), Some("False"));
         assert_eq!(
             set("[properties]\nro.x = 1\n", &[("arch", "arm64")])?,
-            "[properties]\nro.x = 1\n[waydroid]\narch = arm64\n"
+            "[properties]\nro.x = 1\n[deckard]\narch = arm64\n"
         );
         Ok(())
     }
 
     #[test]
     fn set_rejects_duplicates_and_injection() {
-        assert!(set("[waydroid]\narch = a\narch = b\n", &[("arch", "c")]).is_err());
-        assert!(set("[waydroid]\n[waydroid]\n", &[("arch", "c")]).is_err());
+        assert!(set("[deckard]\narch = a\narch = b\n", &[("arch", "c")]).is_err());
+        assert!(set("[deckard]\n[deckard]\n", &[("arch", "c")]).is_err());
         assert!(set("", &[("arch", "c\nbinder = ../mem")]).is_err());
     }
 }

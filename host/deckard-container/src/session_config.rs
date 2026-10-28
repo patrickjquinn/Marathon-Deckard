@@ -179,7 +179,7 @@ fn sources(fields: &HashMap<String, String>, uid: u32, runtime_root: &Path) -> R
     } else {
         None
     };
-    let data = Path::new(field(fields, "waydroid_data")?);
+    let data = Path::new(field(fields, "deckard_data")?);
     let (_, data) = pin(data, uid, FileType::Directory)?;
     Ok(Sources {
         wayland,
@@ -312,7 +312,7 @@ mod tests {
                 runtime.join("pulse").display().to_string(),
             ),
             (
-                "waydroid_data".into(),
+                "deckard_data".into(),
                 root.join("data").display().to_string(),
             ),
         ]))
@@ -320,13 +320,13 @@ mod tests {
 
     #[test]
     fn config_names_only_the_root_owned_stage() {
-        let stage = Stage::new(Path::new("/run/waydroid-lxc"));
+        let stage = Stage::new(Path::new("/run/deckard-lxc"));
         assert_eq!(
             render(&stage, true),
             "lxc.mount.entry = tmpfs /run/xdg none create=dir 0 0\n\
-             lxc.mount.entry = /run/waydroid-lxc/session/wayland-0 run/xdg/wayland-0 none rbind,create=file 0 0\n\
-             lxc.mount.entry = /run/waydroid-lxc/session/pulse-native run/xdg/pulse/native none rbind,create=file 0 0\n\
-             lxc.mount.entry = /run/waydroid-lxc/session/data data none rbind 0 0\n"
+             lxc.mount.entry = /run/deckard-lxc/session/wayland-0 run/xdg/wayland-0 none rbind,create=file 0 0\n\
+             lxc.mount.entry = /run/deckard-lxc/session/pulse-native run/xdg/pulse/native none rbind,create=file 0 0\n\
+             lxc.mount.entry = /run/deckard-lxc/session/data data none rbind 0 0\n"
         );
         assert!(!render(&stage, false).contains("pulse"));
     }

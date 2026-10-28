@@ -1,7 +1,7 @@
 //! `waydroid init` from images already on the device (upstream
 //! `tools/actions/initializer.py`, `tools/helpers/lxc.py`,
-//! `tools/helpers/images.py`). Renders the LXC instance, `waydroid.cfg` and
-//! `waydroid_base.prop` from the templates in `lxc/`, which Deckard ships.
+//! `tools/helpers/images.py`). Renders the LXC instance, `deckard.cfg` and
+//! `deckard_base.prop` from the templates in `lxc/`, which Deckard ships.
 //! Images are never downloaded.
 
 use std::collections::BTreeSet;
@@ -24,7 +24,7 @@ use crate::{Result, config, lxc, mounts};
 const CONFIG_BASE: &str = include_str!("../lxc/config_base");
 const CONFIG_3: &str = include_str!("../lxc/config_3");
 const CONFIG_4: &str = include_str!("../lxc/config_4");
-const SECCOMP: &str = include_str!("../lxc/waydroid.seccomp");
+const SECCOMP: &str = include_str!("../lxc/deckard.seccomp");
 
 /// Image directories that take precedence over `images_path`.
 pub const PREINSTALLED: [&str; 1] = ["/usr/share/deckard/images"];
@@ -146,7 +146,7 @@ pub fn host_devices() -> Result<BTreeSet<String>> {
 
 /// The host facts the rendered files depend on.
 pub struct Host {
-    /// Waydroid's name for the architecture (`waydroid.cfg` `arch`).
+    /// Waydroid's name for the architecture (`deckard.cfg` `arch`).
     pub arch: &'static str,
     /// The kernel's name (`lxc.arch`).
     pub lxc_arch: &'static str,
@@ -156,7 +156,7 @@ pub struct Host {
     /// The first DRM render node not driven by an unsupported driver.
     pub render_node: Option<String>,
     pub vulkan: Option<&'static str>,
-    /// `ro.product.waydroid.*` values from the device tree.
+    /// `ro.product.deckard.*` values from the device tree.
     pub products: Vec<(&'static str, String)>,
     pub ashmem: bool,
 }
@@ -428,14 +428,14 @@ impl Init<'_> {
             ("config", lxc_config),
             ("config_nodes", nodes),
             ("config_session", &session),
-            ("waydroid.seccomp", SECCOMP),
+            ("deckard.seccomp", SECCOMP),
         ];
         for (name, text) in lxc_files {
             write_new(&lxc_staging.join(name), text.as_bytes())?;
         }
         mode(&lxc_staging, 0o755)?;
-        write_new(&staging.join("waydroid.cfg"), config_text.as_bytes())?;
-        write_new(&staging.join("waydroid_base.prop"), properties.as_bytes())?;
+        write_new(&staging.join("deckard.cfg"), config_text.as_bytes())?;
+        write_new(&staging.join("deckard_base.prop"), properties.as_bytes())?;
         for path in [
             "overlay_rw",
             "overlay_rw/system",
@@ -456,8 +456,8 @@ impl Init<'_> {
         }
         // Upstream drops the writable layers on every init.
         for name in [
-            "waydroid.cfg",
-            "waydroid_base.prop",
+            "deckard.cfg",
+            "deckard_base.prop",
             "overlay_rw",
             "overlay_work",
         ] {
@@ -517,7 +517,7 @@ impl Init<'_> {
             !mounted,
             "the Android rootfs is still mounted; stop the container first",
         )?;
-        let config_text = self.render_config(&config::read(&work.join("waydroid.cfg"))?)?;
+        let config_text = self.render_config(&config::read(&work.join("deckard.cfg"))?)?;
         let properties = self.render_base_properties(&config_text)?;
         let rendered = [
             self.render_lxc(),
@@ -805,8 +805,8 @@ mod tests {
     fn renders_the_installed_pi_instance() -> Result<()> {
         let fixture = Fixture::new()?;
         fixture.write(
-            "waydroid.cfg",
-            "[waydroid]\narch = arm64\n\
+            "deckard.cfg",
+            "[deckard]\narch = arm64\n\
              system_ota = https://ota.waydro.id/system/lineage/waydroid_arm64/VANILLA.json\n\
              vendor_ota = https://ota.waydro.id/vendor/waydroid_arm64/MAINLINE.json\n\
              binder_protocol = aidl3\n\n\
@@ -818,7 +818,7 @@ mod tests {
         for line in [
             format!("lxc.rootfs.path = {work}/rootfs\nlxc.arch = aarch64\n"),
             format!("lxc.include = {work}/lxc/deckard/config_session\n"),
-            format!("lxc.seccomp.profile = {work}/lxc/deckard/waydroid.seccomp\n"),
+            format!("lxc.seccomp.profile = {work}/lxc/deckard/deckard.seccomp\n"),
             "lxc.mount.auto = cgroup:rw sys:ro proc\n".into(),
             "lxc.hook.mount = /usr/libexec/deckard-shared-folders\n".into(),
             "lxc.uts.name = deckard\n".into(),
@@ -853,20 +853,20 @@ mod tests {
         }
         assert_eq!(fixture.read("lxc/deckard/config_nodes")?, expected);
         assert_eq!(fixture.read("lxc/deckard/config_session")?, "");
-        assert_eq!(fixture.read("lxc/deckard/waydroid.seccomp")?, SECCOMP);
+        assert_eq!(fixture.read("lxc/deckard/deckard.seccomp")?, SECCOMP);
         assert_eq!(
-            fixture.read("waydroid_base.prop")?,
+            fixture.read("deckard_base.prop")?,
             "sys.use_memfd=true\nro.adb.secure=1\nro.debuggable=0\n\
              gralloc.gbm.device=/dev/dri/renderD128\ndebug.stagefright.ccodec=0\n\
              ro.hardware.gralloc=gbm\nro.hardware.egl=mesa\nro.hardware.camera=v4l2\n\
              ro.opengles.version=196610\n\
-             waydroid.system_ota=https://ota.waydro.id/system/lineage/waydroid_arm64/VANILLA.json\n\
-             waydroid.vendor_ota=https://ota.waydro.id/vendor/waydroid_arm64/MAINLINE.json\n\
-             waydroid.tools_version=1.6.3\nro.vndk.lite=true\n\
-             ro.product.waydroid.model=Raspberry Pi Compute Module 5 Lite Rev 1.0\n\
+             deckard.system_ota=https://ota.waydro.id/system/lineage/waydroid_arm64/VANILLA.json\n\
+             deckard.vendor_ota=https://ota.waydro.id/vendor/waydroid_arm64/MAINLINE.json\n\
+             deckard.tools_version=1.6.3\nro.vndk.lite=true\n\
+             ro.product.deckard.model=Raspberry Pi Compute Module 5 Lite Rev 1.0\n\
              ro.sf.lcd_density=254\nro.product.cpu.abilist32=\n"
         );
-        let cfg = fixture.read("waydroid.cfg")?;
+        let cfg = fixture.read("deckard.cfg")?;
         for line in [
             "arch = arm64\n",
             "vendor_type = MAINLINE\n",
@@ -900,8 +900,8 @@ mod tests {
         fs::write(lxc.join("config_session"), "session bind\n")?;
         fs::write(lxc.join("custom.conf"), "keep me\n")?;
         fixture.write(
-            "waydroid.cfg",
-            "[waydroid]\nsystem_ota = https://example.invalid\nsystem_datetime = 9\nmount_overlays = False\n",
+            "deckard.cfg",
+            "[deckard]\nsystem_ota = https://example.invalid\nsystem_datetime = 9\nmount_overlays = False\n",
         )?;
         fs::create_dir_all(fixture.instance.work.join("overlay_rw/system/app"))?;
         let shipped = fixture.root.path().join("shipped");
@@ -922,14 +922,14 @@ mod tests {
             assert!(!fixture.instance.work.join("images").join(image).exists());
             assert!(shipped.join(image).exists());
         }
-        let cfg = fixture.read("waydroid.cfg")?;
+        let cfg = fixture.read("deckard.cfg")?;
         assert!(cfg.contains("system_ota = None\n"));
         assert!(cfg.contains("system_datetime = 0\n"));
         assert!(cfg.contains("mount_overlays = False\n"));
         assert!(cfg.contains(&format!("images_path = {}\n", shipped.display())));
-        let props = fixture.read("waydroid_base.prop")?;
-        assert!(props.contains("waydroid.updater.disabled=true\n"));
-        assert!(!props.contains("waydroid.system_ota"));
+        let props = fixture.read("deckard_base.prop")?;
+        assert!(props.contains("deckard.updater.disabled=true\n"));
+        assert!(!props.contains("deckard.system_ota"));
         assert_eq!(
             fixture.read("lxc/deckard/config_session")?,
             "session bind\n"
@@ -945,8 +945,8 @@ mod tests {
         let empty = fixture.root.path().join("empty");
         fs::create_dir(&empty)?;
         assert!(Images::find(&[], &empty).is_err());
-        let old = "[waydroid]\narch = old\n";
-        fixture.write("waydroid.cfg", old)?;
+        let old = "[deckard]\narch = old\n";
+        fixture.write("deckard.cfg", old)?;
         assert!(fixture.run(fixture.installed(), true).is_err());
         assert!(
             fixture
@@ -954,12 +954,12 @@ mod tests {
                 .run(&AtomicBool::new(false), Some(Instant::now()))
                 .is_err()
         );
-        fixture.write("waydroid.cfg", "[waydroid]\n[properties]\nnot a property\n")?;
+        fixture.write("deckard.cfg", "[deckard]\n[properties]\nnot a property\n")?;
         assert!(fixture.run(fixture.installed(), false).is_err());
-        fixture.write("waydroid.cfg", old)?;
+        fixture.write("deckard.cfg", old)?;
         fixture.write("images/system.img", "not an image")?;
         assert!(fixture.run(fixture.installed(), false).is_err());
-        assert_eq!(fixture.read("waydroid.cfg")?, old);
+        assert_eq!(fixture.read("deckard.cfg")?, old);
         assert_eq!(fs::read_dir(&fixture.instance.work)?.count(), 2);
         Ok(())
     }

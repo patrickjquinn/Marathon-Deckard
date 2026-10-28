@@ -123,7 +123,7 @@ fn render_app(existing: &str, app: &AppInfo, icon_dir: &Path) -> String {
         &format!("{DECKARD_LAUNCH} app launch {package}"),
     );
     desktop.set(ENTRY, "Icon", &icon(package));
-    desktop.prepend(ENTRY, "Categories", "X-WayDroid-App");
+    desktop.prepend(ENTRY, "Categories", "X-Deckard-App");
     desktop.set(ENTRY, "X-Purism-FormFactor", "Workstation;Mobile;");
     desktop.prepend(ENTRY, "Actions", "app-settings");
     if SYSTEM_APPS.contains(&package.as_str()) && desktop.get(ENTRY, "NoDisplay").is_none() {
@@ -278,7 +278,7 @@ mod tests {
                     .join("deckard/data/icons/com.nononsenseapps.feeder.png")
                     .display()
             )));
-        assert!(entry.contains("Categories=X-WayDroid-App;\n"));
+        assert!(entry.contains("Categories=X-Deckard-App;\n"));
         assert!(entry.contains("Actions=app-settings;\n"));
         assert!(entry.contains("Exec=/usr/libexec/deckard-launch app intent android.settings.APPLICATION_DETAILS_SETTINGS package:com.nononsenseapps.feeder\n"));
         Ok(())
@@ -298,7 +298,7 @@ mod tests {
         export(root.path(), &apps)?;
         let first = fs::read_to_string(&path)?;
         assert!(first.contains("Name[fr]=Ancien"));
-        assert!(first.contains("Categories=X-WayDroid-App;Utility;"));
+        assert!(first.contains("Categories=X-Deckard-App;Utility;"));
         assert!(first.contains("Actions=app-settings;custom;"));
         assert!(first.contains("NoDisplay=false"));
         assert!(first.contains("[Desktop Action custom]\nName=Custom"));

@@ -1,6 +1,6 @@
 # Deckard: the 64-bit zygote only (docs/slim.md). init.rc starts
 # zygote_secondary by name on zygote-start, so it stays declared but runs
-# nothing; with ro.product.cpu.abilist32 empty (waydroid.cfg) nothing asks
+# nothing; with ro.product.cpu.abilist32 empty (deckard.cfg) nothing asks
 # for it, and app_process32 would abort on the empty list anyway.
 service zygote /system/bin/app_process64 -Xzygote /system/bin --zygote --start-system-server --socket-name=zygote
     class main

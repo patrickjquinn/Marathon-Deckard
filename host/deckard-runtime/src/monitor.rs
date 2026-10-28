@@ -1,4 +1,4 @@
-//! `waydroidusermonitor`: Android's framework reports user unlock and package
+//! `deckardusermonitor`: Android's framework reports user unlock and package
 //! changes to this service (upstream `tools/interfaces/IUserMonitor.py`).
 
 use std::sync::Arc;

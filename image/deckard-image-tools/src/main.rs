@@ -6,12 +6,11 @@ use std::process::ExitCode;
 
 use deckard_core::palette::{Color, Theme};
 use deckard_host_tools::files;
-use deckard_image_tools::{fonts, hwcomposer, palette, permission_view};
+use deckard_image_tools::{fonts, palette, permission_view};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const USAGE: &str =
-    "usage: deckard-image-tools palette|fonts|permission-view|hwcomposer [--option value]";
+const USAGE: &str = "usage: deckard-image-tools palette|fonts|permission-view [--option value]";
 
 fn write_output(path: &Path, content: &[u8]) -> Result<()> {
     let parent = path
@@ -48,13 +47,11 @@ fn run() -> Result<()> {
     let output = take("--out").ok_or("missing --out")?;
     let (input, highlight, mcolors) = match command.as_str() {
         "palette" => (None, take("--highlight"), take("--mcolors")),
-        "fonts" | "permission-view" | "hwcomposer" => {
+        "fonts" | "permission-view" => {
             (Some(take("--input").ok_or("missing --input")?), None, None)
         }
         _ => {
-            return Err(
-                "unknown command; expected palette, fonts, permission-view or hwcomposer".into(),
-            );
+            return Err("unknown command; expected palette, fonts or permission-view".into());
         }
     };
     if !options.is_empty() {
@@ -92,11 +89,10 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
-        "permission-view" => write_output(
+        _ => write_output(
             &output,
             permission_view::patch(&fs::read_to_string(input)?)?.as_bytes(),
         ),
-        _ => write_output(&output, &hwcomposer::patch(&fs::read(input)?)?),
     }
 }
 

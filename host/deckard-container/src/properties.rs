@@ -54,7 +54,7 @@ pub fn render(
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
     crate::ensure(user.len() <= 64 && plain, "invalid user name")?;
-    let data = value(fields, "waydroid_data")?;
+    let data = value(fields, "deckard_data")?;
     crate::ensure(data.starts_with('/'), "Android data path must be absolute")?;
     let background = value(fields, "background_start")?;
     crate::ensure(
@@ -103,13 +103,13 @@ fn owned(path: &Path, message: &str) -> Result<fs::Metadata> {
     Ok(metadata)
 }
 
-/// Writes `waydroid.prop` for the session of `uid`.
+/// Writes `deckard.prop` for the session of `uid`.
 ///
 /// # Errors
 /// The base file or work directory is untrusted, the session does not
 /// belong to `uid`, or the file cannot be written.
 pub fn write(work: &Path, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
-    let base_path = work.join("waydroid_base.prop");
+    let base_path = work.join("deckard_base.prop");
     let untrusted = "untrusted base property file";
     let base = owned(&base_path, untrusted)?;
     crate::ensure(base.is_file() && base.len() <= MAX_BASE_BYTES, untrusted)?;
@@ -127,7 +127,7 @@ pub fn write(work: &Path, fields: &HashMap<String, String>, uid: u32) -> Result<
         untrusted,
     )?;
     Ok(files::replace(
-        &work.join("waydroid.prop"),
+        &work.join("deckard.prop"),
         properties.as_bytes(),
         0o644,
     )?)
@@ -142,7 +142,7 @@ mod tests {
             ("user_id".into(), "1000".into()),
             ("group_id".into(), "1000".into()),
             ("user_name".into(), "user".into()),
-            ("waydroid_data".into(), "/home/user/data".into()),
+            ("deckard_data".into(), "/home/user/data".into()),
             ("background_start".into(), "true".into()),
             ("lcd_density".into(), "254".into()),
         ]);
@@ -152,9 +152,9 @@ mod tests {
             false,
         )?;
         assert!(result.contains("ro.hardware.egl=mesa\n"));
-        assert!(result.contains("waydroid.host_data_path=/home/user/data\n"));
+        assert!(result.contains("deckard.host_data_path=/home/user/data\n"));
         assert_eq!(result.matches("ro.sf.lcd_density=").count(), 1);
-        assert!(result.contains("waydroid.stub_sensors_hal=1\n"));
+        assert!(result.contains("deckard.stub_sensors_hal=1\n"));
         Ok(())
     }
 
@@ -164,7 +164,7 @@ mod tests {
             ("user_id".into(), "1000".into()),
             ("group_id".into(), "1000".into()),
             ("user_name".into(), "user\nro.adb.secure=0".into()),
-            ("waydroid_data".into(), "/home/user/data".into()),
+            ("deckard_data".into(), "/home/user/data".into()),
             ("background_start".into(), "true".into()),
             ("lcd_density".into(), "254".into()),
         ]);
@@ -177,7 +177,7 @@ mod tests {
             ("user_id".into(), "1000".into()),
             ("group_id".into(), "1000".into()),
             ("user_name".into(), "user".into()),
-            ("waydroid_data".into(), "/home/user/data".into()),
+            ("deckard_data".into(), "/home/user/data".into()),
             ("background_start".into(), "true".into()),
             ("lcd_density".into(), "0".into()),
         ]);

@@ -18,9 +18,9 @@ impl Fixture {
         let root = temp.path().to_path_buf();
         let share = root.join("share");
         let host_fonts = root.join("host-fonts");
-        let overlay_system = root.join("waydroid/overlay/system");
-        let state = root.join("waydroid/deckard-fonts.list");
-        let config = root.join("waydroid.cfg");
+        let overlay_system = root.join("deckard/overlay/system");
+        let state = root.join("deckard/deckard-fonts.list");
+        let config = root.join("deckard.cfg");
         std::fs::create_dir_all(&share).unwrap();
         std::fs::create_dir_all(&host_fonts).unwrap();
         std::fs::create_dir_all(&overlay_system).unwrap();
@@ -37,7 +37,7 @@ impl Fixture {
         };
         std::fs::write(
             &fixture.paths.config,
-            "[waydroid]\nsystem_datetime = 1790477549\n",
+            "[deckard]\nsystem_datetime = 1790477549\n",
         )
         .unwrap();
         fixture.share("fonts.xml", "<familyset/>");
@@ -151,7 +151,7 @@ fn another_image_cleans_prior_installation() {
     assert_eq!(fixture.run().unwrap(), Outcome::Applied);
     std::fs::write(
         &fixture.paths.config,
-        "[waydroid]\nsystem_datetime = 1792993496\n",
+        "[deckard]\nsystem_datetime = 1792993496\n",
     )
     .unwrap();
     assert_eq!(fixture.run().unwrap(), Outcome::OtherImage);
@@ -224,7 +224,7 @@ fn failed_whiteout_rolls_back_new_files_and_keeps_old_state() {
     assert!(!fixture.overlay("fonts/Required.ttf").exists());
     assert!(!fixture.paths.state.exists());
     assert_eq!(
-        std::fs::read_dir(fixture.root.join("waydroid"))
+        std::fs::read_dir(fixture.root.join("deckard"))
             .unwrap()
             .filter_map(Result::ok)
             .count(),

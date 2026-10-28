@@ -1,6 +1,6 @@
 //! Binder for the host binaries, over rsbinder: the `IPlatform` client and
-//! the local services Android calls (`waydroidhardware`,
-//! `waydroidusermonitor`). Requests carry libgbinder's `aidl3` header and use
+//! the local services Android calls (`deckardhardware`,
+//! `deckardusermonitor`). Requests carry libgbinder's `aidl3` header and use
 //! the service-manager codes of `service_manager_protocol`: Android 11's
 //! (`aidl3`) or Android 16's (`aidl6`).
 
@@ -35,7 +35,7 @@ const MAX_STRING_BYTES: usize = 4096;
 const MAX_APPS: usize = 4096;
 const MAX_CATEGORIES: usize = 64;
 
-/// The Binder device of `waydroid.cfg` and its service manager's codes.
+/// The Binder device of `deckard.cfg` and its service manager's codes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinderConfig {
     pub device: PathBuf,
@@ -60,7 +60,7 @@ impl Manager {
 }
 
 impl BinderConfig {
-    /// Reads the `[waydroid]` Binder settings of `waydroid.cfg`.
+    /// Reads the `[deckard]` Binder settings of `deckard.cfg`.
     ///
     /// # Errors
     /// The file is unreadable, its device name is missing or unsafe, its
@@ -73,7 +73,7 @@ impl BinderConfig {
     /// # Errors
     /// As for [`from_file`](Self::from_file).
     pub fn parse(text: &str) -> Result<Self> {
-        let binder = cfg::get(text, "binder").ok_or("missing waydroid.binder")?;
+        let binder = cfg::get(text, "binder").ok_or("missing deckard.binder")?;
         let safe = !binder.is_empty()
             && binder
                 .bytes()
@@ -194,13 +194,13 @@ fn read_app(parcel: &mut Parcel) -> Result<Option<AppInfo>> {
     }))
 }
 
-/// Client of Android's `waydroidplatform` service. Every call fails when
+/// Client of Android's `deckardplatform` service. Every call fails when
 /// Binder or Android refuses it or the reply is malformed.
 pub struct Platform(SIBinder);
 
 impl Platform {
     /// Waits up to 30 seconds for the service manager and three minutes for
-    /// `waydroidplatform`.
+    /// `deckardplatform`.
     ///
     /// # Errors
     /// Binder or the service is unavailable.
@@ -397,20 +397,20 @@ mod tests {
     #[test]
     fn config_names_the_device_and_refuses_traversal_or_other_protocols() -> Result<()> {
         let config = BinderConfig::parse(
-            "[waydroid]\nbinder = anbox-binder\nservice_manager_protocol = aidl3\n[properties]\nbinder = x\n",
+            "[deckard]\nbinder = anbox-binder\nservice_manager_protocol = aidl3\n[properties]\nbinder = x\n",
         )?;
         assert_eq!(config.device, Path::new("/dev/anbox-binder"));
         assert_eq!(config.manager, Manager { check: 2, add: 3 });
         let android16 =
-            BinderConfig::parse("[waydroid]\nbinder = b\nservice_manager_protocol = aidl6\n")?;
+            BinderConfig::parse("[deckard]\nbinder = b\nservice_manager_protocol = aidl6\n")?;
         assert_eq!(android16.manager, Manager { check: 3, add: 5 });
         assert!(
-            BinderConfig::parse("[waydroid]\nbinder = b\nservice_manager_protocol = aidl5\n")
+            BinderConfig::parse("[deckard]\nbinder = b\nservice_manager_protocol = aidl5\n")
                 .is_err()
         );
-        assert!(BinderConfig::parse("[waydroid]\nbinder = ../mem\n").is_err());
-        assert!(BinderConfig::parse("[waydroid]\nbinder_protocol = aidl3\n").is_err());
-        assert!(BinderConfig::parse("[waydroid]\nbinder = b\nbinder_protocol = aidl4\n").is_err());
+        assert!(BinderConfig::parse("[deckard]\nbinder = ../mem\n").is_err());
+        assert!(BinderConfig::parse("[deckard]\nbinder_protocol = aidl3\n").is_err());
+        assert!(BinderConfig::parse("[deckard]\nbinder = b\nbinder_protocol = aidl4\n").is_err());
         Ok(())
     }
 

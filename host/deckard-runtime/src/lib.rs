@@ -131,8 +131,8 @@ pub fn session_payload(spec: &SessionSpec<'_>) -> Result<HashMap<String, String>
         ("state", "STOPPED".to_owned()),
         ("lcd_density", spec.lcd_density.to_owned()),
         ("background_start", "true".to_owned()),
-        ("waydroid_user_state", path(&user_state)),
-        ("waydroid_data", path(&data)),
+        ("deckard_user_state", path(&user_state)),
+        ("deckard_data", path(&data)),
     ];
     Ok(fields
         .into_iter()
@@ -469,7 +469,7 @@ mod tests {
         assert_eq!(map["state"], "STOPPED");
         assert_eq!(map["background_start"], "true");
         assert_eq!(
-            map["waydroid_data"],
+            map["deckard_data"],
             data_home.join("deckard/data").to_string_lossy()
         );
         assert!(data_home.join("deckard/data").is_dir());

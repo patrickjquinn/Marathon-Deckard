@@ -40,7 +40,7 @@ impl MountLayout {
         for path in [
             self.images.join("system.img"),
             self.images.join("vendor.img"),
-            self.work.join("waydroid.prop"),
+            self.work.join("deckard.prop"),
         ] {
             owner_controlled(&path)?;
             if !path.metadata()?.is_file() {
@@ -109,7 +109,7 @@ impl MountLayout {
                 commands.push(Command::new(args));
             }
         }
-        let prop = display(&self.work.join("waydroid.prop"));
+        let prop = display(&self.work.join("deckard.prop"));
         let target = display(&root.join(android::VENDOR_PROPERTIES));
         commands.push(Command::new(["mount", "--bind", &prop, &target]));
         Ok(commands)
@@ -245,7 +245,7 @@ mod tests {
     fn rejects_overlay_metacharacters_and_symlinks() -> Result<()> {
         assert!(validate_path_syntax(Path::new("/var/lib/foo:bar")).is_err());
         assert!(validate_path_syntax(Path::new("/var/lib/foo,bar")).is_err());
-        assert!(validate_path_syntax(Path::new("/var/../lib/waydroid")).is_err());
+        assert!(validate_path_syntax(Path::new("/var/../lib/deckard")).is_err());
         let base = tempfile::tempdir()?;
         let link = base.path().join("link");
         std::os::unix::fs::symlink("/tmp", &link)?;

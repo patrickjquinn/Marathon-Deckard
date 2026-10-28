@@ -16,29 +16,24 @@ fn setup() -> (TempDir, Paths) {
     };
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     fs::create_dir_all(paths.share.join("overlay/system/etc/init")).unwrap();
-    fs::create_dir_all(paths.share.join("overlay/vendor/lib64/hw")).unwrap();
     fs::create_dir_all(&paths.work).unwrap();
-    for path in ["waydroid.prop", "whiteouts"] {
+    for path in ["deckard.prop", "whiteouts"] {
         fs::copy(fixture.join(path), paths.share.join(path)).unwrap();
     }
-    for path in ["waydroid.cfg", "waydroid_base.prop"] {
+    for path in ["deckard.cfg", "deckard_base.prop"] {
         fs::copy(fixture.join(path), paths.work.join(path)).unwrap();
     }
-    for path in [
-        "system/etc/init/deckard-watch.rc",
-        "vendor/lib64/hw/hwcomposer.waydroid.so",
-    ] {
-        fs::copy(
-            fixture.join("overlay").join(path),
-            paths.share.join("overlay").join(path),
-        )
-        .unwrap();
-    }
+    let watch = "system/etc/init/deckard-watch.rc";
+    fs::copy(
+        fixture.join("overlay").join(watch),
+        paths.share.join("overlay").join(watch),
+    )
+    .unwrap();
     (root, paths)
 }
 
 #[test]
-fn reconciles_assets_guards_whiteouts_and_properties() {
+fn reconciles_assets_whiteouts_and_properties() {
     let (_root, paths) = setup();
     let dst = paths.work.join("overlay");
     fs::create_dir_all(dst.join("system")).unwrap();
@@ -51,16 +46,13 @@ fn reconciles_assets_guards_whiteouts_and_properties() {
     .unwrap();
     fs::write(paths.work.join("deckard-props.list"), "old.property\n").unwrap();
     fs::write(
-        paths.work.join("waydroid_base.prop"),
+        paths.work.join("deckard_base.prop"),
         "old.property=x\nro.product.cpu.abilist=obsolete\nkeep.me=yes\n",
     )
     .unwrap();
     fs::write(
-        paths.work.join("waydroid.cfg"),
-        format!(
-            "{}old.property = x\n",
-            include_str!("fixtures/waydroid.cfg")
-        ),
+        paths.work.join("deckard.cfg"),
+        format!("{}old.property = x\n", include_str!("fixtures/deckard.cfg")),
     )
     .unwrap();
     let source = paths.share.join("overlay/system/etc/init/deckard-watch.rc");
@@ -73,10 +65,6 @@ fn reconciles_assets_guards_whiteouts_and_properties() {
 
     sync(&paths).unwrap();
     assert!(!dst.join("system/obsolete.apk").exists());
-    assert_eq!(
-        fs::read_to_string(dst.join("vendor/lib64/hw/hwcomposer.waydroid.so")).unwrap(),
-        "patched composer\n"
-    );
     assert_eq!(
         fs::symlink_metadata(dst.join("system/etc/init/deckard-watch.rc"))
             .unwrap()
@@ -95,12 +83,12 @@ fn reconciles_assets_guards_whiteouts_and_properties() {
         "keep"
     );
     assert!(!dst.join("../escape").exists());
-    let cfg = fs::read_to_string(paths.work.join("waydroid.cfg")).unwrap();
+    let cfg = fs::read_to_string(paths.work.join("deckard.cfg")).unwrap();
     assert!(cfg.contains("ro.product.cpu.abilist = arm64-v8a"));
     assert!(!cfg.contains("obsolete"));
     assert!(!cfg.contains("old.property"));
     assert!(cfg.contains("keep.me = yes"));
-    let base = fs::read_to_string(paths.work.join("waydroid_base.prop")).unwrap();
+    let base = fs::read_to_string(paths.work.join("deckard_base.prop")).unwrap();
     assert!(base.contains("ro.product.cpu.abilist=arm64-v8a"));
     assert!(!base.contains("old.property"));
     assert_eq!(
@@ -116,15 +104,9 @@ fn reconciles_assets_guards_whiteouts_and_properties() {
         "system/removed.apk\n"
     );
 
-    fs::write(
-        paths.work.join("waydroid.cfg"),
-        "[waydroid]\nvendor_datetime = 1800000000\n[properties]\n",
-    )
-    .unwrap();
     fs::write(paths.share.join("whiteouts"), "").unwrap();
     fs::remove_file(paths.share.join("overlay/system/etc/init/deckard-watch.rc")).unwrap();
     sync(&paths).unwrap();
-    assert!(!dst.join("vendor/lib64/hw/hwcomposer.waydroid.so").exists());
     assert!(!dst.join("system/etc/init/deckard-watch.rc").exists());
     assert!(!dst.join("system/removed.apk").exists());
     assert!(dst.join("system/conflict.apk").exists());
@@ -143,10 +125,10 @@ fn removed_property_is_retracted_and_hardlinks_are_preserved() {
         fs::metadata(dst.join("deckard-watch.rc")).unwrap().ino(),
         fs::metadata(dst.join("second.rc")).unwrap().ino()
     );
-    fs::write(paths.share.join("waydroid.prop"), "").unwrap();
+    fs::write(paths.share.join("deckard.prop"), "").unwrap();
     fs::write(paths.share.join("whiteouts"), "").unwrap();
     sync(&paths).unwrap();
-    let cfg = fs::read_to_string(paths.work.join("waydroid.cfg")).unwrap();
+    let cfg = fs::read_to_string(paths.work.join("deckard.cfg")).unwrap();
     assert!(!cfg.contains("ro.product.cpu.abilist"));
     assert!(!cfg.contains("ro.lmk.use_new_strategy"));
     assert!(cfg.contains("keep.me = yes"));

@@ -40,7 +40,7 @@ impl DriverNodes {
 
     fn parse(text: &str) -> Result<Self> {
         let setting = |name: &str| {
-            let value = cfg::get(text, name).ok_or(format!("missing {name} in waydroid.cfg"))?;
+            let value = cfg::get(text, name).ok_or(format!("missing {name} in deckard.cfg"))?;
             let plain = value
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
@@ -249,7 +249,7 @@ pub fn protocols(build_prop: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Records the mounted image's Binder protocols in `waydroid.cfg`, as upstream
+/// Records the mounted image's Binder protocols in `deckard.cfg`, as upstream
 /// does on every start. Call with the rootfs mounted.
 ///
 /// # Errors
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn parses_installed_binder_names() -> Result<()> {
         let nodes = DriverNodes::parse(
-            "[waydroid]\nbinder = binder\nvndbinder = vndbinder\nhwbinder = hwbinder\n",
+            "[deckard]\nbinder = binder\nvndbinder = vndbinder\nhwbinder = hwbinder\n",
         )?;
         assert_eq!(nodes.paths(Path::new("/dev"))[0], Path::new("/dev/binder"));
         Ok(())
@@ -286,11 +286,11 @@ mod tests {
     fn rejects_escaping_and_missing_names() {
         assert!(
             DriverNodes::parse(
-                "[waydroid]\nbinder = ../null\nvndbinder = vndbinder\nhwbinder = hwbinder"
+                "[deckard]\nbinder = ../null\nvndbinder = vndbinder\nhwbinder = hwbinder"
             )
             .is_err()
         );
-        assert!(DriverNodes::parse("[waydroid]\nbinder = binder\nvndbinder = vndbinder").is_err());
+        assert!(DriverNodes::parse("[deckard]\nbinder = binder\nvndbinder = vndbinder").is_err());
     }
 
     #[test]

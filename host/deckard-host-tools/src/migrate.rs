@@ -19,7 +19,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{files, names};
 
-const JOURNAL_VERSION: u32 = 1;
+const JOURNAL_VERSION: u32 = 2;
+/// Version 1 journals predate the Android image's own rename: a complete one
+/// resumes to take [`Step::Names`] and [`Step::Properties`].
+const OLDEST_JOURNAL_VERSION: u32 = 1;
 const SYSTEM_JOURNAL: &str = "/var/lib/deckard-migration.json";
 const LEGACY_WORK: &str = "/var/lib/waydroid";
 const LEGACY_CONTAINER: &str = "waydroid";
@@ -28,9 +31,29 @@ const LEGACY_RUN: &str = "/run/waydroid-lxc";
 const LEGACY_APP_ID_PREFIX: &str = "waydroid.";
 const LEGACY_USER_STATE: &str = "waydroid";
 const SHELL: &str = "/usr/bin/marathon-shell-bin";
+/// The instance's files in the work directory, by their legacy name.
+const INSTANCE_FILES: [(&str, &str); 3] = [
+    ("waydroid.cfg", "deckard.cfg"),
+    ("waydroid_base.prop", "deckard_base.prop"),
+    ("waydroid.prop", "deckard.prop"),
+];
+const LEGACY_SECCOMP: &str = "waydroid.seccomp";
+const SECCOMP: &str = "deckard.seccomp";
+/// Android property prefixes, legacy first; the longest match wins.
+const PROPERTY_PREFIXES: [(&str, &str); 4] = [
+    ("ro.product.waydroid.", "ro.product.deckard."),
+    ("persist.waydroid.", "persist.deckard."),
+    ("ro.waydroid.", "ro.deckard."),
+    ("waydroid.", "deckard."),
+];
 /// Files a start remakes, by their path in the tree: tmpfiles' seed and the
 /// bridge's copies of the Shell's state.
-const REMADE: [&str; 3] = ["waydroid.cfg", "data/deckard/doze", "data/deckard/palette"];
+const REMADE: [&str; 4] = [
+    "waydroid.cfg",
+    "deckard.cfg",
+    "data/deckard/doze",
+    "data/deckard/palette",
+];
 const SYSTEM_PROCESSES: [&str; 1] = ["/usr/libexec/deckard-containerd"];
 const USER_PROCESSES: [&str; 3] = [
     SHELL,
@@ -63,8 +86,10 @@ pub enum Scope {
 enum Step {
     Work,
     Lxc,
+    Names,
     LxcConfig,
     Config,
+    Properties,
     Data,
     Desktop,
     Shell,
@@ -74,6 +99,8 @@ enum Step {
 enum Action {
     /// Renames a tree within its directory.
     Move(PathBuf, PathBuf),
+    /// Renames files, each replacing a copy a start seeded under its new name.
+    Rename(Vec<(PathBuf, PathBuf)>),
     /// Rewrites each file through the map.
     Rewrite(Vec<PathBuf>, fn(&str, Direction) -> String),
     /// Moves the desktop entries in this home.
@@ -153,8 +180,14 @@ fn map_lxc(text: &str, direction: Direction) -> String {
         let mapped = line.split_once('=').and_then(|(key, value)| {
             let (key, value) = (key.trim(), value.trim());
             let value = match key {
-                "lxc.rootfs.path" | "lxc.include" | "lxc.seccomp.profile" => {
-                    map_path(value, &paths)?
+                "lxc.rootfs.path" | "lxc.include" => map_path(value, &paths)?,
+                "lxc.seccomp.profile" => {
+                    let value = map_path(value, &paths).unwrap_or_else(|| value.to_owned());
+                    let (from, to) = pair(direction, LEGACY_SECCOMP, SECCOMP);
+                    match value.strip_suffix(from) {
+                        Some(directory) => format!("{directory}{to}"),
+                        None => value,
+                    }
                 }
                 "lxc.mount.entry" => {
                     let (source, rest) = value.split_once(' ')?;
@@ -187,6 +220,38 @@ fn map_config(text: &str, direction: Direction) -> String {
         result.push('\n');
     }
     result
+}
+
+/// An instance file with its `[waydroid]` section and Android property names
+/// moved.
+fn map_properties(text: &str, direction: Direction) -> String {
+    let (from_section, to_section) = pair(direction, "[waydroid]", "[deckard]");
+    let mut result = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let mapped = if trimmed.eq_ignore_ascii_case(from_section) {
+            Some(to_section.to_owned())
+        } else {
+            PROPERTY_PREFIXES.iter().find_map(|&(legacy, deckard)| {
+                let (from, to) = pair(direction, legacy, deckard);
+                let rest = trimmed.strip_prefix(from)?;
+                Some(format!("{}{to}{rest}", &line[..line.len() - trimmed.len()]))
+            })
+        };
+        result.push_str(mapped.as_deref().unwrap_or(line));
+        result.push('\n');
+    }
+    result
+}
+
+/// Renames `from` over `to`: the legacy file is the instance's state, a `to`
+/// beside it only what a start seeded.
+fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
+    if files::found(fs::symlink_metadata(from))?.is_none() {
+        return Ok(());
+    }
+    fs::rename(from, to)?;
+    fs::File::open(to.parent().unwrap_or(Path::new("/")))?.sync_all()
 }
 
 /// Whether the tree at `path` holds only what a start makes: directories,
@@ -294,6 +359,26 @@ impl Plan {
         for file in ["config", "config_nodes", "config_session"] {
             lxc_files.push(instance.join(file));
         }
+        let work = Path::new(names::WORK);
+        let mut renames = Vec::new();
+        for (legacy, deckard) in INSTANCE_FILES
+            .into_iter()
+            .chain([(LEGACY_SECCOMP, SECCOMP)])
+        {
+            let (from, to) = pair(direction, legacy, deckard);
+            let directory = if legacy == LEGACY_SECCOMP {
+                &instance
+            } else {
+                work
+            };
+            renames.push((directory.join(from), directory.join(to)));
+        }
+        // Deckard's names, which both directions find when these run.
+        let properties = vec![
+            names::CONFIG.into(),
+            work.join(INSTANCE_FILES[1].1),
+            work.join("deckard-props.list"),
+        ];
         Self {
             journal: PathBuf::from(SYSTEM_JOURNAL),
             steps: vec![
@@ -302,10 +387,15 @@ impl Plan {
                     Step::Lxc,
                     Action::Move(lxc.join(from_name), lxc.join(to_name)),
                 ),
+                (Step::Names, Action::Rename(renames)),
                 (Step::LxcConfig, Action::Rewrite(lxc_files, map_lxc)),
                 (
                     Step::Config,
                     Action::Rewrite(vec![names::CONFIG.into()], map_config),
+                ),
+                (
+                    Step::Properties,
+                    Action::Rewrite(properties, map_properties),
                 ),
             ],
             data: None,
@@ -333,7 +423,7 @@ fn load(path: &Path) -> io::Result<Option<Journal>> {
         return Ok(None);
     };
     let journal: Journal = serde_json::from_slice(&text).map_err(io::Error::other)?;
-    if journal.version != JOURNAL_VERSION {
+    if !(OLDEST_JOURNAL_VERSION..=JOURNAL_VERSION).contains(&journal.version) {
         return Err(io::Error::other("unknown migration journal version"));
     }
     Ok(Some(journal))
@@ -444,7 +534,7 @@ fn transact(direction: Direction, home: Option<&Path>) -> io::Result<()> {
     let previous = load(&plan.journal)?;
     if previous
         .as_ref()
-        .is_some_and(|j| j.complete && j.direction == direction)
+        .is_some_and(|j| j.complete && j.direction == direction && j.version == JOURNAL_VERSION)
     {
         return Ok(());
     }
@@ -454,7 +544,16 @@ fn transact(direction: Direction, home: Option<&Path>) -> io::Result<()> {
         Scope::System
     })?;
     let mut journal = match previous {
-        Some(journal) if journal.direction == direction => journal,
+        Some(mut journal) if journal.direction == direction => {
+            if journal.version < JOURNAL_VERSION {
+                journal.version = JOURNAL_VERSION;
+                journal.complete = false;
+                if let Some((from, to)) = &plan.data {
+                    journal.apps = android_apps(if from.exists() { from } else { to });
+                }
+            }
+            journal
+        }
         _ => Journal {
             version: JOURNAL_VERSION,
             direction,
@@ -498,6 +597,11 @@ fn transact(direction: Direction, home: Option<&Path>) -> io::Result<()> {
             Action::Rewrite(paths, map) => {
                 for path in paths {
                     rewrite(path, |text| map(text, direction))?;
+                }
+            }
+            Action::Rename(pairs) => {
+                for (from, to) in pairs {
+                    rename_over(from, to)?;
                 }
             }
             Action::Entries(home) => move_entries(home, direction)?,

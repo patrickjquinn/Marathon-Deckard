@@ -1,7 +1,7 @@
 lxc.uts.name = @NAME@
 
 lxc.apparmor.profile = unconfined
-lxc.seccomp.profile = @LXC@/waydroid.seccomp
+lxc.seccomp.profile = @LXC@/deckard.seccomp
 
 lxc.no_new_privs = 1
 

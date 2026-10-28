@@ -447,7 +447,6 @@ dependencies = [
  "deckard-core",
  "deckard-host-tools",
  "regex",
- "sha2",
  "tempfile",
 ]
 

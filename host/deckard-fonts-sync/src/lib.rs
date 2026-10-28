@@ -1,7 +1,7 @@
 //! Installs Marathon's fonts into Android's system overlay: the generated
 //! `fonts.xml`, the host font files it names, and whiteouts for the
 //! Android fonts it drops. They are generated from one Android image's font
-//! set, so they are installed only while `waydroid.cfg` names that image. A state file lists what was installed, so the
+//! set, so they are installed only while `deckard.cfg` names that image. A state file lists what was installed, so the
 //! next run removes exactly that. Every path is opened without following
 //! links.
 

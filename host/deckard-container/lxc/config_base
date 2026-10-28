@@ -1,4 +1,4 @@
-# Waydroid LXC Config
+# Deckard LXC config
 
 lxc.rootfs.path = @WORK@/rootfs
 lxc.arch = @ARCH@

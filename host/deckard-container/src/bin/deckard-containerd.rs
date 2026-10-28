@@ -22,7 +22,7 @@ fn audit_production() -> Result<()> {
         .get_session()?;
     let uid: u32 = fields.get("user_id").ok_or("no active session")?.parse()?;
     let work = Path::new(names::WORK);
-    DriverNodes::from_config(&work.join("waydroid.cfg"))?.audit(Path::new("/dev"))?;
+    DriverNodes::from_config(&work.join("deckard.cfg"))?.audit(Path::new("/dev"))?;
     let pulse = session_config::check(&fields, uid, Path::new("/run/user"))?;
     let rendered = session_config::render(&Stage::new(Path::new(names::RUN)), pulse);
     if rendered
@@ -34,10 +34,10 @@ fn audit_production() -> Result<()> {
     {
         return Err("session LXC config differs from the live config".into());
     }
-    let base = fs::read_to_string(work.join("waydroid_base.prop"))?;
+    let base = fs::read_to_string(work.join("deckard_base.prop"))?;
     let sensors = Path::new("/usr/bin/waydroid-sensord").exists();
     if properties::render(&base, &fields, sensors)?
-        != fs::read_to_string(work.join("waydroid.prop"))?
+        != fs::read_to_string(work.join("deckard.prop"))?
     {
         return Err("Android properties differ from the live config".into());
     }
@@ -63,7 +63,7 @@ fn main() -> Result<()> {
     match args[..] {
         ["--audit-production"] => return audit_production(),
         ["--audit-hardware"] => return audit_hardware(),
-        // waydroid.cfg is read at each Start, so an uninitialized instance
+        // deckard.cfg is read at each Start, so an uninitialized instance
         // still serves Init.
         ["--production-run"] => {}
         _ => return Err(USAGE.into()),

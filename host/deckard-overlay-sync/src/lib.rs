@@ -6,36 +6,9 @@ use std::io::{self, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
-use deckard_host_tools::names::android;
-use deckard_host_tools::{cfg, files};
+use deckard_host_tools::files;
 use rustix::fs::{AtFlags, FileType, Mode, Timespec, Timestamps};
 use rustix::process::{Gid, Uid};
-
-/// LineageOS 20's system and vendor images (2026-09-27), the only ones some
-/// overlay files are built for.
-const SYSTEM: &str = "1790477549";
-const VENDOR: &str = "1790486210";
-/// Overlay files built for that system image: patched or trimmed copies of
-/// its own files, which another image must not get.
-const SYSTEM_FILES: &[&str] = &[
-    "system/apex/com.android.permission/priv-app/PermissionController@TQ3A.230901.001/PermissionController.apk",
-    "system/etc/init/hw/init.rc",
-    "system/etc/init/hw/init.zygote64_32.rc",
-    "system/etc/init/atrace.rc",
-    "system/etc/init/audioserver.rc",
-    "system/etc/init/bpfloader.rc",
-    "system/etc/init/dmesgd.rc",
-    "system/etc/init/llkd.rc",
-    "system/etc/init/perfetto.rc",
-    "system/etc/cgroups.json",
-    "system/etc/task_profiles.json",
-    "system/etc/task_profiles/cgroups_28.json",
-    "system/etc/task_profiles/cgroups_29.json",
-    "system/etc/task_profiles/cgroups_30.json",
-    "system/etc/task_profiles/task_profiles_28.json",
-    "system/etc/task_profiles/task_profiles_29.json",
-    "system/etc/task_profiles/task_profiles_30.json",
-];
 
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -91,24 +64,6 @@ pub fn sync(paths: &Paths) -> io::Result<()> {
     let mut copied = Vec::new();
     copy_tree(&src, &dst, Path::new(""), &mut copied, &mut HashMap::new())?;
     write_lines(&list, &copied)?;
-    let config = files::read_optional(&paths.work.join("waydroid.cfg"))?;
-    let vendor = [android::COMPOSER];
-    let guards = [
-        ("system_datetime", SYSTEM, SYSTEM_FILES),
-        ("vendor_datetime", VENDOR, &vendor[..]),
-    ];
-    for (key, expected, path) in guards
-        .into_iter()
-        .flat_map(|(key, expected, paths)| paths.iter().map(move |path| (key, expected, *path)))
-    {
-        let have = cfg::get(&config, key).unwrap_or_default();
-        if have != expected {
-            remove_file(&safe_target(&dst, Path::new(path))?)?;
-            eprintln!(
-                "deckard-overlay-sync: {path} is for {key} {expected}, not '{have}'; left out"
-            );
-        }
-    }
     reconcile_whiteouts(paths, &dst)?;
     reconcile_properties(paths)
 }
@@ -274,10 +229,10 @@ fn reconcile_whiteouts(paths: &Paths, dst: &Path) -> io::Result<()> {
     write_lines(&list, &installed)
 }
 
-/// Rewrites the shipped properties into `waydroid.cfg`'s `[properties]`
-/// and `waydroid_base.prop`, dropping the ones a previous package shipped.
+/// Rewrites the shipped properties into `deckard.cfg`'s `[properties]`
+/// and `deckard_base.prop`, dropping the ones a previous package shipped.
 fn reconcile_properties(paths: &Paths) -> io::Result<()> {
-    let new = wanted(&paths.share.join("waydroid.prop"))?;
+    let new = wanted(&paths.share.join("deckard.prop"))?;
     let list = paths.work.join("deckard-props.list");
     let mut keys: BTreeSet<String> = files::read_optional(&list)?
         .lines()
@@ -294,8 +249,8 @@ fn reconcile_properties(paths: &Paths) -> io::Result<()> {
         };
         keys.iter().any(named)
     };
-    let cfg = paths.work.join("waydroid.cfg");
-    for path in [&cfg, &paths.work.join("waydroid_base.prop")] {
+    let cfg = paths.work.join("deckard.cfg");
+    for path in [&cfg, &paths.work.join("deckard_base.prop")] {
         if !path.is_file() {
             continue;
         }

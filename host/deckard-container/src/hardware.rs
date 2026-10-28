@@ -1,4 +1,4 @@
-//! `waydroidhardware` (`lineageos.waydroid.IHardware`), which Android calls to
+//! `deckardhardware` (`lineageos.deckard.IHardware`), which Android calls to
 //! suspend, reboot or shut down its container (upstream
 //! `tools/services/hardware_manager.py`).
 //!
@@ -100,7 +100,7 @@ impl Service for Hardware {
     }
 }
 
-/// Registers `waydroidhardware` and serves it until `stop` is set. Admitted
+/// Registers `deckardhardware` and serves it until `stop` is set. Admitted
 /// requests go to `requests`; success replies acknowledge admission, not
 /// completion.
 ///

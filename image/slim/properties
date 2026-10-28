@@ -1,6 +1,6 @@
-# Lines for the device's waydroid.cfg [properties] (docs/slim.md), by stage.
-# Waydroid writes them to waydroid_base.prop, which init reads as
-# /vendor/waydroid.prop after the image's build.prop, so they override it.
+# Lines for the device's deckard.cfg [properties] (docs/slim.md), by stage.
+# Waydroid writes them to deckard_base.prop, which init reads as
+# /vendor/deckard.prop after the image's build.prop, so they override it.
 
 # S2: one 64-bit zygote (zygote_secondary is disabled in the overlay's
 # init.zygote64_32.rc). ro.product.cpu.abilist set explicitly stops init
