@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 17:56:54 +0000
+Subject: [PATCH] DeckardService: Launch without Android's open animation
+
+Marathon animates an app's window in; Android's open transition came
+after it, so Android apps opened twice and looked foreign.
+
+Change-Id: I092eafa537dc4d35490c74f6267541c36c49c56e
+---
+ .../lineageos/platform/internal/DeckardService.java  | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/lineage/lib/main/java/org/lineageos/platform/internal/DeckardService.java b/lineage/lib/main/java/org/lineageos/platform/internal/DeckardService.java
+index 287d41b..dc2ec71 100644
+--- a/lineage/lib/main/java/org/lineageos/platform/internal/DeckardService.java
++++ b/lineage/lib/main/java/org/lineageos/platform/internal/DeckardService.java
+@@ -16,6 +16,7 @@
+ 
+ package org.lineageos.platform.internal;
+ 
++import android.app.ActivityOptions;
+ import android.app.ActivityTaskManager;
+ import android.app.Notification;
+ import android.app.NotificationChannel;
+@@ -356,17 +357,24 @@ public class DeckardService extends LineageSystemService {
+         if (taskId > 0) {
+             try {
+                 ActivityTaskManager.getService().moveTaskToFront(null /* appThread */,
+-                        "android", taskId, 0 /* flags */, null /* options */);
++                        "android", taskId, 0 /* flags */, plainLaunch().toBundle());
+                 return true;
+             } catch (Exception e) {
+                 Log.w(TAG, "moveTaskToFront(" + taskId + ") failed: " + e);
+             }
+         }
+ 
+-        mContext.startActivity(launchIntent);
++        mContext.startActivity(launchIntent, plainLaunch().toBundle());
+         return true;
+     }
+ 
++    /* Marathon animates the app's window in: Android's open animation
++     * after it looked foreign. (ro.deckard.starting_windows turns off
++     * Android's splash for every launch.) */
++    private ActivityOptions plainLaunch() {
++        return ActivityOptions.makeCustomAnimation(mContext, 0, 0);
++    }
++
+     private void saveApplicationIcon(String packageName) {
+         Drawable icon = null;
+         try {
+-- 
+2.55.0
+

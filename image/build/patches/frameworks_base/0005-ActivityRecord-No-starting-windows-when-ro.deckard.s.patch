@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Wed, 28 Oct 2026 18:27:10 +0000
+Subject: [PATCH] ActivityRecord: No starting windows when
+ ro.deckard.starting_windows is false
+
+Deckard's host draws an app's launch: its splash, then the app's window.
+Android's own splash came after it, from every path that starts or
+restarts an activity (a killed app's task included), and looked foreign.
+
+Change-Id: I8621be8e75a6783ddf87371b478acd74db11f792
+---
+ .../core/java/com/android/server/wm/ActivityRecord.java   | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index bd9ed05f9..e3d4cecd1 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -374,6 +374,9 @@ import java.util.function.Predicate;
+  * An entry in the history task, representing an activity.
+  */
+ final class ActivityRecord extends WindowToken {
++    private static final boolean DECKARD_STARTING_WINDOWS =
++            android.os.SystemProperties.getBoolean("ro.deckard.starting_windows", true);
++
+     private static final String TAG = TAG_WITH_CLASS_NAME ? "ActivityRecord" : TAG_ATM;
+     private static final String TAG_ADD_REMOVE = TAG + POSTFIX_ADD_REMOVE;
+     private static final String TAG_APP = TAG + POSTFIX_APP;
+@@ -7107,6 +7110,11 @@ final class ActivityRecord extends WindowToken {
+             // We don't show starting window for overlay activities.
+             return;
+         }
++        if (!DECKARD_STARTING_WINDOWS) {
++            // Marathon draws an app's launch: Android's splash after it
++            // looked foreign.
++            return;
++        }
+         final ActivityOptions startOptions = candidateOptions != null
+                 ? candidateOptions : mPendingOptions;
+         if (startOptions != null
+-- 
+2.55.0
+
