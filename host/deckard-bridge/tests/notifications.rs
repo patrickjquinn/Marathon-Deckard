@@ -127,6 +127,22 @@ impl FakeHub {
     }
 }
 
+/// The saved state once it equals `want`, or as it is after five seconds:
+/// the close signal is handled on the bridge's own thread.
+fn saved_settles(
+    path: &std::path::Path,
+    want: &serde_json::Value,
+) -> TestResult<serde_json::Value> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let saved = serde_json::from_slice(&std::fs::read(path)?)?;
+        if &saved == want || std::time::Instant::now() > deadline {
+            return Ok(saved);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn post(key: &str, title: &str, auto_cancel: bool) -> messages::Post {
     let message = json!({
         "key": key, "pkg": "org.example.App", "label": "Example",
@@ -268,9 +284,8 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
         rx.recv_timeout(Duration::from_millis(750)).is_err(),
         "a tapped non-auto-cancel row must not be dismissed"
     );
-    let saved = std::fs::read(home.path().join("notifications.json"))?;
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&saved)?,
+        saved_settles(&home.path().join("notifications.json"), &json!({}))?,
         json!({})
     );
 
