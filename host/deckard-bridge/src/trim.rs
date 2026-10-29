@@ -82,7 +82,10 @@ fn run(shared: &Shared, cgroup: &Path) {
                 break;
             }
             drop(guard);
-            trim(cgroup);
+            trim(cgroup, || {
+                let guard = sync::lock(state);
+                guard.android == Some(false) && guard.changes == idle_since
+            });
             guard = sync::lock(state);
             delay = AGAIN;
         }
@@ -100,20 +103,20 @@ fn wait<'a>(
         .0
 }
 
-fn trim(cgroup: &Path) {
+fn trim(cgroup: &Path, still_idle: impl Fn() -> bool) {
     // No cgroup: Android is not running.
     let Some(before) = charged(cgroup) else {
         return;
     };
     let started = Instant::now();
-    // All of it: the kernel reclaims what it can and says EAGAIN for the rest.
-    match fs::write(cgroup.join("memory.reclaim"), before.to_string()) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::WouldBlock => {}
-        Err(error) => {
-            eprintln!("deckard-bridge: idle trim failed: {error}");
-            return;
-        }
+    // Recheck foreground state between bounded requests. A single full-cgroup
+    // reclaim can run for seconds after the user has returned to Android.
+    let result = reclaim_steps(before, still_idle, |bytes| {
+        fs::write(cgroup.join("memory.reclaim"), bytes.to_string())
+    });
+    if let Err(error) = result {
+        eprintln!("deckard-bridge: idle trim failed: {error}");
+        return;
     }
     let after = charged(cgroup).unwrap_or(before);
     eprintln!(
@@ -130,4 +133,77 @@ fn charged(cgroup: &Path) -> Option<u64> {
         .trim()
         .parse()
         .ok()
+}
+
+/// The original charge bounds work even when Android allocates while idle.
+fn reclaim_steps(
+    mut remaining: u64,
+    still_idle: impl Fn() -> bool,
+    mut reclaim: impl FnMut(u64) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    while remaining > 0 && still_idle() {
+        let bytes = remaining.min(32 * MB);
+        match reclaim(bytes) {
+            Ok(()) => remaining -= bytes,
+            // Nothing more can be reclaimed without waiting for new activity.
+            Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn returning_to_android_stops_reclaim_after_current_step() -> std::io::Result<()> {
+        let idle = Cell::new(true);
+        let calls = Cell::new(0);
+        reclaim_steps(
+            1024 * MB,
+            || idle.get(),
+            |bytes| {
+                assert_eq!(bytes, 32 * MB);
+                calls.set(calls.get() + 1);
+                idle.set(false);
+                Ok(())
+            },
+        )?;
+        assert_eq!(calls.get(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn exhausted_reclaim_stops_without_retrying_the_entire_budget() -> std::io::Result<()> {
+        let mut calls = 0;
+        reclaim_steps(
+            1024 * MB,
+            || true,
+            |_| {
+                calls += 1;
+                Err(std::io::Error::from(ErrorKind::WouldBlock))
+            },
+        )?;
+        assert_eq!(calls, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn reclaim_is_bounded_by_the_initial_charge() -> std::io::Result<()> {
+        let mut total = 0;
+        reclaim_steps(
+            65 * MB,
+            || true,
+            |bytes| {
+                assert!(bytes <= 32 * MB);
+                total += bytes;
+                Ok(())
+            },
+        )?;
+        assert_eq!(total, 65 * MB);
+        Ok(())
+    }
 }

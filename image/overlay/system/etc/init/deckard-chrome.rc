@@ -9,6 +9,9 @@ on init
     setprop deckard.active_apps all
 
 on property:sys.boot_completed=1
+    # Marathon owns app/window transitions; Android presents the app directly.
+    exec_background - root root -- /system/bin/settings put global window_animation_scale 0
+    exec_background - root root -- /system/bin/settings put global transition_animation_scale 0
     exec_background - root root -- /system/bin/cmd uimode night yes
     exec_background - root root -- /system/bin/settings put global policy_control immersive.full=*
     exec_background - root root -- /system/bin/settings put secure screensaver_enabled 0
