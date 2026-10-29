@@ -26,3 +26,6 @@ debug.sf.late.app.duration=11666666
 # Marathon draws an app's launch, splash included: no Android splash after it
 # (frameworks/base patch; older images ignore it).
 ro.deckard.starting_windows=false
+# Android's PinnerService locked 20 MB of WebView in RAM for an app that is
+# rarely open in Deckard.
+pinner.pin_webview_size=0

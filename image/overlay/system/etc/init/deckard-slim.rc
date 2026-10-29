@@ -7,6 +7,9 @@
 # would keep them (32 cached, 8 empty before any trim), so it keeps two.
 # Android apps with a Marathon window are visible, never cached, and
 # Marathon's own lifecycle decides when they go.
+# Apps for services Deckard skips or Marathon provides (updates, health,
+# ads, device lock, Google key provisioning) are disabled; each restarted
+# after the kill and held 10-40 MB.
 # Daemons nothing here uses: adb (Waydroid attaches with lxc; init.waydroid.rc
 # starts it at boot_completed, so it is stopped with the kill), tracing,
 # incident reports, storage stats, mDNS (netd starts mdnsd again when an app
@@ -16,6 +19,18 @@ on property:sys.boot_completed=1
     exec_background - root root -- /system/bin/settings put secure user_setup_complete 1
     exec_background - root root -- /system/bin/device_config put activity_manager max_cached_processes 2
     exec_background - root root -- /system/bin/sh -c "sleep 60; /system/bin/am kill-all; setprop ctl.stop adbd; setprop ctl.stop mdnsd"
+    exec_background - root root -- /system/bin/pm disable-user --user 0 org.lineageos.updater
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.devicediagnostics
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.healthconnect.controller
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.health.connect.backuprestore
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.adservices.api
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.ondevicepersonalization.services
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.federatedcompute.services
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.rkpdapp
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.devicelockcontroller
+    exec_background - root root -- /system/bin/pm disable-user --user 0 com.android.avatarpicker
+    exec_background - root root -- /system/bin/pm disable-user --user 0 org.lineageos.camelot
+    exec_background - root root -- /system/bin/pm disable-user --user 0 org.calyxos.backup.contacts
     setprop persist.traced.enable 0
     stop adb_root
     stop incidentd
