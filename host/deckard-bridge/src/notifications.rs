@@ -55,8 +55,9 @@ struct Entry {
 struct State {
     entries: BTreeMap<String, Entry>,
     keys: HashMap<u32, String>,
-    /// Rows the person closed, held `DISMISS_DELAY` for a late tap.
-    closing: HashMap<u32, (String, Entry, u64)>,
+    /// Rows the person closed, held `DISMISS_DELAY` for a late tap, with
+    /// when they closed.
+    closing: HashMap<u32, (String, Entry, u64, Instant)>,
     next_token: u64,
     last_toast: HashMap<String, Instant>,
 }
@@ -318,7 +319,7 @@ impl Notifications {
                 let tracked = state.keys.get(&id);
                 let tracked = tracked.and_then(|key| Some((key, state.entries.get_mut(key)?)));
                 let closing = state.closing.get_mut(&id);
-                let closing = closing.map(|(key, entry, _)| (&*key, entry));
+                let closing = closing.map(|(key, entry, _, _)| (&*key, entry));
                 if let Some((key, entry)) = tracked.or(closing) {
                     entry.invoked_at = Some(Instant::now());
                     let action = validate::truncate(&action, 16);
@@ -349,7 +350,9 @@ impl Notifications {
                 if reason == 2 {
                     let token = state.next_token;
                     state.next_token = token.wrapping_add(1);
-                    state.closing.insert(id, (key, entry, token));
+                    state
+                        .closing
+                        .insert(id, (key, entry, token, Instant::now()));
                     let due = (Instant::now() + DISMISS_DELAY, id, token);
                     if let Err(TrySendError::Full(_)) = self.0.dismissals.try_send(due) {
                         eprintln!("deckard-bridge: too many dismissals; {id} stays");
@@ -422,14 +425,18 @@ fn dismiss(notifications: &Weak<Inner>, due: &Receiver<Dismissal>) {
         };
         let notifications = Notifications(inner);
         let mut state = notifications.lock();
-        let current = state.closing.get(&id).map(|(_, _, current)| *current);
+        let current = state.closing.get(&id).map(|(_, _, current, _)| *current);
         if current != Some(token) {
             continue;
         }
-        let Some((key, entry, _)) = state.closing.remove(&id) else {
+        let Some((key, entry, _, closed)) = state.closing.remove(&id) else {
             continue;
         };
-        let tapped = entry.invoked_at.is_some_and(|at| at.elapsed() < TAP_GRACE);
+        // Counted from the close, not from now: a late wake must not turn a
+        // tap just before it into a dismissal. A tap after it counts too.
+        let tapped = entry
+            .invoked_at
+            .is_some_and(|at| closed.saturating_duration_since(at) < TAP_GRACE);
         if entry.auto_cancel || !tapped {
             notifications.send(serde_json::json!({"t": "dismiss", "key": key}));
         }
