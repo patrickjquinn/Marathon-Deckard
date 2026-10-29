@@ -378,7 +378,7 @@ fn main() -> Result<(), Error> {
         bus: bus.clone(),
         packages,
         reclaimer: Reclaimer::new(
-            cgroup,
+            cgroup.clone(),
             PathBuf::from("/proc/pressure/memory"),
             Arc::clone(&to_system),
         ),
@@ -412,6 +412,7 @@ fn main() -> Result<(), Error> {
         boot_watchdog.set_active_since(watched.active_since_ms());
     });
     deckard_bridge::report("unit watch failed", watch);
+    deckard_bridge::trim::start(bus.inner(), cgroup);
     let doze = shell_sync::sync_doze(&bus, &data.join("deckard/doze"));
     deckard_bridge::report("Doze sync failed", doze);
     let palette = shell_sync::sync_palette(&bus, &data.join("deckard/palette"));
