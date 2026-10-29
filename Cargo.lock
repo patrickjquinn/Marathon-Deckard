@@ -454,6 +454,8 @@ dependencies = [
 name = "deckard-runtime"
 version = "0.4.0"
 dependencies = [
+ "async-channel",
+ "async-io",
  "deckard-host-tools",
  "deckard-launch",
  "futures-lite",

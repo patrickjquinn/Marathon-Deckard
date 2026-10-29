@@ -17,6 +17,8 @@ signal-hook.workspace = true
 zbus = { workspace = true, features = ["proxy", "service"] }
 
 [dev-dependencies]
+async-channel.workspace = true
+async-io.workspace = true
 tempfile.workspace = true
 
 [lints]

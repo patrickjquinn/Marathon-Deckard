@@ -4,6 +4,7 @@ use zbus::runtime::traits::TaskHandle as _;
 
 mod desktop;
 mod monitor;
+mod priority;
 mod timezone;
 
 use std::collections::HashMap;
@@ -378,6 +379,7 @@ pub fn session_start() -> Result<Ended> {
     fs::remove_file(&marker)?;
     let system_bus = bus::system()?;
     start_container(&system_bus, &payload)?;
+    priority::start(&session_bus, &system_bus);
 
     let data_home = PathBuf::from(&payload["xdg_data_home"]);
     let export_stop = Arc::clone(&stop);

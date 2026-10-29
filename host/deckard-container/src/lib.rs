@@ -13,6 +13,7 @@ pub mod lxc;
 pub mod mounts;
 pub mod network;
 pub mod properties;
+mod resources;
 pub mod session_config;
 
 pub use deckard_launch::Result;

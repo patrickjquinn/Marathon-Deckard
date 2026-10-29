@@ -47,6 +47,7 @@ pub trait ContainerManager {
     fn start(&self, session: HashMap<String, String>) -> zbus::Result<()>;
     fn stop(&self, quit_session: bool) -> zbus::Result<()>;
     fn freeze(&self) -> zbus::Result<()>;
+    fn set_resource_profile(&self, profile: &str) -> zbus::Result<()>;
     fn unfreeze(&self) -> zbus::Result<()>;
     fn get_session(&self) -> zbus::Result<HashMap<String, String>>;
 }

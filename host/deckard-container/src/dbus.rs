@@ -201,9 +201,17 @@ struct Backend {
     suspend_stops: bool,
     /// Android is stopped but its mounts and network are still up.
     teardown_pending: bool,
+    resource_profile: crate::resources::Profile,
 }
 
 impl Backend {
+    fn apply_resource_profile(&self) -> Result<()> {
+        let group =
+            Path::new("/sys/fs/cgroup").join(format!("lxc.payload.{}", self.manager.lxc.name));
+        self.resource_profile.apply(&group)?;
+        Ok(())
+    }
+
     fn config_path(&self) -> PathBuf {
         self.manager.mounts.work.join("deckard.cfg")
     }
@@ -277,6 +285,9 @@ impl Backend {
                 let _ = stage.release();
             }
             return Err(error);
+        }
+        if let Err(error) = self.apply_resource_profile() {
+            eprintln!("deckard-containerd: host resource profile: {error}");
         }
         self.start_hardware();
         Ok(())
@@ -411,6 +422,7 @@ impl ContainerService {
             hardware_stop: None,
             suspend_stops: false,
             teardown_pending: false,
+            resource_profile: crate::resources::Profile::Background,
         };
         let state = ServiceState {
             backend,
@@ -501,7 +513,26 @@ impl ContainerService {
             {
                 session.quit();
             }
+            if let Err(error) = state.backend.apply_resource_profile() {
+                eprintln!("deckard-containerd: host resource profile: {error}");
+            }
             Ok(())
+        })
+        .await
+    }
+
+    async fn set_resource_profile_authorized(
+        &self,
+        name: String,
+        caller: Caller,
+    ) -> fdo::Result<()> {
+        let profile = crate::resources::Profile::parse(&name)
+            .ok_or_else(|| fdo::Error::InvalidArgs("unknown resource profile".into()))?;
+        self.locked(move |state| {
+            // Only the authenticated session process can promote Android.
+            state.authorize_control(caller)?;
+            state.backend.resource_profile = profile;
+            state.backend.apply_resource_profile().map_err(failed)
         })
         .await
     }
@@ -601,6 +632,17 @@ impl ContainerService {
             }
         });
         Ok(())
+    }
+
+    async fn set_resource_profile(
+        &self,
+        profile: &str,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] header: Header<'_>,
+    ) -> fdo::Result<()> {
+        let caller = Caller::of(conn, &header).await?;
+        self.set_resource_profile_authorized(profile.to_owned(), caller)
+            .await
     }
 
     async fn freeze(
@@ -849,6 +891,40 @@ mod tests {
     }
 
     #[test]
+    fn resource_policy_rejects_a_different_process_of_the_same_user() -> Result<()> {
+        let service = service()?;
+        let pid = Pid::from_raw(std::process::id() as i32).ok_or("invalid test pid")?;
+        {
+            let mut state = service.state.lock().map_err(poisoned)?;
+            state.session = Some(Session {
+                fields: HashMap::new(),
+                owner: Caller {
+                    uid: 1000,
+                    pid: std::process::id(),
+                },
+                pidfd: rustix::process::pidfd_open(pid, PidfdFlags::empty())?,
+            });
+        }
+        let other = Caller {
+            uid: 1000,
+            pid: std::process::id() + 1,
+        };
+        let result =
+            async_io::block_on(service.set_resource_profile_authorized("foreground".into(), other));
+        assert!(matches!(result, Err(fdo::Error::AccessDenied(_))));
+        assert_eq!(
+            service
+                .state
+                .lock()
+                .map_err(poisoned)?
+                .backend
+                .resource_profile,
+            crate::resources::Profile::Background
+        );
+        Ok(())
+    }
+
+    #[test]
     fn invalid_session_identity_is_rejected() {
         for fields in [
             HashMap::new(),
@@ -874,6 +950,7 @@ mod tests {
             "GetSession",
             "GetProperty",
             "SetProperty",
+            "SetResourceProfile",
         ] {
             assert!(
                 xml.contains(&format!("name=\"{method}\"")),
