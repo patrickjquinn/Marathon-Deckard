@@ -9,9 +9,9 @@ use std::process;
 
 use deckard_core::palette::{self, Color, Theme};
 use deckard_core::runtime_state::SHELL_BUS_NAME;
+use zbus::Connection;
 use zbus::MatchRule;
-use zbus::blocking::Connection;
-use zbus::zvariant::OwnedValue;
+use zbus::OwnedVariant as OwnedValue;
 
 const POWER_PATH: &str = "/org/marathonos/Shell/Power";
 const POWER_INTERFACE: &str = "org.marathonos.Shell.Power1";
@@ -53,9 +53,9 @@ fn write(path: &Path, content: &str, done: &str) {
 /// Returns the D-Bus error that prevented the subscription.
 pub fn sync_doze(bus: &Connection, path: &Path) -> zbus::Result<()> {
     let rule = crate::signals(SHELL_BUS_NAME, POWER_PATH, POWER_INTERFACE)?;
-    let rule = rule.member("StateChanged")?.build();
+    let rule = rule.member("StateChanged").build();
     let path = path.to_owned();
-    crate::relay(bus, rule, 8, move |signal| {
+    crate::relay(bus, rule?, 8, move |signal| {
         let state = signal.body().deserialize::<State>();
         match state
             .ok()
@@ -77,7 +77,8 @@ fn refresh_palette(bus: &Connection, path: &Path) {
         "GetAmbience",
         &(),
     );
-    let ambience = match reply.and_then(|reply| reply.body().deserialize::<State>()) {
+    let ambience = match zbus::block_on(reply).and_then(|reply| reply.body().deserialize::<State>())
+    {
         Ok(ambience) => ambience,
         Err(error) => {
             eprintln!("deckard-bridge: cannot read the ambience: {error}");
@@ -104,7 +105,7 @@ fn refresh_palette(bus: &Connection, path: &Path) {
 pub fn sync_palette(bus: &Connection, path: &Path) -> zbus::Result<()> {
     let ambience = crate::signals(SHELL_BUS_NAME, AMBIENCE_PATH, AMBIENCE_INTERFACE)?;
     let rules: Vec<(MatchRule<'static>, crate::Relevant)> = vec![
-        (ambience.member("AmbienceChanged")?.build(), |_| true),
+        (ambience.member("AmbienceChanged").build()?, |_| true),
         (crate::owner_changes(SHELL_BUS_NAME)?, |_| true),
     ];
     let (bus, path) = (bus.clone(), path.to_owned());

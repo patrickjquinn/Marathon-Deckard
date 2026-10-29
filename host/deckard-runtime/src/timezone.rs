@@ -43,15 +43,15 @@ fn apply(config: &BinderConfig, zone: &str) -> Result<()> {
 }
 
 fn follow(config: &BinderConfig, stop: &AtomicBool) -> Result<()> {
-    let timedate = TimedateProxyBlocking::new(&bus::system()?)?;
-    let changes = timedate.receive_timezone_changed();
-    apply(config, &timedate.timezone()?)?;
+    let timedate = zbus::block_on(TimedateProxy::new(&bus::system()?))?;
+    let changes =
+        futures_lite::stream::block_on(zbus::block_on(timedate.receive_timezone_changed()));
+    apply(config, &zbus::block_on(timedate.timezone())?)?;
     for change in changes {
         if stop.load(Ordering::Acquire) {
             break;
         }
-        if let Err(error) = change
-            .get()
+        if let Err(error) = zbus::block_on(change.get())
             .map_err(Into::into)
             .and_then(|zone| apply(config, &zone))
         {

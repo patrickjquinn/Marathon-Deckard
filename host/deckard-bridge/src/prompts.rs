@@ -4,6 +4,8 @@
 //! `Permissions1.PromptAndroid` and sends `perm_answer` with the person's
 //! choice. `unsupported` hands a request back to Android's own dialog.
 
+use zbus::runtime::traits::TaskHandle as _;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -14,7 +16,7 @@ use deckard_core::{json, keel, sync};
 use futures_lite::future;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use zbus::zvariant::{OwnedValue, Str};
+use zbus::{OwnedVariant as OwnedValue, Str};
 
 use crate::Outbound;
 use crate::contract::{self, VariantMap};
@@ -22,7 +24,6 @@ use crate::contract::{self, VariantMap};
 const SHELL: &str = "org.marathonos.Shell";
 const PATH: &str = "/org/marathonos/Shell/Permissions";
 const INTERFACE: &str = "org.marathonos.Shell.Permissions1";
-const NO_REPLY: &str = "org.freedesktop.DBus.Error.NoReply";
 /// Prompts the Shell may hold at once; more are left to Android.
 pub const MAX_WAITING: usize = 8;
 const TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -181,7 +182,9 @@ impl PermissionPrompts {
                 Some(Err(error)) => {
                     eprintln!("deckard-bridge: PromptAndroid: {error}");
                     let no_reply = match &error {
-                        zbus::Error::MethodError(name, ..) => name.as_str() == NO_REPLY,
+                        zbus::Error::FDO(error) => {
+                            matches!(error.as_ref(), zbus::fdo::Error::NoReply(_))
+                        }
                         _ => false,
                     };
                     (if no_reply { "cancel" } else { "unsupported" }, false)
@@ -190,7 +193,7 @@ impl PermissionPrompts {
             };
             this.answer(&id, answer, precise);
         };
-        self.bus.executor().spawn(ask, "permission-prompt").detach();
+        self.bus.spawn("permission-prompt", ask).detach();
     }
 
     /// DeckardSystem went away: withdraw every prompt, answering none.
@@ -215,9 +218,6 @@ impl PermissionPrompts {
                 eprintln!("deckard-bridge: {method}: {error}");
             }
         };
-        self.bus
-            .executor()
-            .spawn(cancel, "permission-cancel")
-            .detach();
+        self.bus.spawn("permission-cancel", cancel).detach();
     }
 }

@@ -2,6 +2,8 @@
 //! numbers, addresses, places and settings pages routed to Marathon apps, and
 //! file pickers and camera captures whose files cross into `xfer/<id>/`.
 
+use zbus::runtime::traits::TaskHandle as _;
+
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -25,8 +27,8 @@ use rustix::path::Arg;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use zbus::message::Message;
-use zbus::zvariant::{DynamicType, OwnedValue, Value as Variant};
 use zbus::{Connection, Proxy};
+use zbus::{DynamicType, OwnedVariant as OwnedValue, Variant};
 
 /// Queues a message on the authenticated system channel; false while
 /// DeckardSystem is not connected.
@@ -637,7 +639,7 @@ impl Tasks {
             task.await;
             drop(running);
         };
-        bus.executor().spawn(task, name).detach();
+        bus.spawn(name.to_owned(), task).detach();
     }
 }
 
@@ -683,7 +685,7 @@ impl Intents {
     }
 
     fn spawn(&self, name: &str, task: impl Future<Output = ()> + Send + 'static) {
-        self.bus.executor().spawn(task, name).detach();
+        self.bus.spawn(name.to_owned(), task).detach();
     }
 
     fn send(&self, message: Value) {

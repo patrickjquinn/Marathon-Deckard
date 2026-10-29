@@ -14,9 +14,9 @@ use deckard_core::{ids, png_guard};
 use deckard_host_tools::bus;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
+use zbus::DynamicType;
 use zbus::message::{Flags, Header, Message};
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::DynamicType;
 use zbus::{Connection, DBusError, interface};
 
 use crate::auth;
@@ -75,10 +75,10 @@ where
     B: Serialize + DynamicType,
 {
     let (service, path, interface) = to;
-    let call = Message::method_call(path, method)?.destination(service)?;
+    let call = Message::method_call(path, method).destination(service);
     let call = call
-        .interface(interface)?
-        .with_flags(Flags::NoReplyExpected)?;
+        .interface(interface)
+        .with_flags(Flags::NO_REPLY_EXPECTED);
     bus.send(&call.build(body)?).await
 }
 

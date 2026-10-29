@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use deckard_core::runtime_state::SHELL_BUS_NAME;
 use serde_json::{Map, Value, json};
-use zbus::blocking::{Connection, Proxy};
-use zbus::zvariant::OwnedValue;
+use zbus::OwnedVariant as OwnedValue;
+use zbus::{Connection, Proxy};
 use zbus::{MatchRule, Message};
 
 use crate::app_channel::ChannelHandle;
@@ -61,8 +61,8 @@ pub fn spawn(bus: Connection, channel: ChannelHandle) -> zbus::Result<Wake> {
     );
     let settings = crate::signals(SHELL_BUS_NAME, SETTINGS_PATH, SETTINGS_INTERFACE)?;
     let rules: Vec<(MatchRule<'static>, Relevant)> = vec![
-        (audio?.member("StateChanged")?.build(), |_| true),
-        (settings.member("PropertyChanged")?.build(), setting_changed),
+        (audio?.member("StateChanged").build()?, |_| true),
+        (settings.member("PropertyChanged").build()?, setting_changed),
         (crate::owner_changes(SHELL_BUS_NAME)?, crate::gained_owner),
     ];
     let (mut last, mut sent) = (None, None);
@@ -93,7 +93,12 @@ fn setting_changed(message: &Message) -> bool {
 }
 
 fn read_shell(bus: &Connection) -> zbus::Result<AudioState> {
-    let proxy = Proxy::new(bus, SHELL_BUS_NAME, SETTINGS_PATH, SETTINGS_INTERFACE)?;
-    let state: HashMap<String, OwnedValue> = proxy.call("GetState", &())?;
+    let proxy = zbus::block_on(Proxy::new(
+        bus,
+        SHELL_BUS_NAME,
+        SETTINGS_PATH,
+        SETTINGS_INTERFACE,
+    ))?;
+    let state: HashMap<String, OwnedValue> = zbus::block_on(proxy.call("GetState", &()))?;
     Ok(AudioState::from_shell(&state))
 }

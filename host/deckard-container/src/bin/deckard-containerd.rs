@@ -11,15 +11,19 @@ use deckard_container::session_config::{self, Stage};
 use deckard_container::{Result, hardware, properties};
 use deckard_host_tools::names;
 use deckard_launch::binder::{self, BinderConfig};
-use deckard_launch::session::ContainerManagerProxyBlocking;
+use deckard_launch::session::ContainerManagerProxy;
 use futures_lite::{StreamExt, future};
 
 const USAGE: &str =
     "usage: deckard-containerd --audit-production | --audit-hardware | --production-run";
 
 fn audit_production() -> Result<()> {
-    let fields = ContainerManagerProxyBlocking::new(&zbus::blocking::Connection::system()?)?
-        .get_session()?;
+    let fields = zbus::block_on(
+        zbus::block_on(ContainerManagerProxy::new(&zbus::block_on(
+            zbus::Connection::system(),
+        )?))?
+        .get_session(),
+    )?;
     let uid: u32 = fields.get("user_id").ok_or("no active session")?.parse()?;
     let work = Path::new(names::WORK);
     DriverNodes::from_config(&work.join("deckard.cfg"))?.audit(Path::new("/dev"))?;

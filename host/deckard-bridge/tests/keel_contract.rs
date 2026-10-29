@@ -18,10 +18,10 @@ use std::time::{Duration, Instant};
 use deckard_bridge::keel::KeelApps;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use serde_json::{Map, Value, json};
-use zbus::blocking::fdo::DBusProxy;
-use zbus::blocking::{Connection, Proxy};
+use zbus::Variant;
+use zbus::fdo::DBusProxy;
 use zbus::interface;
-use zbus::zvariant::Value as Variant;
+use zbus::{Connection, Proxy};
 
 const NAME: &str = "deckard.org.example.chat";
 const PATH: &str = "/org/shipwright/Keel/Actions";
@@ -48,7 +48,7 @@ impl FakeShell {
         &self,
         action: String,
         arguments: String,
-        _options: HashMap<String, zbus::zvariant::OwnedValue>,
+        _options: HashMap<String, zbus::OwnedVariant>,
     ) -> String {
         let args: Value = serde_json::from_str(&arguments).unwrap();
         let mut shell = self.0.lock().unwrap();
@@ -135,19 +135,26 @@ fn start(sent: &Sent, trusted: PathBuf, state: PathBuf) -> KeelApps {
         sent.lock().unwrap().push((route, object(value.clone())));
         true
     });
-    let bus = Connection::session().unwrap().inner().clone();
+    let bus = zbus::block_on(Connection::session()).unwrap();
     KeelApps::start(bus, send, vec![trusted], state).unwrap()
 }
 
 fn call(
     method: &str,
-    body: &(impl serde::Serialize + zbus::zvariant::DynamicType),
+    body: &(impl serde::Serialize + zbus::DynamicType),
 ) -> Result<String, String> {
-    let client = Connection::session().unwrap();
-    let proxy = Proxy::new(&client, NAME, PATH, "org.shipwright.Keel.Actions").unwrap();
-    match proxy.call_method(method, body) {
+    let client = zbus::block_on(Connection::session()).unwrap();
+    let proxy = zbus::block_on(Proxy::new(
+        &client,
+        NAME,
+        PATH,
+        "org.shipwright.Keel.Actions",
+    ))
+    .unwrap();
+    match zbus::block_on(proxy.call_method(method, body)) {
         Ok(reply) => Ok(reply.body().deserialize::<String>().unwrap()),
         Err(zbus::Error::MethodError(name, _, _)) => Err(name.as_str().to_owned()),
+        Err(zbus::Error::FDO(error)) => Err(zbus::DBusError::name(error.as_ref()).to_string()),
         Err(error) => panic!("{method}: {error}"),
     }
 }
@@ -192,19 +199,24 @@ fn android_apps_serve_keel_actions() {
     if env::var_os("DECKARD_BRIDGE_PRIVATE_BUS").is_none() {
         return;
     }
-    let dbus = DBusProxy::new(&Connection::session().unwrap()).unwrap();
+    let dbus = zbus::block_on(DBusProxy::new(
+        &zbus::block_on(Connection::session()).unwrap(),
+    ))
+    .unwrap();
     let owner = || {
-        dbus.get_name_owner(NAME.try_into().unwrap())
+        zbus::block_on(dbus.get_name_owner(NAME.try_into().unwrap()))
             .ok()
             .map(|owner| owner.to_string())
     };
     let shell_state = Shared::default();
-    let shell = Connection::session().unwrap();
-    shell
-        .object_server()
-        .at(PATH, FakeShell(Arc::clone(&shell_state)))
-        .unwrap();
-    shell.request_name("org.marathonos.shell").unwrap();
+    let shell = zbus::block_on(Connection::session()).unwrap();
+    zbus::block_on(
+        shell
+            .object_server()
+            .at(PATH, FakeShell(Arc::clone(&shell_state))),
+    )
+    .unwrap();
+    zbus::block_on(shell.request_name("org.marathonos.shell")).unwrap();
 
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state/apps.json");
@@ -294,14 +306,12 @@ fn android_apps_serve_keel_actions() {
     assert_eq!(share.join().unwrap(), Ok("{}".into()));
 
     // A shell that expects the window shows it itself.
-    shell
-        .object_server()
-        .at(
-            "/org/marathonos/Shell/Navigation",
-            FakeNavigation(Arc::clone(&shell_state)),
-        )
-        .unwrap();
-    shell.request_name("org.marathonos.Shell").unwrap();
+    zbus::block_on(shell.object_server().at(
+        "/org/marathonos/Shell/Navigation",
+        FakeNavigation(Arc::clone(&shell_state)),
+    ))
+    .unwrap();
+    zbus::block_on(shell.request_name("org.marathonos.Shell")).unwrap();
     shell_state.lock().unwrap().launched.clear();
     let search = invoke_later("app.search", r#"{"query":"anna"}"#, false);
     let query = take(&sent, BridgeRoute::User);
@@ -353,30 +363,28 @@ fn android_apps_serve_keel_actions() {
     // An Android app coming to the front is checked for the shell.
     let navigation = "org.marathonos.Shell.Navigation1";
     let path = "/org/marathonos/Shell/Navigation";
-    shell
-        .emit_signal(
-            None::<&str>,
-            path,
-            navigation,
-            "ForegroundAppChanged",
-            &(NAME,),
-        )
-        .unwrap();
+    zbus::block_on(shell.emit_signal(
+        None::<&str>,
+        path,
+        navigation,
+        "ForegroundAppChanged",
+        &(NAME,),
+    ))
+    .unwrap();
     let check = take(&sent, BridgeRoute::System);
     assert_eq!(check["op"], "secure");
     answer(&keel, &check, json!({"ok": true, "secure": true}));
     wait("a third secure report", || {
         shell_state.lock().unwrap().secure.len() == 3
     });
-    shell
-        .emit_signal(
-            None::<&str>,
-            path,
-            navigation,
-            "ForegroundAppChanged",
-            &("browser",),
-        )
-        .unwrap();
+    zbus::block_on(shell.emit_signal(
+        None::<&str>,
+        path,
+        navigation,
+        "ForegroundAppChanged",
+        &("browser",),
+    ))
+    .unwrap();
     thread::sleep(Duration::from_millis(100));
     assert!(sent.lock().unwrap().is_empty());
 

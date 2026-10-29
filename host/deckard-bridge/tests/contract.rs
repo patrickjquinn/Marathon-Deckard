@@ -9,9 +9,9 @@ use deckard_bridge::manage::Manage;
 use deckard_bridge::runtime::Runtime;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
-use zbus::blocking::{Connection, Proxy};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
+use zbus::{Connection, Proxy};
 
 static PRIVATE_BUS: Mutex<()> = Mutex::new(());
 
@@ -91,9 +91,9 @@ fn cxx_dbus_method_and_signal_signatures() -> Result<(), Box<dyn std::error::Err
     }
     let _guard = PRIVATE_BUS.lock().unwrap();
     let dir = tempfile::tempdir()?;
-    let bus = Connection::session()?;
+    let bus = zbus::block_on(Connection::session())?;
     let api = SettingsApi {
-        bus: bus.inner().clone(),
+        bus: bus.clone(),
         runtime: Runtime::new(
             dir.path().join("settings.json"),
             dir.path().join("applications"),
@@ -102,19 +102,19 @@ fn cxx_dbus_method_and_signal_signatures() -> Result<(), Box<dyn std::error::Err
         manage: Manage::default(),
         icon_dirs: vec![],
     };
-    bus.object_server().at(OBJECT_PATH, api)?;
+    zbus::block_on(bus.object_server().at(OBJECT_PATH, api))?;
     assert_eq!(
-        bus.request_name_with_flags(BUS_NAME, RequestNameFlags::DoNotQueue.into())?,
+        zbus::block_on(bus.request_name_with_flags(BUS_NAME, RequestNameFlags::DO_NOT_QUEUE))?,
         RequestNameReply::PrimaryOwner
     );
-    let caller = Connection::session()?;
-    let proxy = Proxy::new(
+    let caller = zbus::block_on(Connection::session())?;
+    let proxy = zbus::block_on(Proxy::new(
         &caller,
         BUS_NAME,
         OBJECT_PATH,
         "org.freedesktop.DBus.Introspectable",
-    )?;
-    let xml: String = proxy.call("Introspect", &())?;
+    ))?;
+    let xml: String = zbus::block_on(proxy.call("Introspect", &()))?;
     for (name, args, output) in [
         ("GetRuntime", "", "a{sv}"),
         ("Start", "", ""),
@@ -163,7 +163,7 @@ fn cxx_dbus_method_and_signal_signatures() -> Result<(), Box<dyn std::error::Err
     }
     assert!(xml.contains("<signal name=\"RuntimeChanged\">"));
     assert!(xml.contains("<signal name=\"AppChanged\">"));
-    bus.release_name(BUS_NAME)?;
+    zbus::block_on(bus.release_name(BUS_NAME))?;
     Ok(())
 }
 
@@ -174,51 +174,57 @@ fn cxx_dbus_authorization_and_manage_roundtrip() -> Result<(), Box<dyn std::erro
     }
     let _guard = PRIVATE_BUS.lock().unwrap();
     let dir = tempfile::tempdir()?;
-    let shell = Connection::session()?;
+    let shell = zbus::block_on(Connection::session())?;
     let app_id = Arc::new(Mutex::new("notes".to_owned()));
-    shell
-        .object_server()
-        .at("/org/marathonos/Shell/Navigation", Shell(app_id.clone()))?;
-    shell.request_name("org.marathonos.Shell")?;
-    let bus = Connection::session()?;
+    zbus::block_on(
+        shell
+            .object_server()
+            .at("/org/marathonos/Shell/Navigation", Shell(app_id.clone())),
+    )?;
+    zbus::block_on(shell.request_name("org.marathonos.Shell"))?;
+    let bus = zbus::block_on(Connection::session())?;
     let manage = Manage::default();
     let runtime = Runtime::new(
         dir.path().join("settings.json"),
         dir.path().join("applications"),
         dir.path().join("memory.current"),
     );
-    bus.object_server().at(
+    zbus::block_on(bus.object_server().at(
         OBJECT_PATH,
         SettingsApi {
-            bus: bus.inner().clone(),
+            bus: bus.clone(),
             runtime,
             manage: manage.clone(),
             icon_dirs: vec![],
         },
-    )?;
-    bus.request_name(BUS_NAME)?;
-    let caller = Connection::session()?;
-    let api = Proxy::new(&caller, BUS_NAME, OBJECT_PATH, "org.marathonos.Deckard1")?;
-    let snapshot: contract::VariantMap = api.call("GetRuntime", &())?;
+    ))?;
+    zbus::block_on(bus.request_name(BUS_NAME))?;
+    let caller = zbus::block_on(Connection::session())?;
+    let api = zbus::block_on(Proxy::new(
+        &caller,
+        BUS_NAME,
+        OBJECT_PATH,
+        "org.marathonos.Deckard1",
+    ))?;
+    let snapshot: contract::VariantMap = zbus::block_on(api.call("GetRuntime", &()))?;
     assert_eq!(String::try_from(snapshot["state"].clone())?, "stopped");
-    let icon: String = api.call("AppIcon", &("../etc",))?;
+    let icon: String = zbus::block_on(api.call("AppIcon", &("../etc",)))?;
     assert!(icon.is_empty());
     assert_eq!(
         method_error(
-            &api.call::<_, _, ()>("SetStartAtLogin", &(true,))
-                .unwrap_err()
+            &zbus::block_on(api.call::<_, _, ()>("SetStartAtLogin", &(true,))).unwrap_err()
         ),
         "org.freedesktop.DBus.Error.AccessDenied"
     );
     assert_eq!(
         method_error(
-            &api.call::<_, _, contract::VariantMap>("GetApp", &("bad name",))
+            &zbus::block_on(api.call::<_, _, contract::VariantMap>("GetApp", &("bad name",)))
                 .unwrap_err()
         ),
         "org.freedesktop.DBus.Error.InvalidArgs"
     );
     *app_id.lock().unwrap() = "settings".into();
-    api.call::<_, _, ()>("SetStartAtLogin", &(true,))?;
+    zbus::block_on(api.call::<_, _, ()>("SetStartAtLogin", &(true,)))?;
     let policy: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("settings.json"))?)?;
     assert_eq!(policy["startAtLogin"], true);
@@ -236,21 +242,21 @@ fn cxx_dbus_authorization_and_manage_roundtrip() -> Result<(), Box<dyn std::erro
         let reply = json!({"t":"managed", "id":sent["id"], "ok":false, "error":"no such app"});
         manage.handle(generation, reply.as_object().unwrap());
     });
-    let app: contract::VariantMap = api.call("GetApp", &("org.fdroid.fdroid",))?;
+    let app: contract::VariantMap = zbus::block_on(api.call("GetApp", &("org.fdroid.fdroid",)))?;
     assert_eq!(String::try_from(app["label"].clone())?, "F-Droid");
-    let error = api
-        .call::<_, _, ()>("ClearData", &("org.fdroid.fdroid",))
-        .unwrap_err();
+    let error =
+        zbus::block_on(api.call::<_, _, ()>("ClearData", &("org.fdroid.fdroid",))).unwrap_err();
     assert_eq!(method_error(&error), "org.marathonos.Deckard1.Error.Failed");
     responder.join().unwrap();
-    bus.release_name(BUS_NAME)?;
-    shell.release_name("org.marathonos.Shell")?;
+    zbus::block_on(bus.release_name(BUS_NAME))?;
+    zbus::block_on(shell.release_name("org.marathonos.Shell"))?;
     Ok(())
 }
 
-fn method_error(error: &zbus::Error) -> &str {
+fn method_error(error: &zbus::Error) -> String {
     match error {
-        zbus::Error::MethodError(name, _, _) => name.as_str(),
+        zbus::Error::MethodError(name, _, _) => name.to_string(),
+        zbus::Error::FDO(error) => zbus::DBusError::name(error.as_ref()).to_string(),
         _ => panic!("unexpected error: {error}"),
     }
 }

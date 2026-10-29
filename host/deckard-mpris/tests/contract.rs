@@ -11,8 +11,8 @@ use base64::Engine;
 use deckard_mpris::MprisAdapter;
 use image::{DynamicImage, ImageFormat};
 use serde_json::{Map, Value, json};
-use zbus::blocking::{Connection, Proxy, connection::Builder};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::{Connection, Proxy, connection::Builder};
+use zbus::{OwnedObjectPath, OwnedVariant as OwnedValue};
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const PATH: &str = "/org/mpris/MediaPlayer2";
@@ -52,9 +52,11 @@ impl PrivateBus {
     }
 
     fn connection(&self) -> TestResult<Connection> {
-        Ok(Builder::address(self.address.as_str())?
-            .method_timeout(Duration::from_secs(3))
-            .build()?)
+        Ok(zbus::block_on(
+            Builder::address(self.address.as_str())
+                .method_timeout(Duration::from_secs(3))
+                .build(),
+        )?)
     }
 }
 
@@ -111,37 +113,40 @@ fn two_players_have_distinct_connections_and_legacy_properties() -> TestResult<(
 
     let first = name("org.lineageos.eleven", 3);
     let second = name("org.example.player", 4);
-    let dbus = Proxy::new(
+    let dbus = zbus::block_on(Proxy::new(
         &client,
         "org.freedesktop.DBus",
         "/org/freedesktop/DBus",
         "org.freedesktop.DBus",
-    )?;
-    let first_owner: String = dbus.call("GetNameOwner", &(first.as_str(),))?;
-    let second_owner: String = dbus.call("GetNameOwner", &(second.as_str(),))?;
+    ))?;
+    let first_owner: String = zbus::block_on(dbus.call("GetNameOwner", &(first.as_str(),)))?;
+    let second_owner: String = zbus::block_on(dbus.call("GetNameOwner", &(second.as_str(),)))?;
     assert_ne!(first_owner, second_owner);
 
-    let root = Proxy::new(&client, first.as_str(), PATH, ROOT)?;
-    assert_eq!(root.get_property::<String>("Identity")?, "Music");
+    let root = zbus::block_on(Proxy::new(&client, first.as_str(), PATH, ROOT))?;
     assert_eq!(
-        root.get_property::<String>("DesktopEntry")?,
+        zbus::block_on(root.get_property::<String>("Identity"))?,
+        "Music"
+    );
+    assert_eq!(
+        zbus::block_on(root.get_property::<String>("DesktopEntry"))?,
         "deckard.org.lineageos.eleven"
     );
-    assert!(!root.get_property::<bool>("CanQuit")?);
-    assert!(!root.get_property::<bool>("CanRaise")?);
-    assert!(!root.get_property::<bool>("HasTrackList")?);
-    assert!(
-        root.get_property::<Vec<String>>("SupportedUriSchemes")?
-            .is_empty()
-    );
+    assert!(!zbus::block_on(root.get_property::<bool>("CanQuit"))?);
+    assert!(!zbus::block_on(root.get_property::<bool>("CanRaise"))?);
+    assert!(!zbus::block_on(root.get_property::<bool>("HasTrackList"))?);
+    assert!(zbus::block_on(root.get_property::<Vec<String>>("SupportedUriSchemes"))?.is_empty());
 
-    let player = Proxy::new(&client, first.as_str(), PATH, PLAYER)?;
-    assert_eq!(player.get_property::<String>("PlaybackStatus")?, "Playing");
-    assert_eq!(player.get_property::<f64>("Rate")?, 1.0);
-    assert_eq!(player.get_property::<f64>("Volume")?, 1.0);
-    assert!(player.get_property::<bool>("CanSeek")?);
-    assert!(player.get_property::<bool>("CanControl")?);
-    let metadata: HashMap<String, OwnedValue> = player.get_property("Metadata")?;
+    let player = zbus::block_on(Proxy::new(&client, first.as_str(), PATH, PLAYER))?;
+    assert_eq!(
+        zbus::block_on(player.get_property::<String>("PlaybackStatus"))?,
+        "Playing"
+    );
+    assert_eq!(zbus::block_on(player.get_property::<f64>("Rate"))?, 1.0);
+    assert_eq!(zbus::block_on(player.get_property::<f64>("Volume"))?, 1.0);
+    assert!(zbus::block_on(player.get_property::<bool>("CanSeek"))?);
+    assert!(zbus::block_on(player.get_property::<bool>("CanControl"))?);
+    let metadata: HashMap<String, OwnedValue> = zbus::block_on(player.get_property("Metadata"))?;
     let title: String = metadata["xesam:title"].clone().try_into()?;
     assert_eq!(title, "First");
     let length: i64 = metadata["mpris:length"].clone().try_into()?;
@@ -151,7 +156,7 @@ fn two_players_have_distinct_connections_and_legacy_properties() -> TestResult<(
     let track: OwnedObjectPath = metadata["mpris:trackid"].clone().try_into()?;
     assert_eq!(track.as_str(), "/org/marathonos/deckard/session3/track1");
 
-    player.call::<_, _, ()>("Next", &())?;
+    zbus::block_on(player.call::<_, _, ()>("Next", &()))?;
     assert_eq!(
         one(&commands)?,
         json!({"t":"media_cmd","sid":3,"cmd":"next","position":0})
@@ -163,39 +168,31 @@ fn two_players_have_distinct_connections_and_legacy_properties() -> TestResult<(
         ("Stop", "stop"),
         ("Play", "play"),
     ] {
-        let _: () = player.call(method, &())?;
+        let _: () = zbus::block_on(player.call(method, &()))?;
         assert_eq!(one(&commands)?["cmd"], command);
     }
-    let _: () = player.call("OpenUri", &(String::from("file:///ignored"),))?;
+    let _: () = zbus::block_on(player.call("OpenUri", &(String::from("file:///ignored"),)))?;
     assert!(commands.try_recv().is_err());
-    let _: () = player.call("Seek", &(2_000_000_i64,))?;
+    let _: () = zbus::block_on(player.call("Seek", &(2_000_000_i64,)))?;
     let command = one(&commands)?;
     assert_eq!(command["cmd"], "seek");
     assert!(command["position"].as_i64().unwrap() >= 3_000);
-    let _: () = player.call("SetPosition", &(track.clone(), 4_123_456_i64))?;
+    let _: () = zbus::block_on(player.call("SetPosition", &(track.clone(), 4_123_456_i64)))?;
     assert_eq!(one(&commands)?["position"], 4_123);
     let wrong = OwnedObjectPath::try_from("/org/marathonos/deckard/other")?;
-    let _: () = player.call("SetPosition", &(wrong, 100_i64))?;
+    let _: () = zbus::block_on(player.call("SetPosition", &(wrong, 100_i64)))?;
     assert!(commands.try_recv().is_err());
 
     adapter.handle(json!({"t": "media_gone", "sid": 3}).as_object().unwrap())?;
     assert_eq!(adapter.active_players(), 1);
     let deadline = Instant::now() + Duration::from_secs(2);
-    while dbus
-        .call::<_, _, String>("GetNameOwner", &(first.as_str(),))
-        .is_ok()
+    while zbus::block_on(dbus.call::<_, _, String>("GetNameOwner", &(first.as_str(),))).is_ok()
         && Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(
-        dbus.call::<_, _, String>("GetNameOwner", &(first.as_str(),))
-            .is_err()
-    );
-    assert!(
-        dbus.call::<_, _, String>("GetNameOwner", &(second.as_str(),))
-            .is_ok()
-    );
+    assert!(zbus::block_on(dbus.call::<_, _, String>("GetNameOwner", &(first.as_str(),))).is_err());
+    assert!(zbus::block_on(dbus.call::<_, _, String>("GetNameOwner", &(second.as_str(),))).is_ok());
     adapter.clear(|_| {});
     assert_eq!(adapter.active_players(), 0);
     Ok(())
@@ -210,15 +207,18 @@ fn updates_emit_properties_and_seeked_with_new_track_id() -> TestResult<()> {
     let first = message(9, "org.example.player");
     adapter.handle(first.as_object().unwrap())?;
     let service = name("org.example.player", 9);
-    let properties = Proxy::new(
+    let properties = zbus::block_on(Proxy::new(
         &client,
         service.as_str(),
         PATH,
         "org.freedesktop.DBus.Properties",
-    )?;
-    let mut changes = properties.receive_signal("PropertiesChanged")?;
-    let player = Proxy::new(&client, service.as_str(), PATH, PLAYER)?;
-    let mut seeked = player.receive_signal("Seeked")?;
+    ))?;
+    let mut changes = futures_lite::stream::block_on(zbus::block_on(
+        properties.receive_signal("PropertiesChanged"),
+    )?);
+    let player = zbus::block_on(Proxy::new(&client, service.as_str(), PATH, PLAYER))?;
+    let mut seeked =
+        futures_lite::stream::block_on(zbus::block_on(player.receive_signal("Seeked"))?);
 
     let mut update = first.clone();
     update["state"] = json!("Paused");
@@ -252,7 +252,7 @@ fn updates_emit_properties_and_seeked_with_new_track_id() -> TestResult<()> {
     let changed_metadata: HashMap<String, OwnedValue> = changed["Metadata"].clone().try_into()?;
     let changed_title: String = changed_metadata["xesam:title"].clone().try_into()?;
     assert_eq!(changed_title, "Second");
-    let metadata: HashMap<String, OwnedValue> = player.get_property("Metadata")?;
+    let metadata: HashMap<String, OwnedValue> = zbus::block_on(player.get_property("Metadata"))?;
     let track: OwnedObjectPath = metadata["mpris:trackid"].clone().try_into()?;
     assert_eq!(track.as_str(), "/org/marathonos/deckard/session9/track2");
     Ok(())
@@ -272,13 +272,13 @@ fn player_limit_seek_capability_and_art_lifecycle() -> TestResult<()> {
     first["can"]["seek"] = json!(false);
     adapter.handle(first.as_object().unwrap())?;
     let service = name("org.example.player", 1);
-    let player = Proxy::new(&client, service.as_str(), PATH, PLAYER)?;
-    let metadata: HashMap<String, OwnedValue> = player.get_property("Metadata")?;
+    let player = zbus::block_on(Proxy::new(&client, service.as_str(), PATH, PLAYER))?;
+    let metadata: HashMap<String, OwnedValue> = zbus::block_on(player.get_property("Metadata"))?;
     let art_url = String::try_from(metadata["mpris:artUrl"].clone())?;
     let art_path = art_url.strip_prefix("file://").unwrap();
     assert!(Path::new(art_path).is_file());
-    assert!(!player.get_property::<bool>("CanSeek")?);
-    let _: () = player.call("Seek", &(1_000_000_i64,))?;
+    assert!(!zbus::block_on(player.get_property::<bool>("CanSeek"))?);
+    let _: () = zbus::block_on(player.call("Seek", &(1_000_000_i64,)))?;
     assert!(commands.try_recv().is_err());
 
     for sid in 2..=8 {
@@ -295,8 +295,8 @@ fn player_limit_seek_capability_and_art_lifecycle() -> TestResult<()> {
     let mut cleared = first.clone();
     cleared["art"] = json!("");
     adapter.handle(cleared.as_object().unwrap())?;
-    let refreshed = Proxy::new(&client, service.as_str(), PATH, PLAYER)?;
-    let metadata: HashMap<String, OwnedValue> = refreshed.get_property("Metadata")?;
+    let refreshed = zbus::block_on(Proxy::new(&client, service.as_str(), PATH, PLAYER))?;
+    let metadata: HashMap<String, OwnedValue> = zbus::block_on(refreshed.get_property("Metadata"))?;
     assert!(!metadata.contains_key("mpris:artUrl"));
     assert!(!Path::new(art_path).exists());
     adapter.clear(|_| {});

@@ -682,10 +682,10 @@ pub async fn serve_system_bus(
 ) -> zbus::Result<(Connection, ContainerService)> {
     let service = ContainerService::new(manager, hardware_sender);
     let initializer = InitializerService::production(service.clone());
-    let connection = bus::builder(zbus::Address::system()?)?
-        .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, service.clone())?
-        .serve_at(initializer_dbus::OBJECT_PATH, initializer)?
+    let connection = zbus::connection::Builder::system()
+        .name(BUS_NAME)
+        .serve_at(OBJECT_PATH, service.clone())
+        .serve_at(initializer_dbus::OBJECT_PATH, initializer)
         .build()
         .await?;
     Ok((connection, service))

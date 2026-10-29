@@ -16,10 +16,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use deckard_bridge::sharing::{Sharing, target_id};
 use serde_json::{Map, Value, json};
-use zbus::blocking::connection::Builder;
-use zbus::blocking::{Connection, Proxy};
+use zbus::connection::Builder;
 use zbus::interface;
-use zbus::zvariant::{Fd, OwnedValue, Value as Variant};
+use zbus::{Connection, Proxy};
+use zbus::{Fd, OwnedVariant as OwnedValue, Variant};
 
 static PRIVATE_BUS: Mutex<()> = Mutex::new(());
 
@@ -63,8 +63,8 @@ fn next(sent: &Sent) -> Map<String, Value> {
 }
 
 fn serve(name: &str, path: &str, iface: impl zbus::object_server::Interface) -> Connection {
-    let builder = Builder::session().unwrap().name(name).unwrap();
-    builder.serve_at(path, iface).unwrap().build().unwrap()
+    let builder = Builder::session().name(name);
+    zbus::block_on(builder.serve_at(path, iface).build()).unwrap()
 }
 
 struct Navigation;
@@ -82,7 +82,7 @@ struct Shell(Connection);
 
 impl Drop for Shell {
     fn drop(&mut self) {
-        let _ = self.0.release_name("org.marathonos.Shell");
+        let _ = zbus::block_on(self.0.release_name("org.marathonos.Shell"));
     }
 }
 
@@ -104,15 +104,13 @@ fn start(xfer: &Path) -> (Connection, Sharing, Sent, Proxy<'static>) {
         sink.lock().unwrap().push(message);
         true
     });
-    let calls = Connection::session().unwrap();
-    let sharing = Sharing::new(calls.inner().clone(), send, xfer.into());
-    let bus = Builder::session().unwrap();
-    let bus = bus
-        .serve_at("/org/marathonos/Deckard", sharing.clone())
-        .unwrap();
-    let bus = bus.build().unwrap();
+    let calls = zbus::block_on(Connection::session()).unwrap();
+    let sharing = Sharing::new(calls.clone(), send, xfer.into());
+    let bus = Builder::session();
+    let bus = bus.serve_at("/org/marathonos/Deckard", sharing.clone());
+    let bus = zbus::block_on(bus.build()).unwrap();
     let (client, to) = (
-        Connection::session().unwrap(),
+        zbus::block_on(Connection::session()).unwrap(),
         bus.unique_name().unwrap().to_string(),
     );
     let proxy = Proxy::new(
@@ -121,19 +119,20 @@ fn start(xfer: &Path) -> (Connection, Sharing, Sent, Proxy<'static>) {
         "/org/marathonos/Deckard",
         "org.marathonos.Deckard1.Share",
     );
-    (bus, sharing, sent, proxy.unwrap())
+    (bus, sharing, sent, zbus::block_on(proxy).unwrap())
 }
 
 fn error_name<T: std::fmt::Debug>(result: zbus::Result<T>) -> String {
     match result.unwrap_err() {
         zbus::Error::MethodError(name, _, _) => name.to_string(),
+        zbus::Error::FDO(error) => zbus::DBusError::name(error.as_ref()).to_string(),
         error => error.to_string(),
     }
 }
 
 fn targets(proxy: &Proxy<'static>) -> JoinHandle<zbus::Result<Targets>> {
     let proxy = proxy.clone();
-    thread::spawn(move || proxy.call("ShareTargets", &("image/png",)))
+    thread::spawn(move || zbus::block_on(proxy.call("ShareTargets", &("image/png",))))
 }
 
 #[test]
@@ -150,7 +149,7 @@ fn targets_only_for_the_shell() {
     assert!(targets(&proxy).join().unwrap().unwrap().is_empty());
     let invalid = proxy.call::<_, _, Targets>("ShareTargets", &("not a type",));
     assert_eq!(
-        error_name(invalid),
+        error_name(zbus::block_on(invalid)),
         "org.freedesktop.DBus.Error.InvalidArgs"
     );
     assert!(sent.lock().unwrap().is_empty());
@@ -233,7 +232,7 @@ fn shares_files_and_text() {
     let target = "org.example.chat/org.example.chat.ShareActivity";
     let share = |id: &str, request: Request| {
         let (proxy, id) = (proxy.clone(), id.to_owned());
-        thread::spawn(move || proxy.call::<_, _, ()>("Share", &(id, request)))
+        thread::spawn(move || zbus::block_on(proxy.call::<_, _, ()>("Share", &(id, request))))
     };
     let refused = |id, request| error_name(share(id, request).join().unwrap());
     let invalid = "org.freedesktop.DBus.Error.InvalidArgs";
@@ -293,7 +292,7 @@ impl Sheet {
 
 fn bare<'a, 'v>(value: &'a Variant<'v>) -> &'a Variant<'v> {
     match value {
-        Variant::Value(inner) => bare(inner),
+        Variant::Variant(inner) => bare(inner),
         value => value,
     }
 }

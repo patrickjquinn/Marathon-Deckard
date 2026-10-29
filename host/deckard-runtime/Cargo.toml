@@ -7,13 +7,14 @@ publish.workspace = true
 license = "GPL-3.0-or-later"
 
 [dependencies]
+futures-lite.workspace = true
 deckard-host-tools = { path = "../deckard-host-tools" }
 deckard-launch = { path = "../deckard-launch" }
 rsbinder.workspace = true
 nix.workspace = true
 rustix = { workspace = true, features = ["event"] }
 signal-hook.workspace = true
-zbus = { workspace = true, features = ["blocking-api"] }
+zbus = { workspace = true, features = ["proxy", "service"] }
 
 [dev-dependencies]
 tempfile.workspace = true

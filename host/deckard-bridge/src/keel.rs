@@ -12,18 +12,17 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Duration;
 
-use async_executor::{Executor, Task};
+use async_executor::Executor;
 use async_io::Timer;
 use deckard_core::keel::{self, APP_ID_PREFIX, App, Manifest, Shortcut};
 use deckard_core::{json, sync, validate};
-use deckard_host_tools::bus;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::message::Header;
-use zbus::zvariant::{OwnedValue, Value as Variant};
 use zbus::{Connection, DBusError, interface};
+use zbus::{OwnedVariant as OwnedValue, Variant};
 
 use crate::auth;
 use crate::intents::{self, NAVIGATION};
@@ -123,7 +122,6 @@ struct Entry {
     app: App,
     manifest: Manifest,
     connection: Connection,
-    _tick: Task<()>,
     /// Upgraded by each call in flight.
     calls: Weak<()>,
     /// The last `screen.read`'s.
@@ -441,32 +439,25 @@ impl Shared {
             calls,
         };
         let builder = async {
-            let builder = bus::builder(zbus::Address::session()?)?.internal_executor(false);
-            builder.serve_at(PATH, provider)?.build().await
+            let builder = zbus::connection::Builder::session();
+            builder.serve_at(PATH, provider).build().await
         };
         let connection = match builder.await {
             Ok(connection) => connection,
             Err(error) => return eprintln!("deckard-bridge: keel: cannot publish {id}: {error}"),
         };
-        let ticker = connection.clone();
-        let tick = self.executor.spawn(async move {
-            loop {
-                ticker.executor().tick().await;
-            }
-        });
         let tools = manifest.json["tools"].as_array().map_or(0, Vec::len);
         let pkg = app.pkg.clone();
         let entry = Entry {
             app,
             manifest,
             connection: connection.clone(),
-            _tick: tick,
             calls: weak,
             snapshot: 0,
         };
         // In the catalogue before the name is owned: Describe never answers {}.
         sync::lock(&self.state).apps.insert(pkg.clone(), entry);
-        let flags = RequestNameFlags::DoNotQueue.into();
+        let flags = RequestNameFlags::DO_NOT_QUEUE;
         match connection.request_name_with_flags(id.as_str(), flags).await {
             Ok(RequestNameReply::PrimaryOwner) => {
                 eprintln!("deckard-bridge: keel: published {id} with {tools} actions");
@@ -583,6 +574,12 @@ impl Shared {
                 let message = message.unwrap_or_else(|| NO_SHELL.into());
                 Err(Error::from_shell(name.as_str(), message))
             }
+            Err(zbus::Error::FDO(error)) => Err(Error::from_shell(
+                zbus::DBusError::name(error.as_ref()).as_str(),
+                zbus::DBusError::description(error.as_ref())
+                    .unwrap_or(NO_SHELL)
+                    .to_owned(),
+            )),
             _ => Err(Error::Failed(NO_SHELL.into())),
         }
     }

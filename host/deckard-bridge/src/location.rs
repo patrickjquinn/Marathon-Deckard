@@ -2,6 +2,8 @@
 //! `NetworkLocation`): one GeoClue client while Android has a request, none
 //! otherwise. GeoClue asks the Shell's agent whether Android may locate.
 
+use zbus::runtime::traits::TaskHandle as _;
+
 use std::ops::Bound::Excluded;
 use std::ops::RangeBounds;
 use std::sync::Arc;
@@ -15,7 +17,7 @@ use serde_json::{Map, Value, json};
 use zbus::MessageStream;
 use zbus::fdo::DBusProxy;
 use zbus::message::Message;
-use zbus::zvariant::{DeserializeDict, OwnedObjectPath, Type, Value as Variant};
+use zbus::{DeserializeDict, OwnedObjectPath, Type, Variant};
 
 use crate::Outbound;
 
@@ -32,7 +34,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// A GeoClue Location's properties; `timestamp` is seconds and microseconds.
 #[derive(Debug, Default, DeserializeDict, Type)]
-#[zvariant(signature = "a{sv}", rename_all = "PascalCase")]
+#[zbus(signature = "a{sv}", rename_all = "PascalCase")]
 pub struct Fix {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
@@ -102,7 +104,7 @@ impl LocationSync {
                 eprintln!("deckard-bridge: location stopped: {error}");
             }
         };
-        bus.executor().spawn(run, "location").detach();
+        bus.spawn("location", run).detach();
         Self { desired, wake }
     }
 
@@ -184,8 +186,9 @@ async fn create(bus: &zbus::Connection) -> zbus::Result<Client> {
     .await?;
     let path: OwnedObjectPath = reply.body().deserialize()?;
     let rule = crate::signals(GEOCLUE, path.as_str(), CLIENT)?;
-    let rule = rule.member("LocationUpdated")?.build();
-    let updates = MessageStream::for_match_rule(rule, bus, Some(16)).await?;
+    let rule = rule.member("LocationUpdated").build();
+    let updates =
+        MessageStream::for_match_rule(rule?, bus, std::num::NonZeroUsize::new(16)).await?;
     set(bus, &path, "DesktopId", DESKTOP_ID.into()).await;
     set(bus, &path, "RequestedAccuracyLevel", ACCURACY_EXACT.into()).await;
     Ok(Client {

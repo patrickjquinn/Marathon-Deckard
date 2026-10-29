@@ -20,14 +20,16 @@ pub mod storage;
 pub mod trim;
 pub mod watchdog;
 
+use zbus::runtime::traits::TaskHandle as _;
+
 use std::fmt::Display;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread;
 
 use futures_lite::StreamExt;
 use serde_json::{Map, Value};
+use zbus::Connection;
 use zbus::MessageStream;
-use zbus::blocking::Connection;
 use zbus::match_rule::Builder;
 use zbus::{MatchRule, Message, message};
 
@@ -67,11 +69,11 @@ pub fn signals<'m>(
     path: &'m str,
     interface: &'m str,
 ) -> zbus::Result<Builder<'m>> {
-    MatchRule::builder()
+    Ok(MatchRule::builder()
         .msg_type(message::Type::Signal)
-        .sender(sender)?
-        .path(path)?
-        .interface(interface)
+        .sender(sender)
+        .path(path)
+        .interface(interface))
 }
 
 /// The bus's `NameOwnerChanged` for `name`.
@@ -80,9 +82,9 @@ pub fn signals<'m>(
 /// `name` is invalid.
 pub fn owner_changes(name: &'static str) -> zbus::Result<MatchRule<'static>> {
     let rule = MatchRule::builder().msg_type(message::Type::Signal);
-    let rule = rule.sender("org.freedesktop.DBus")?;
-    let rule = rule.interface("org.freedesktop.DBus")?;
-    Ok(rule.member("NameOwnerChanged")?.add_arg(name)?.build())
+    let rule = rule.sender("org.freedesktop.DBus");
+    let rule = rule.interface("org.freedesktop.DBus");
+    rule.member("NameOwnerChanged").add_arg(name).build()
 }
 
 /// Whether a `NameOwnerChanged` gives its name an owner.
@@ -118,8 +120,11 @@ pub fn relay(
     queue: usize,
     mut each: impl FnMut(&Message) -> bool + Send + 'static,
 ) -> zbus::Result<()> {
-    let bus = bus.inner();
-    let mut signals = async_io::block_on(MessageStream::for_match_rule(rule, bus, Some(queue)))?;
+    let mut signals = async_io::block_on(MessageStream::for_match_rule(
+        rule,
+        bus,
+        std::num::NonZeroUsize::new(queue),
+    ))?;
     let relay = async move {
         while let Some(signal) = signals.next().await {
             match signal {
@@ -129,7 +134,7 @@ pub fn relay(
             }
         }
     };
-    bus.executor().spawn(relay, "deckard-relay").detach();
+    bus.spawn("deckard-relay", relay).detach();
     Ok(())
 }
 

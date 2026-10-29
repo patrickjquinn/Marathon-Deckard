@@ -39,7 +39,7 @@ signal-hook = "=0.4.5"
 tempfile = "=3.27.0"
 thiserror = "=2.0.21"
 unicode-general-category = "=1.1.0"
-zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
+zbus = { version = "=6.1.0", default-features = false, features = ["default-rt"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

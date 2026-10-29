@@ -16,8 +16,8 @@ use deckard_core::{ids, json, keel, png_guard, sync, validate};
 use deckard_host_tools::bus;
 use serde_json::{Map, Value, json};
 use zbus::message::Header;
-use zbus::zvariant::{Dict, Fd, Value as Variant};
 use zbus::{Connection, interface};
+use zbus::{Dict, Fd, Variant};
 
 use crate::api::{self, ApiError};
 use crate::contract::VariantMap;
@@ -294,7 +294,7 @@ fn new_id() -> api::Result<String> {
 
 fn bare<'a, 'v>(value: &'a Variant<'v>) -> &'a Variant<'v> {
     match value {
-        Variant::Value(inner) => bare(inner),
+        Variant::Variant(inner) => bare(inner),
         value => value,
     }
 }

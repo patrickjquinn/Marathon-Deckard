@@ -35,7 +35,7 @@ use deckard_mpris::MprisAdapter;
 use deckard_packages::{BridgeRoute, BridgeSend};
 use futures_lite::future;
 use serde_json::{Map, Value, json};
-use zbus::blocking::Connection;
+use zbus::Connection;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -45,13 +45,13 @@ const SYSTEM_QUEUE: usize = 64;
 fn emit_runtime(bus: &Connection, runtime: &Runtime) {
     let snapshot = (runtime.snapshot(),);
     let interface = "org.marathonos.Deckard1";
-    let _ = bus.emit_signal(
+    let _ = zbus::block_on(bus.emit_signal(
         None::<&str>,
         OBJECT_PATH,
         interface,
         "RuntimeChanged",
         &snapshot,
-    );
+    ));
 }
 
 /// What the authenticated system socket feeds.
@@ -273,13 +273,13 @@ fn main() -> Result<(), Error> {
     let manage = Manage::default();
     let bus = bus::session()?;
     let api = SettingsApi {
-        bus: bus.inner().clone(),
+        bus: bus.clone(),
         runtime: runtime.clone(),
         manage: manage.clone(),
         icon_dirs: vec![data.join("icons"), cache.clone()],
     };
-    bus.object_server().at(OBJECT_PATH, api)?;
-    if bus.request_name_with_flags(BUS_NAME, RequestNameFlags::DoNotQueue.into())?
+    zbus::block_on(bus.object_server().at(OBJECT_PATH, api))?;
+    if zbus::block_on(bus.request_name_with_flags(BUS_NAME, RequestNameFlags::DO_NOT_QUEUE))?
         != RequestNameReply::PrimaryOwner
     {
         return Err("org.marathonos.Deckard is already owned".into());
@@ -321,7 +321,7 @@ fn main() -> Result<(), Error> {
         PathBuf::from("/usr/bin/pilotd"),
     ];
     let keel = KeelApps::start(
-        bus.inner().clone(),
+        bus.clone(),
         Arc::clone(&package_send),
         keel_tools,
         state.join("apps.json"),
@@ -345,16 +345,11 @@ fn main() -> Result<(), Error> {
     let camera = dirs::picture_dir()
         .unwrap_or_else(|| home.join("Pictures"))
         .join("Marathon");
-    let intents = Intents::start(
-        bus.inner().clone(),
-        Arc::clone(&to_system),
-        xfer.clone(),
-        camera,
-    );
-    let sharing = Sharing::new(bus.inner().clone(), Arc::clone(&to_system), xfer);
-    bus.object_server().at(OBJECT_PATH, sharing.clone())?;
+    let intents = Intents::start(bus.clone(), Arc::clone(&to_system), xfer.clone(), camera);
+    let sharing = Sharing::new(bus.clone(), Arc::clone(&to_system), xfer);
+    zbus::block_on(bus.object_server().at(OBJECT_PATH, sharing.clone()))?;
     let location = match bus::system() {
-        Ok(system) => Some(LocationSync::start(system.inner().clone(), to_user)),
+        Ok(system) => Some(LocationSync::start(system.clone(), to_user)),
         Err(error) => {
             eprintln!("deckard-bridge: no system bus, so no location for Android: {error}");
             None
@@ -385,7 +380,7 @@ fn main() -> Result<(), Error> {
         keel,
         intents,
         sharing,
-        prompts: PermissionPrompts::new(bus.inner().clone(), Arc::clone(&to_system)),
+        prompts: PermissionPrompts::new(bus.clone(), Arc::clone(&to_system)),
         storage: SharedStorage::start(
             shared_folders::host_folders(&home),
             state.join("shared-acl-v1"),
@@ -402,8 +397,7 @@ fn main() -> Result<(), Error> {
         .then(|| vec!["pkexec".into(), evidence.into()]);
     let restart_bus = bus.clone();
     let boot_watchdog = BootWatchdog::spawn(data.join("deckard/booted"), evidence, move || {
-        let restarted =
-            future::block_on(runtime::call_unit(restart_bus.inner(), UnitCall::Restart));
+        let restarted = future::block_on(runtime::call_unit(&restart_bus, UnitCall::Restart));
         deckard_bridge::report("restarting Android failed", restarted);
     });
     let (watch_bus, watched) = (bus.clone(), runtime.clone());
@@ -412,7 +406,7 @@ fn main() -> Result<(), Error> {
         boot_watchdog.set_active_since(watched.active_since_ms());
     });
     deckard_bridge::report("unit watch failed", watch);
-    deckard_bridge::trim::start(bus.inner(), cgroup);
+    deckard_bridge::trim::start(&bus, cgroup);
     let doze = shell_sync::sync_doze(&bus, &data.join("deckard/doze"));
     deckard_bridge::report("Doze sync failed", doze);
     let palette = shell_sync::sync_palette(&bus, &data.join("deckard/palette"));
@@ -423,10 +417,10 @@ fn main() -> Result<(), Error> {
     if !marker.exists() && fs::write(marker, []).is_ok() {
         wait_until_calm();
         if runtime.at_login() {
-            let _ = future::block_on(runtime::call_unit(bus.inner(), UnitCall::Start));
+            let _ = future::block_on(runtime::call_unit(&bus, UnitCall::Start));
         }
     }
-    future::block_on(bus.inner().closed());
+    future::block_on(bus.closed());
     Ok(())
 }
 

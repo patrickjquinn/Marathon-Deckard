@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 
 use deckard_host_tools::names::{APP_ID_PREFIX, android};
 use deckard_host_tools::prop;
-use zbus::blocking::Connection;
-use zbus::blocking::fdo::DBusProxy;
+use zbus::Connection;
+use zbus::OwnedObjectPath;
+use zbus::fdo::DBusProxy;
 use zbus::names::BusName;
-use zbus::zvariant::OwnedObjectPath;
 
 use crate::Result;
 use crate::binder::{BinderConfig, Platform};
@@ -95,7 +95,7 @@ pub fn wayland_socket(runtime_dir: Option<&str>, display: Option<&str>) -> Resul
 
 pub struct NativeBackend {
     session_bus: Connection,
-    container: ContainerManagerProxyBlocking<'static>,
+    container: ContainerManagerProxy<'static>,
     session_unit: String,
     config: BinderConfig,
     platform: Option<Platform>,
@@ -112,8 +112,10 @@ impl NativeBackend {
             return Err("invalid session unit name".into());
         }
         Ok(Self {
-            session_bus: Connection::session()?,
-            container: ContainerManagerProxyBlocking::new(&Connection::system()?)?,
+            session_bus: zbus::block_on(Connection::session())?,
+            container: zbus::block_on(ContainerManagerProxy::new(&zbus::block_on(
+                Connection::system(),
+            )?))?,
             session_unit: session_unit.to_owned(),
             config: BinderConfig::from_file(config_path)?,
             platform: None,
@@ -122,7 +124,9 @@ impl NativeBackend {
 
     fn has_session(&self) -> Result<bool> {
         let name = BusName::try_from(SESSION_NAME)?;
-        Ok(DBusProxy::new(&self.session_bus)?.name_has_owner(name)?)
+        Ok(zbus::block_on(
+            zbus::block_on(DBusProxy::new(&self.session_bus))?.name_has_owner(name),
+        )?)
     }
 
     fn start_session(&self) -> Result<()> {
@@ -132,7 +136,10 @@ impl NativeBackend {
         )?;
         UnixStream::connect(&socket)
             .map_err(|err| format!("Wayland socket {} is not ready: {err}", socket.display()))?;
-        SystemdProxyBlocking::new(&self.session_bus)?.start_unit(&self.session_unit, "replace")?;
+        zbus::block_on(
+            zbus::block_on(SystemdProxy::new(&self.session_bus))?
+                .start_unit(&self.session_unit, "replace"),
+        )?;
         let deadline = Instant::now() + SESSION_WAIT;
         while !self.has_session()? {
             if Instant::now() >= deadline {
@@ -179,7 +186,7 @@ impl NativeBackend {
             // The bus name can be owned before Android has booted or unlocked.
             self.wait_for_user_ready()?;
         }
-        let state = self.container.get_session()?;
+        let state = zbus::block_on(self.container.get_session())?;
         if state.get("state").is_some_and(|state| state == "FROZEN") {
             Ok(Container::Frozen)
         } else {
@@ -189,14 +196,14 @@ impl NativeBackend {
 
     fn wake(&mut self) -> Result<&Platform> {
         if self.ready(Session::Start)? == Container::Frozen {
-            self.container.unfreeze()?;
+            zbus::block_on(self.container.unfreeze())?;
         }
         self.platform()
     }
 
     fn show_android_app(&self, package: &str) -> Result<()> {
-        let navigation = NavigationProxyBlocking::new(&self.session_bus)?;
-        if !navigation.show_android_app(&format!("{APP_ID_PREFIX}{package}"))? {
+        let navigation = zbus::block_on(NavigationProxy::new(&self.session_bus))?;
+        if !zbus::block_on(navigation.show_android_app(&format!("{APP_ID_PREFIX}{package}")))? {
             return Err(format!("Shell rejected Android window handoff for {package}").into());
         }
         Ok(())
@@ -245,11 +252,11 @@ impl NativeBackend {
         }
         let frozen = self.ready(Session::Existing)? == Container::Frozen;
         if frozen {
-            self.container.unfreeze()?;
+            zbus::block_on(self.container.unfreeze())?;
         }
         let result = self.platform().and_then(action);
         if frozen {
-            let freeze = self.container.freeze();
+            let freeze = zbus::block_on(self.container.freeze());
             if result.is_ok() {
                 freeze?;
             }

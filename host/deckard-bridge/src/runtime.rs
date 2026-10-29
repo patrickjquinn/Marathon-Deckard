@@ -11,8 +11,8 @@ use deckard_core::runtime_state::{ResetError, RuntimeState, State, UnitCall};
 use deckard_core::sync;
 use serde_json::{Map, Value};
 use zbus::MatchRule;
-use zbus::blocking::{Connection, Proxy};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
+use zbus::{Connection, Proxy};
+use zbus::{OwnedObjectPath, OwnedVariant as OwnedValue, Str};
 
 /// The Android session's user unit.
 pub const UNIT: &str = "deckard-session.service";
@@ -198,7 +198,8 @@ pub async fn call_unit(bus: &zbus::Connection, call: UnitCall) -> zbus::Result<(
 }
 
 fn refresh(properties: &Proxy<'_>, runtime: &Runtime) -> zbus::Result<bool> {
-    let values: HashMap<String, OwnedValue> = properties.call("GetAll", &(UNIT_INTERFACE,))?;
+    let values: HashMap<String, OwnedValue> =
+        zbus::block_on(properties.call("GetAll", &(UNIT_INTERFACE,)))?;
     let active = values
         .get("ActiveState")
         .and_then(|v| <&str>::try_from(v).ok())
@@ -221,14 +222,14 @@ pub fn watch_unit(
     runtime: Runtime,
     mut changed: impl FnMut() + Send + 'static,
 ) -> zbus::Result<()> {
-    let manager = Proxy::new(bus, SYSTEMD, MANAGER_PATH, MANAGER)?;
-    let path: OwnedObjectPath = manager.call("LoadUnit", &(UNIT,))?;
-    let rule = crate::signals(SYSTEMD, path.as_str(), PROPERTIES)?.member("PropertiesChanged")?;
-    let rule = rule.add_arg(UNIT_INTERFACE)?.build().to_owned();
-    if let Err(error) = manager.call::<_, _, ()>("Subscribe", &()) {
+    let manager = zbus::block_on(Proxy::new(bus, SYSTEMD, MANAGER_PATH, MANAGER))?;
+    let path: OwnedObjectPath = zbus::block_on(manager.call("LoadUnit", &(UNIT,)))?;
+    let rule = crate::signals(SYSTEMD, path.as_str(), PROPERTIES)?.member("PropertiesChanged");
+    let rule = rule.add_arg(UNIT_INTERFACE).build()?.to_owned();
+    if let Err(error) = zbus::block_on(manager.call::<_, _, ()>("Subscribe", &())) {
         eprintln!("deckard-bridge: systemd Subscribe failed: {error}");
     }
-    let properties = Proxy::new(bus, SYSTEMD, path, PROPERTIES)?;
+    let properties = zbus::block_on(Proxy::new(bus, SYSTEMD, path, PROPERTIES))?;
     let rules: Vec<(MatchRule<'static>, crate::Relevant)> = vec![(rule, |_| true)];
     crate::follow(bus, rules, move || match refresh(&properties, &runtime) {
         Ok(true) => changed(),

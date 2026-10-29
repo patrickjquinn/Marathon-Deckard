@@ -12,7 +12,7 @@ use deckard_core::sync;
 use deckard_core::{json, validate};
 use serde_json::{Map, Value, json};
 use zbus::Message;
-use zbus::blocking::{Connection, Proxy};
+use zbus::{Connection, Proxy};
 
 use crate::app_channel::{ChannelEvent, ChannelHandle};
 
@@ -156,14 +156,14 @@ impl ImeState {
 fn call(shell: &Proxy<'_>, call: &ShellCall) -> zbus::Result<()> {
     match call {
         ShellCall::SetEditor(app, purpose, hints) => {
-            shell.call("SetEditor", &(app, purpose, hints))
+            zbus::block_on(shell.call("SetEditor", &(app, purpose, hints)))
         }
         ShellCall::SetSurroundingText(app, value, cursor, anchor) => {
-            shell.call("SetSurroundingText", &(app, value, cursor, anchor))
+            zbus::block_on(shell.call("SetSurroundingText", &(app, value, cursor, anchor)))
         }
-        ShellCall::ShowPanel(app) => shell.call("ShowPanel", &(app,)),
-        ShellCall::HidePanel(app) => shell.call("HidePanel", &(app,)),
-        ShellCall::ClearEditor(app) => shell.call("ClearEditor", &(app,)),
+        ShellCall::ShowPanel(app) => zbus::block_on(shell.call("ShowPanel", &(app,))),
+        ShellCall::HidePanel(app) => zbus::block_on(shell.call("HidePanel", &(app,))),
+        ShellCall::ClearEditor(app) => zbus::block_on(shell.call("ClearEditor", &(app,))),
     }
 }
 
@@ -175,7 +175,7 @@ fn send(shell: &Proxy<'_>, calls: &[ShellCall]) {
 
 /// Registers the Android app ids with the Shell.
 fn register(shell: &Proxy<'_>) -> zbus::Result<()> {
-    shell.call("Register", &(APP_ID_PREFIX,))
+    zbus::block_on(shell.call("Register", &(APP_ID_PREFIX,)))
 }
 
 /// Relays between DeckardIme (`events`, `handle`) and the Shell on `bus`;
@@ -183,7 +183,7 @@ fn register(shell: &Proxy<'_>) -> zbus::Result<()> {
 /// which is never held across a D-Bus call.
 pub fn serve(events: &Receiver<ChannelEvent>, handle: &ChannelHandle, bus: &Connection) {
     let shell = Proxy::new(bus, SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE);
-    let shell = match shell {
+    let shell = match zbus::block_on(shell) {
         Ok(shell) => shell,
         Err(error) => return eprintln!("deckard-bridge: no Shell TextInput1: {error}"),
     };
@@ -230,7 +230,7 @@ fn listen(
 ) -> zbus::Result<()> {
     let rule = crate::signals(SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)?.build();
     let (state, handle, owner) = (Arc::clone(state), handle.clone(), shell.clone());
-    crate::relay(bus, rule, 64, move |signal| {
+    crate::relay(bus, rule?, 64, move |signal| {
         if let Some(message) = sync::lock(&state).shell(signal) {
             let _ = handle.send(message);
         }
@@ -299,9 +299,9 @@ mod tests {
 
     fn signal<B>(member: &str, body: &B) -> Message
     where
-        B: serde::Serialize + zbus::zvariant::DynamicType,
+        B: serde::Serialize + zbus::DynamicType,
     {
-        let builder = Message::signal(TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE, member).unwrap();
+        let builder = Message::signal(TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE, member);
         builder.build(body).unwrap()
     }
 
@@ -406,13 +406,20 @@ mod tests {
             return Ok(());
         }
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let owner = Connection::session()?;
-        owner
-            .object_server()
-            .at(TEXT_INPUT_PATH, MockShell(Arc::clone(&calls)))?;
-        owner.request_name(SHELL_BUS_NAME)?;
-        let bus = Connection::session()?;
-        let shell = Proxy::new(&bus, SHELL_BUS_NAME, TEXT_INPUT_PATH, TEXT_INPUT_INTERFACE)?;
+        let owner = zbus::block_on(Connection::session())?;
+        zbus::block_on(
+            owner
+                .object_server()
+                .at(TEXT_INPUT_PATH, MockShell(Arc::clone(&calls))),
+        )?;
+        zbus::block_on(owner.request_name(SHELL_BUS_NAME))?;
+        let bus = zbus::block_on(Connection::session())?;
+        let shell = zbus::block_on(Proxy::new(
+            &bus,
+            SHELL_BUS_NAME,
+            TEXT_INPUT_PATH,
+            TEXT_INPUT_INTERFACE,
+        ))?;
         register(&shell)?;
         let expected = vec![
             ShellCall::SetEditor("deckard.org.example".into(), 7, 0x200),

@@ -17,12 +17,13 @@ use deckard_core::{ids, json, sync, validate};
 use deckard_host_tools::bus;
 use futures_lite::future;
 use serde_json::{Map, Value, json};
-use zbus::blocking::Connection;
+use zbus::Connection;
 use zbus::export::serde::Serialize;
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{DynamicType, OwnedValue, Value as Variant};
-use zbus::{DBusError, Task, fdo, interface};
+use zbus::{DBusError, fdo, interface};
+use zbus::{DynamicType, OwnedVariant as OwnedValue, Variant};
+use zruntime::{Shared, Task};
 
 /// Deckard's bus name, owned by the bridge.
 pub const BUS_NAME: &str = "org.marathonos.Deckard";
@@ -112,7 +113,7 @@ struct Pending {
     staged: Option<Staged>,
     /// None for a job, which ends with `Finished`.
     reply: Option<Sender<Answer>>,
-    timeout: Option<Task<()>>,
+    timeout: Option<Task<(), Shared>>,
 }
 
 struct Inner {
@@ -170,7 +171,7 @@ impl Packages {
 
     fn emit<B: Serialize + DynamicType>(&self, member: &str, body: &B) -> zbus::Result<()> {
         let bus = &self.0.bus;
-        bus.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body)
+        zbus::block_on(bus.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, member, body))
     }
 
     /// A message of type `kind` from the authenticated bridge on `route`.
@@ -276,19 +277,20 @@ impl Packages {
             // Its own handle: dropped before the await, it would cancel this task.
             let _this = item.timeout.take();
             if let Some(finished) = fail(&timed, item, "Android didn't answer") {
-                let bus = inner.bus.inner();
+                let bus = &inner.bus;
                 let signal =
                     bus.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, "Finished", &finished);
                 let _ = signal.await;
             }
         };
-        let executor = self.0.bus.inner().executor();
+        let executor =
+            zruntime::SharedRuntime::current().map_err(|e| fdo::Error::Failed(e.to_string()))?;
         let item = Pending {
             kind,
             route,
             staged,
             reply,
-            timeout: Some(executor.spawn(timeout, "deckard-package-timeout")),
+            timeout: Some(executor.spawn("deckard-package-timeout", timeout)),
         };
         {
             let mut pending = sync::lock(&self.0.pending);

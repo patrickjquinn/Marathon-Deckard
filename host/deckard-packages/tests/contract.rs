@@ -15,8 +15,8 @@ use deckard_packages::{
 };
 use serde_json::{Value, json};
 use zbus::MatchRule;
-use zbus::blocking::{Connection, MessageIterator, Proxy, connection::Builder};
 use zbus::message::Type;
+use zbus::{Connection, MessageStream, Proxy, connection::Builder};
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type Commands = Arc<Mutex<Vec<(BridgeRoute, Value)>>>;
@@ -51,9 +51,11 @@ impl PrivateBus {
     }
 
     fn connection(&self) -> TestResult<Connection> {
-        Ok(Builder::address(self.address.as_str())?
-            .method_timeout(Duration::from_secs(3))
-            .build()?)
+        Ok(zbus::block_on(
+            Builder::address(self.address.as_str())
+                .method_timeout(Duration::from_secs(3))
+                .build(),
+        )?)
     }
 }
 
@@ -75,9 +77,11 @@ fn fixture(
     tempfile::TempDir,
 )> {
     let bus = PrivateBus::start()?;
-    let owner = Builder::address(bus.address.as_str())?
-        .name(BUS_NAME)?
-        .build()?;
+    let owner = zbus::block_on(
+        Builder::address(bus.address.as_str())
+            .name(BUS_NAME)
+            .build(),
+    )?;
     let client = bus.connection()?;
     let directory = tempfile::tempdir()?;
     let commands: Commands = Arc::new(Mutex::new(Vec::new()));
@@ -91,12 +95,17 @@ fn fixture(
         }),
         Arc::new(move |sender| Box::pin(async move { allowed && sender.starts_with(':') })),
     )?;
-    owner.object_server().at(OBJECT_PATH, service.interface())?;
+    zbus::block_on(owner.object_server().at(OBJECT_PATH, service.interface()))?;
     Ok((bus, client, service, commands, directory))
 }
 
 fn proxy(client: &Connection) -> TestResult<Proxy<'_>> {
-    Ok(Proxy::new(client, BUS_NAME, OBJECT_PATH, INTERFACE)?)
+    Ok(zbus::block_on(Proxy::new(
+        client,
+        BUS_NAME,
+        OBJECT_PATH,
+        INTERFACE,
+    ))?)
 }
 
 fn command(commands: &Commands, count: usize) -> (BridgeRoute, Value) {
@@ -124,13 +133,13 @@ fn map_bool(map: &VariantMap, key: &str) -> bool {
 #[test]
 fn wire_signatures_match_live_pi() -> TestResult<()> {
     let (_bus, client, _service, _, _) = fixture(true, true)?;
-    let introspect = Proxy::new(
+    let introspect = zbus::block_on(Proxy::new(
         &client,
         BUS_NAME,
         OBJECT_PATH,
         "org.freedesktop.DBus.Introspectable",
-    )?;
-    let xml: String = introspect.call("Introspect", &())?;
+    ))?;
+    let xml: String = zbus::block_on(introspect.call("Introspect", &()))?;
     assert!(xml.contains("interface name=\"org.marathonos.Deckard1.Packages\""));
     for name in [
         "DeviceProfile",
@@ -160,7 +169,9 @@ fn inspect_and_profile_return_bounded_typed_maps() -> TestResult<()> {
     let caller = client.clone();
     let path = apk.to_string_lossy().to_string();
     let task = thread::spawn(move || -> TestResult<VariantMap> {
-        Ok(proxy(&caller)?.call("InspectPackage", &(path,))?)
+        Ok(zbus::block_on(
+            proxy(&caller)?.call("InspectPackage", &(path,)),
+        )?)
     });
     let (route, first) = command(&commands, 0);
     assert_eq!(route, BridgeRoute::User);
@@ -174,7 +185,7 @@ fn inspect_and_profile_return_bounded_typed_maps() -> TestResult<()> {
     assert!(!directory.path().join("install").join(staged).exists());
     let caller = client.clone();
     let task = thread::spawn(move || -> TestResult<VariantMap> {
-        Ok(proxy(&caller)?.call("DeviceProfile", &())?)
+        Ok(zbus::block_on(proxy(&caller)?.call("DeviceProfile", &()))?)
     });
     let (_, second) = command(&commands, 1);
     service.handle(
@@ -195,8 +206,9 @@ fn install_uninstall_auth_and_bridge_loss() -> TestResult<()> {
     let (_bus, client, service, commands, directory) = fixture(true, true)?;
     let apk = directory.path().join("sample.apk");
     fs::write(&apk, b"PK\x03\x04payload")?;
-    let job: String =
-        proxy(&client)?.call("InstallPackage", &(apk.to_string_lossy().to_string(),))?;
+    let job: String = zbus::block_on(
+        proxy(&client)?.call("InstallPackage", &(apk.to_string_lossy().to_string(),)),
+    )?;
     let (route, sent) = command(&commands, 0);
     assert_eq!(route, BridgeRoute::User);
     assert_eq!(sent["id"], job);
@@ -209,7 +221,8 @@ fn install_uninstall_auth_and_bridge_loss() -> TestResult<()> {
             .unwrap(),
     )?;
     assert_eq!(service.pending_count(), 0);
-    let job: String = proxy(&client)?.call("UninstallPackage", &("org.example.app",))?;
+    let job: String =
+        zbus::block_on(proxy(&client)?.call("UninstallPackage", &("org.example.app",)))?;
     assert_eq!(command(&commands, 1).0, BridgeRoute::System);
     service.handle(
         BridgeRoute::User,
@@ -219,18 +232,22 @@ fn install_uninstall_auth_and_bridge_loss() -> TestResult<()> {
             .unwrap(),
     )?;
     assert_eq!(service.pending_count(), 1);
-    let _: String =
-        proxy(&client)?.call("InstallPackage", &(apk.to_string_lossy().to_string(),))?;
+    let _: String = zbus::block_on(
+        proxy(&client)?.call("InstallPackage", &(apk.to_string_lossy().to_string(),)),
+    )?;
     assert_eq!(service.pending_count(), 2);
     service.bridge_lost(BridgeRoute::User)?;
     assert_eq!(service.pending_count(), 1);
     service.bridge_lost(BridgeRoute::System)?;
     assert_eq!(service.pending_count(), 0);
     assert!(!job.is_empty());
-    let denied = proxy(&client)?.call::<_, _, String>("UninstallPackage", &("../invalid",));
+    let denied =
+        zbus::block_on(proxy(&client)?.call::<_, _, String>("UninstallPackage", &("../invalid",)));
     assert!(denied.is_err());
     let (_bus, client, _, commands, _) = fixture(false, true)?;
-    let denied = proxy(&client)?.call::<_, _, String>("UninstallPackage", &("org.example.app",));
+    let denied = zbus::block_on(
+        proxy(&client)?.call::<_, _, String>("UninstallPackage", &("org.example.app",)),
+    );
     assert!(denied.is_err());
     assert!(commands.lock().unwrap().is_empty());
     Ok(())
@@ -241,7 +258,7 @@ fn list_is_capped_and_disconnected_bridge_fails_fast() -> TestResult<()> {
     let (_bus, client, service, commands, _) = fixture(true, true)?;
     let caller = client.clone();
     let task = thread::spawn(move || -> TestResult<Vec<VariantMap>> {
-        Ok(proxy(&caller)?.call("ListPackages", &())?)
+        Ok(zbus::block_on(proxy(&caller)?.call("ListPackages", &()))?)
     });
     let (_, sent) = command(&commands, 0);
     let mut packages = vec![json!({"pkg":"../bad"})];
@@ -261,8 +278,10 @@ fn list_is_capped_and_disconnected_bridge_fails_fast() -> TestResult<()> {
     let (_bus, client, _, _, directory) = fixture(true, false)?;
     let apk = directory.path().join("sample.apk");
     fs::write(&apk, b"PK\x03\x04payload")?;
-    let result = proxy(&client)?
-        .call::<_, _, String>("InstallPackage", &(apk.to_string_lossy().to_string(),));
+    let result = zbus::block_on(
+        proxy(&client)?
+            .call::<_, _, String>("InstallPackage", &(apk.to_string_lossy().to_string(),)),
+    );
     assert!(result.is_err());
     assert_eq!(fs::read_dir(directory.path().join("install"))?.count(), 0);
     Ok(())
@@ -275,10 +294,10 @@ fn pending_cap_rejects_new_jobs_without_leaking_staged_files() -> TestResult<()>
     fs::write(&apk, b"PK\x03\x04payload")?;
     let path = apk.to_string_lossy().to_string();
     for _ in 0..MAX_PENDING {
-        let _: String = proxy(&client)?.call("InstallPackage", &(path.clone(),))?;
+        let _: String = zbus::block_on(proxy(&client)?.call("InstallPackage", &(path.clone(),)))?;
     }
     assert_eq!(service.pending_count(), MAX_PENDING);
-    let rejected = proxy(&client)?.call::<_, _, String>("InstallPackage", &(path,));
+    let rejected = zbus::block_on(proxy(&client)?.call::<_, _, String>("InstallPackage", &(path,)));
     assert!(rejected.is_err());
     assert_eq!(
         fs::read_dir(directory.path().join("install"))?.count(),
@@ -295,8 +314,9 @@ fn invalid_apk_is_a_failure_map_and_stale_apks_are_reaped() -> TestResult<()> {
     let (_bus, client, _service, commands, directory) = fixture(true, true)?;
     let invalid = directory.path().join("notes.txt");
     fs::write(&invalid, b"not an apk")?;
-    let result: VariantMap =
-        proxy(&client)?.call("InspectPackage", &(invalid.to_string_lossy().to_string(),))?;
+    let result: VariantMap = zbus::block_on(
+        proxy(&client)?.call("InspectPackage", &(invalid.to_string_lossy().to_string(),)),
+    )?;
     assert!(!map_bool(&result, "ok"));
     assert_eq!(map_string(&result, "message"), "not an Android app");
     assert!(commands.lock().unwrap().is_empty());
@@ -322,10 +342,12 @@ fn progress_finished_and_package_changed_arrive_on_private_bus() -> TestResult<(
     let listener = bus.connection()?;
     let rule = MatchRule::builder()
         .msg_type(Type::Signal)
-        .path(OBJECT_PATH)?
-        .interface(INTERFACE)?
+        .path(OBJECT_PATH)
+        .interface(INTERFACE)
         .build();
-    let mut signals = MessageIterator::for_match_rule(rule, &listener, Some(8))?;
+    let mut signals = futures_lite::stream::block_on(zbus::block_on(
+        MessageStream::for_match_rule(rule?, &listener, std::num::NonZeroUsize::new(8)),
+    )?);
     let (tx, rx) = mpsc::sync_channel(3);
     thread::spawn(move || {
         for signal in signals.by_ref().take(3) {
@@ -343,8 +365,9 @@ fn progress_finished_and_package_changed_arrive_on_private_bus() -> TestResult<(
     });
     let apk = directory.path().join("sample.apk");
     fs::write(&apk, b"PK\x03\x04payload")?;
-    let job: String =
-        proxy(&client)?.call("InstallPackage", &(apk.to_string_lossy().to_string(),))?;
+    let job: String = zbus::block_on(
+        proxy(&client)?.call("InstallPackage", &(apk.to_string_lossy().to_string(),)),
+    )?;
     assert_eq!(command(&commands, 0).0, BridgeRoute::User);
     service.handle(
         BridgeRoute::System,

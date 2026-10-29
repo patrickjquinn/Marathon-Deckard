@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use deckard_packages::{BridgeRoute, BridgeSend, MayChange, Packages};
 use serde_json::{Map, Value};
-use zbus::blocking::Connection;
+use zbus::Connection;
 
 use crate::auth;
 
@@ -31,11 +31,13 @@ impl PackageBridge {
         send: Arc<BridgeSend>,
         store_handler: impl Into<PathBuf>,
     ) -> io::Result<Self> {
-        let policy = may_change_policy(bus.inner().clone(), store_handler.into());
+        let policy = may_change_policy(bus.clone(), store_handler.into());
         let service = Packages::new(bus.clone(), install_dir, send, policy)?;
-        bus.object_server()
-            .at(deckard_packages::OBJECT_PATH, service.interface())
-            .map_err(io::Error::other)?;
+        zbus::block_on(
+            bus.object_server()
+                .at(deckard_packages::OBJECT_PATH, service.interface()),
+        )
+        .map_err(io::Error::other)?;
         Ok(Self { service })
     }
 

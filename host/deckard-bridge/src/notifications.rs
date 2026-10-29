@@ -17,9 +17,9 @@ use deckard_core::{ids, json, keel, png_guard, sync, validate};
 use deckard_host_tools::files;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use zbus::blocking::{Connection, MessageIterator};
+use zbus::Variant;
 use zbus::message::Message;
-use zbus::zvariant::Value as Variant;
+use zbus::{Connection, MessageStream};
 
 use crate::Outbound;
 
@@ -138,7 +138,9 @@ impl Notifications {
     /// The subscription failed.
     pub fn listen(&self) -> Result<JoinHandle<()>> {
         let rule = crate::signals(HUB, HUB_PATH, HUB)?.build();
-        let signals = MessageIterator::for_match_rule(rule, &self.0.bus, Some(256))?;
+        let signals = futures_lite::stream::block_on(zbus::block_on(
+            MessageStream::for_match_rule(rule?, &self.0.bus, std::num::NonZeroUsize::new(256)),
+        )?);
         let notifications = self.clone();
         Ok(thread::spawn(move || {
             for signal in signals {
@@ -244,10 +246,16 @@ impl Notifications {
 
     fn hub<B>(&self, method: &str, body: &B) -> Result<Message>
     where
-        B: Serialize + zbus::zvariant::DynamicType,
+        B: Serialize + zbus::DynamicType,
     {
         let bus = &self.0.bus;
-        Ok(bus.call_method(Some(HUB), HUB_PATH, Some(HUB), method, body)?)
+        Ok(zbus::block_on(bus.call_method(
+            Some(HUB),
+            HUB_PATH,
+            Some(HUB),
+            method,
+            body,
+        ))?)
     }
 
     fn icon_url(&self, package: &str) -> String {
@@ -447,7 +455,13 @@ fn dismiss(notifications: &Weak<Inner>, due: &Receiver<Dismissal>) {
 fn close_toasts(bus: &Connection, due: &Receiver<(Instant, u32)>) {
     for (deadline, id) in due {
         thread::sleep(deadline.saturating_duration_since(Instant::now()));
-        let _ = bus.call_method(Some(HUB), HUB_PATH, Some(HUB), "CloseNotification", &(id,));
+        let _ = zbus::block_on(bus.call_method(
+            Some(HUB),
+            HUB_PATH,
+            Some(HUB),
+            "CloseNotification",
+            &(id,),
+        ));
     }
 }
 

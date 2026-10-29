@@ -1,5 +1,7 @@
 //! The native Deckard user session (upstream `waydroid session`).
 
+use zbus::runtime::traits::TaskHandle as _;
+
 mod desktop;
 mod monitor;
 mod timezone;
@@ -20,13 +22,13 @@ use std::time::{Duration, Instant};
 
 use deckard_host_tools::{bus, names};
 use deckard_launch::binder::{self, BinderConfig, Platform};
-use deckard_launch::session::{ContainerManagerProxyBlocking, SESSION_NAME};
+use deckard_launch::session::{ContainerManagerProxy, SESSION_NAME};
 use nix::unistd::User;
 use rustix::event::{self, PollFd, PollFlags};
 use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
 use rustix::io::Errno;
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
-use zbus::blocking::Connection;
+use zbus::Connection;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 
 pub use deckard_launch::Result;
@@ -180,7 +182,9 @@ fn make_payload() -> Result<HashMap<String, String>> {
 }
 
 fn start_container(connection: &Connection, payload: &HashMap<String, String>) -> Result<()> {
-    Ok(ContainerManagerProxyBlocking::new(connection)?.start(payload.clone())?)
+    Ok(zbus::block_on(
+        zbus::block_on(ContainerManagerProxy::new(connection))?.start(payload.clone()),
+    )?)
 }
 
 fn start_system_container() -> Result<()> {
@@ -242,9 +246,11 @@ fn apply(data_home: &Path, config: &BinderConfig, event: Option<monitor::Event>)
 /// bridge owns `deckard.<package>` on the session bus while an app is
 /// installed. Any change of owner asks Android about that package again.
 fn follow_bridge(events: &mpsc::SyncSender<monitor::Event>, resync: &AtomicBool) -> Result<()> {
-    let bus = Connection::session()?;
-    let changes = zbus::blocking::fdo::DBusProxy::new(&bus)?.receive_name_owner_changed()?;
-    for change in changes {
+    let bus = zbus::block_on(Connection::session())?;
+    let changes = zbus::block_on(
+        zbus::block_on(zbus::fdo::DBusProxy::new(&bus))?.receive_name_owner_changed(),
+    )?;
+    for change in futures_lite::stream::block_on(changes) {
         let Ok(args) = change.args() else { continue };
         let Some(package) = args.name().strip_prefix(names::APP_ID_PREFIX) else {
             continue;
@@ -343,24 +349,23 @@ pub fn session_start() -> Result<Ended> {
     let entries = entries | WatchFlags::MOVED_TO | WatchFlags::DELETE_SELF | WatchFlags::MOVE_SELF;
     inotify::add_watch(&watch, display_dir, entries)?;
     let session_bus = bus::session()?;
-    let closed = session_bus.inner().clone();
+    let closed = session_bus.clone();
     let closed_wake = wake.try_clone()?;
     let closed_task = async move {
         closed.closed().await;
         let _ = (&closed_wake).write(&[0]);
     };
     session_bus
-        .inner()
-        .executor()
-        .spawn(closed_task, "session-bus-closed")
+        .spawn("session-bus-closed", closed_task)
         .detach();
     let manager = SessionManager {
         stop: Arc::clone(&stop),
         wake,
     };
-    session_bus.object_server().at(SESSION_PATH, manager)?;
-    let name_reply =
-        session_bus.request_name_with_flags(SESSION_NAME, RequestNameFlags::DoNotQueue.into())?;
+    zbus::block_on(session_bus.object_server().at(SESSION_PATH, manager))?;
+    let name_reply = zbus::block_on(
+        session_bus.request_name_with_flags(SESSION_NAME, RequestNameFlags::DO_NOT_QUEUE),
+    )?;
     if name_reply != RequestNameReply::PrimaryOwner {
         return Err("another Deckard session already owns the bus name".into());
     }
@@ -404,7 +409,7 @@ pub fn session_start() -> Result<Ended> {
         while rustix::io::read(&watch, &mut drained).is_ok_and(|count| count > 0) {}
     }
     if !leave_container.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
-        ContainerManagerProxyBlocking::new(&system_bus)?.stop(false)?;
+        zbus::block_on(zbus::block_on(ContainerManagerProxy::new(&system_bus))?.stop(false))?;
     }
     Ok(if compositor_changed {
         Ended::CompositorRestarted
@@ -418,11 +423,17 @@ pub fn session_start() -> Result<Ended> {
 /// # Errors
 /// Neither the session nor the container manager answers.
 pub fn session_stop() -> Result<()> {
-    let session = Connection::session().and_then(|bus| SessionProxyBlocking::new(&bus)?.stop());
+    let session = zbus::block_on(Connection::session())
+        .and_then(|bus| zbus::block_on(zbus::block_on(SessionProxy::new(&bus))?.stop()));
     if session.is_ok() {
         return Ok(());
     }
-    Ok(ContainerManagerProxyBlocking::new(&Connection::system()?)?.stop(true)?)
+    Ok(zbus::block_on(
+        zbus::block_on(ContainerManagerProxy::new(&zbus::block_on(
+            Connection::system(),
+        )?))?
+        .stop(true),
+    )?)
 }
 
 #[cfg(test)]
@@ -552,16 +563,17 @@ mod tests {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let (_wakes, wake) = UnixStream::pair()?;
-        let owner = Connection::session()?;
-        owner.object_server().at(
+        let owner = zbus::block_on(Connection::session())?;
+        zbus::block_on(owner.object_server().at(
             SESSION_PATH,
             SessionManager {
                 stop: Arc::clone(&stop),
                 wake,
             },
+        ))?;
+        let reply = zbus::block_on(
+            owner.request_name_with_flags(SESSION_NAME, RequestNameFlags::DO_NOT_QUEUE),
         )?;
-        let reply =
-            owner.request_name_with_flags(SESSION_NAME, RequestNameFlags::DoNotQueue.into())?;
         assert_eq!(reply, RequestNameReply::PrimaryOwner);
         session_stop()?;
         assert!(stop.load(Ordering::Acquire));
@@ -574,18 +586,20 @@ mod tests {
             return Ok(());
         }
         let captured = Arc::new(Mutex::new(None));
-        let owner = Connection::session()?;
-        owner
-            .object_server()
-            .at("/ContainerManager", MockContainer(Arc::clone(&captured)))?;
-        let reply = owner.request_name_with_flags(
-            "org.marathonos.Deckard.Container",
-            RequestNameFlags::DoNotQueue.into(),
+        let owner = zbus::block_on(Connection::session())?;
+        zbus::block_on(
+            owner
+                .object_server()
+                .at("/ContainerManager", MockContainer(Arc::clone(&captured))),
         )?;
+        let reply = zbus::block_on(owner.request_name_with_flags(
+            "org.marathonos.Deckard.Container",
+            RequestNameFlags::DO_NOT_QUEUE,
+        ))?;
         assert_eq!(reply, RequestNameReply::PrimaryOwner);
         let mut payload = HashMap::new();
         payload.insert("user_id".to_owned(), "1000".to_owned());
-        let caller = Connection::session()?;
+        let caller = zbus::block_on(Connection::session())?;
         start_container(&caller, &payload)?;
         let actual = captured.lock().map_err(|_| "poisoned mock")?;
         assert_eq!(*actual, Some(payload));

@@ -7,6 +7,7 @@ publish.workspace = true
 license = "GPL-3.0-or-later"
 
 [dependencies]
+zruntime = { version = "0.2.1", features = ["runtime", "helper"] }
 async-channel.workspace = true
 async-io.workspace = true
 deckard-core = { path = "../deckard-core" }
@@ -14,7 +15,7 @@ deckard-host-tools = { path = "../deckard-host-tools" }
 futures-lite.workspace = true
 getrandom = "=0.4.3"
 serde_json.workspace = true
-zbus = { workspace = true, features = ["blocking-api"] }
+zbus = { workspace = true, features = ["proxy", "service"] }
 
 [dev-dependencies]
 tempfile.workspace = true

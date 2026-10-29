@@ -11,12 +11,11 @@ use std::time::Instant;
 use deckard_core::messages::{self, Media};
 use deckard_core::png_guard;
 use deckard_core::{json, keel};
-use deckard_host_tools::bus;
 use serde_json::{Map, Value};
 use tempfile::TempPath;
 use zbus::Address;
-use zbus::blocking::Connection;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value as Variant};
+use zbus::Connection;
+use zbus::{ObjectPath, OwnedObjectPath, Variant};
 
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
@@ -441,9 +440,9 @@ impl MprisAdapter {
             Some(address) => address.parse()?,
             None => Address::session()?,
         };
-        let builder = bus::builder(address)?.name(name)?;
-        let builder = builder.serve_at(PATH, root)?.serve_at(PATH, player)?;
-        Ok(async_io::block_on(builder.build())?.into())
+        let builder = zbus::connection::Builder::address(address).name(name);
+        let builder = builder.serve_at(PATH, root).serve_at(PATH, player);
+        zbus::block_on(builder.build())
     }
 
     fn update(&mut self, media: Media) -> zbus::Result<()> {
@@ -460,22 +459,25 @@ impl MprisAdapter {
             active.art = art;
         }
         let server = active.connection.object_server();
-        *server.interface::<_, Root>(PATH)?.get_mut() = Root::new(&media);
-        let (changed, seeked) = server
-            .interface::<_, Player>(PATH)?
-            .get_mut()
-            .apply(media, url);
-        active.connection.emit_signal(
+        let root = zbus::block_on(server.interface::<_, Root>(PATH))?;
+        *zbus::block_on(root.get_mut()) = Root::new(&media);
+        let player = zbus::block_on(server.interface::<_, Player>(PATH))?;
+        let (changed, seeked) = zbus::block_on(player.get_mut()).apply(media, url);
+        zbus::block_on(active.connection.emit_signal(
             None::<&str>,
             PATH,
             "org.freedesktop.DBus.Properties",
             "PropertiesChanged",
             &(PLAYER, changed, Vec::<String>::new()),
-        )?;
+        ))?;
         if let Some(position) = seeked {
-            active
-                .connection
-                .emit_signal(None::<&str>, PATH, PLAYER, "Seeked", &(position,))?;
+            zbus::block_on(active.connection.emit_signal(
+                None::<&str>,
+                PATH,
+                PLAYER,
+                "Seeked",
+                &(position,),
+            ))?;
         }
         Ok(())
     }

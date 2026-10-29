@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use deckard_bridge::runtime::{self, Runtime};
 use deckard_core::runtime_state::State;
-use zbus::blocking::Connection;
+use zbus::Connection;
 use zbus::interface;
-use zbus::zvariant::{OwnedObjectPath, Value};
+use zbus::{OwnedObjectPath, Variant as Value};
 
 const UNIT_PATH: &str = "/org/freedesktop/systemd1/unit/deckard_2dsession_2eservice";
 
@@ -54,13 +54,13 @@ impl Unit {
 fn change(systemd: &Connection, unit: &Shared, active: &str, entered_us: u64) -> TestResult {
     *unit.lock().unwrap() = (active.into(), entered_us);
     let changed = HashMap::from([("ActiveState", Value::from(active))]);
-    systemd.emit_signal(
+    zbus::block_on(systemd.emit_signal(
         None::<&str>,
         UNIT_PATH,
         "org.freedesktop.DBus.Properties",
         "PropertiesChanged",
         &("org.freedesktop.systemd1.Unit", changed, Vec::<&str>::new()),
-    )?;
+    ))?;
     Ok(())
 }
 
@@ -72,14 +72,18 @@ fn follows_unit_property_changes_without_polling() -> TestResult {
     let dir = tempfile::tempdir()?;
     let unit: Shared = Arc::new(Mutex::new(("inactive".into(), 0)));
     let (subscribed, subscriptions) = mpsc::channel();
-    let systemd = Connection::session()?;
-    systemd
-        .object_server()
-        .at("/org/freedesktop/systemd1", Manager(subscribed))?;
-    systemd
-        .object_server()
-        .at(UNIT_PATH, Unit(Arc::clone(&unit)))?;
-    systemd.request_name("org.freedesktop.systemd1")?;
+    let systemd = zbus::block_on(Connection::session())?;
+    zbus::block_on(
+        systemd
+            .object_server()
+            .at("/org/freedesktop/systemd1", Manager(subscribed)),
+    )?;
+    zbus::block_on(
+        systemd
+            .object_server()
+            .at(UNIT_PATH, Unit(Arc::clone(&unit))),
+    )?;
+    zbus::block_on(systemd.request_name("org.freedesktop.systemd1"))?;
 
     let runtime = Runtime::new(
         dir.path().join("settings.json"),
@@ -87,7 +91,7 @@ fn follows_unit_property_changes_without_polling() -> TestResult {
         dir.path().join("memory.current"),
     );
     let (changed, changes) = mpsc::channel();
-    let bus = Connection::session()?;
+    let bus = zbus::block_on(Connection::session())?;
     let watched = runtime.clone();
     runtime::watch_unit(&bus, watched, move || {
         let _ = changed.send(());

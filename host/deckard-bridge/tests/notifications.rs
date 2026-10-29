@@ -10,9 +10,9 @@ use deckard_bridge::notifications::Notifications;
 use deckard_core::messages;
 use image::{DynamicImage, ImageFormat};
 use serde_json::json;
-use zbus::blocking::{Connection, connection::Builder};
+use zbus::OwnedVariant as OwnedValue;
 use zbus::interface;
-use zbus::zvariant::OwnedValue;
+use zbus::{Connection, connection::Builder};
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -52,9 +52,11 @@ impl PrivateBus {
     }
 
     fn connection(&self) -> TestResult<Connection> {
-        Ok(Builder::address(self.address.as_str())?
-            .method_timeout(Duration::from_secs(3))
-            .build()?)
+        Ok(zbus::block_on(
+            Builder::address(self.address.as_str())
+                .method_timeout(Duration::from_secs(3))
+                .build(),
+        )?)
     }
 }
 
@@ -159,10 +161,12 @@ fn post(key: &str, title: &str, auto_cancel: bool) -> messages::Post {
 fn private_bus_notify_replace_close_and_legacy_state() -> TestResult<()> {
     let bus = PrivateBus::start()?;
     let calls = Arc::new(Mutex::new(Calls::default()));
-    let hub = Builder::address(bus.address.as_str())?
-        .name(HUB)?
-        .serve_at(PATH, FakeHub(calls.clone()))?
-        .build()?;
+    let hub = zbus::block_on(
+        Builder::address(bus.address.as_str())
+            .name(HUB)
+            .serve_at(PATH, FakeHub(calls.clone()))
+            .build(),
+    )?;
     let home = tempfile::tempdir()?;
     let state_path = home.path().join("state/deckard/notifications.json");
     let adapter = Notifications::new(
@@ -237,10 +241,12 @@ fn private_bus_notify_replace_close_and_legacy_state() -> TestResult<()> {
 fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
     let bus = PrivateBus::start()?;
     let calls = Arc::new(Mutex::new(Calls::default()));
-    let hub = Builder::address(bus.address.as_str())?
-        .name(HUB)?
-        .serve_at(PATH, FakeHub(calls))?
-        .build()?;
+    let hub = zbus::block_on(
+        Builder::address(bus.address.as_str())
+            .name(HUB)
+            .serve_at(PATH, FakeHub(calls))
+            .build(),
+    )?;
     let home = tempfile::tempdir()?;
     let (tx, rx) = mpsc::sync_channel(8);
     let adapter = Notifications::new(
@@ -251,37 +257,37 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
     )?;
     let _listener = adapter.listen()?;
     adapter.post(&post("tap", "Tap", false))?;
-    hub.emit_signal(
+    zbus::block_on(hub.emit_signal(
         None::<&str>,
         PATH,
         HUB,
         "NotificationReplied",
         &(41_u32, "Hello"),
-    )?;
+    ))?;
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(2))?,
         json!({"t": "reply", "key": "tap", "action": "a1", "text": "Hello"})
     );
     // The tap's grace counts from the tap: the close follows it at once so
     // a loaded machine stays well inside it.
-    hub.emit_signal(
+    zbus::block_on(hub.emit_signal(
         None::<&str>,
         PATH,
         HUB,
         "ActionInvoked",
         &(41_u32, "default"),
-    )?;
+    ))?;
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(2))?,
         json!({"t": "invoke", "key": "tap", "action": "default"})
     );
-    hub.emit_signal(
+    zbus::block_on(hub.emit_signal(
         None::<&str>,
         PATH,
         HUB,
         "NotificationClosed",
         &(41_u32, 2_u32),
-    )?;
+    ))?;
     assert!(
         rx.recv_timeout(Duration::from_millis(750)).is_err(),
         "a tapped non-auto-cancel row must not be dismissed"
@@ -292,13 +298,13 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
     );
 
     adapter.post(&post("dismiss", "Dismiss", true))?;
-    hub.emit_signal(
+    zbus::block_on(hub.emit_signal(
         None::<&str>,
         PATH,
         HUB,
         "NotificationClosed",
         &(42_u32, 2_u32),
-    )?;
+    ))?;
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(2))?,
         json!({"t": "dismiss", "key": "dismiss"})
@@ -310,10 +316,12 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
 fn private_bus_image_data_uses_freedesktop_struct_signature() -> TestResult<()> {
     let bus = PrivateBus::start()?;
     let calls = Arc::new(Mutex::new(Calls::default()));
-    let _hub = Builder::address(bus.address.as_str())?
-        .name(HUB)?
-        .serve_at(PATH, FakeHub(calls.clone()))?
-        .build()?;
+    let _hub = zbus::block_on(
+        Builder::address(bus.address.as_str())
+            .name(HUB)
+            .serve_at(PATH, FakeHub(calls.clone()))
+            .build(),
+    )?;
     let home = tempfile::tempdir()?;
     let adapter = Notifications::new(
         bus.connection()?,

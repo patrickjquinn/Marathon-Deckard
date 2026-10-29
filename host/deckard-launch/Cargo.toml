@@ -9,7 +9,7 @@ license = "GPL-3.0-or-later"
 [dependencies]
 deckard-host-tools = { path = "../deckard-host-tools" }
 rsbinder.workspace = true
-zbus = { workspace = true, features = ["blocking-api"] }
+zbus = { workspace = true, features = ["proxy"] }
 
 [lints]
 workspace = true

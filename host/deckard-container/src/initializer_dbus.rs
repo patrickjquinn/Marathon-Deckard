@@ -20,7 +20,7 @@ use zbus::connection::Connection;
 use zbus::fdo;
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{DynamicType, Value};
+use zbus::{DynamicType, Variant as Value};
 
 use crate::Result;
 use crate::dbus::{Caller, ContainerService};
@@ -265,8 +265,8 @@ mod tests {
     use futures_lite::{StreamExt, future};
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
+    use zbus::OwnedVariant as OwnedValue;
     use zbus::connection::Builder;
-    use zbus::zvariant::OwnedValue;
 
     type TestResult = Result<()>;
 
@@ -376,23 +376,23 @@ mod tests {
         let (_bus, address) = private_bus()?;
         let asked = Arc::new(Mutex::new(Vec::new()));
         let outcome = async_io::block_on(async {
-            let _polkit = Builder::address(address.as_str())?
-                .name("org.freedesktop.PolicyKit1")?
+            let _polkit = Builder::address(address.as_str())
+                .name("org.freedesktop.PolicyKit1")
                 .serve_at(
                     "/org/freedesktop/PolicyKit1/Authority",
                     Polkit {
                         allow,
                         asked: Arc::clone(&asked),
                     },
-                )?
+                )
                 .build()
                 .await?;
-            let _server = Builder::address(address.as_str())?
-                .name(BUS_NAME)?
-                .serve_at(OBJECT_PATH, InitializerService::new(job))?
+            let _server = Builder::address(address.as_str())
+                .name(BUS_NAME)
+                .serve_at(OBJECT_PATH, InitializerService::new(job))
                 .build()
                 .await?;
-            let client = Builder::address(address.as_str())?.build().await?;
+            let client = Builder::address(address.as_str()).build().await?;
             let proxy = zbus::Proxy::new(&client, BUS_NAME, OBJECT_PATH, INTERFACE).await?;
             let mut progress = proxy.receive_signal("ProgressChanged").await?;
             let mut finished = proxy.receive_signal("Finished").await?;

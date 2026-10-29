@@ -4,6 +4,8 @@
 //! running; what it touches next is paged back in (about 250 ms more on an
 //! app's cold start on the HackberryPi, for ~1.2 GB less resident).
 
+use zbus::runtime::traits::TaskHandle as _;
+
 use std::fs;
 use std::io::ErrorKind;
 use std::ops::ControlFlow;
@@ -53,7 +55,7 @@ pub fn start(bus: &Connection, cgroup: PathBuf) {
             eprintln!("deckard-bridge: idle trim has no foreground changes: {error}");
         }
     };
-    bus.executor().spawn(follow, "deckard-trim").detach();
+    bus.spawn("deckard-trim", follow).detach();
     thread::spawn(move || run(&shared, &cgroup));
 }
 

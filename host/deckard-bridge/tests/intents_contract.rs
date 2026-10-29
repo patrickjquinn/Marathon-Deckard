@@ -13,11 +13,11 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use deckard_bridge::intents::{Intents, Target, request_id, route, safe_name, settings_route};
 use serde_json::{Map, Value, json};
-use zbus::blocking::Connection;
-use zbus::blocking::connection::Builder;
+use zbus::Connection;
+use zbus::connection::Builder;
 use zbus::message::Header;
 use zbus::object_server::{Interface, ObjectServer};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value as Variant};
+use zbus::{OwnedObjectPath, OwnedVariant as OwnedValue, Variant};
 use zbus::{fdo, interface};
 
 static PRIVATE_BUS: Mutex<()> = Mutex::new(());
@@ -123,19 +123,22 @@ fn private_bus() -> Option<MutexGuard<'static, ()>> {
 }
 
 fn serve(name: &str, path: &str, iface: impl Interface) -> Connection {
-    let builder = Builder::session().unwrap().name(name).unwrap();
-    builder.serve_at(path, iface).unwrap().build().unwrap()
+    let builder = Builder::session().name(name);
+    zbus::block_on(builder.serve_at(path, iface).build()).unwrap()
 }
 
 /// Intents connected as generation 7, past its first focus message.
 fn start(xfer: &Path, camera: &Path) -> (Connection, Intents, Sent) {
-    let (bus, sent) = (Connection::session().unwrap(), Sent::default());
+    let (bus, sent) = (
+        zbus::block_on(Connection::session()).unwrap(),
+        Sent::default(),
+    );
     let sink = sent.clone();
     let send = Arc::new(move |message| {
         sink.0.lock().unwrap().push(message);
         true
     });
-    let intents = Intents::start(bus.inner().clone(), send, xfer.into(), camera.into());
+    let intents = Intents::start(bus.clone(), send, xfer.into(), camera.into());
     intents.connected(7);
     assert_eq!(sent.next(), map(json!({"t":"focus","pkg":""})));
     (bus, intents, sent)
@@ -161,8 +164,7 @@ fn focus_follows_marathon() {
     let emit = |app: &str| {
         let iface = "org.marathonos.Shell.Navigation1";
         let body = (app,);
-        shell
-            .emit_signal(None::<&str>, path, iface, "ForegroundAppChanged", &body)
+        zbus::block_on(shell.emit_signal(None::<&str>, path, iface, "ForegroundAppChanged", &body))
             .unwrap();
     };
     emit("deckard.org.example.files");
@@ -358,8 +360,7 @@ fn respond(portal: &Connection, path: &str, file: &Path) {
     let uri = format!("file://{}", file.display().to_string().replace(' ', "%20"));
     let results = HashMap::from([("uris", Variant::from(vec![uri]))]);
     let iface = "org.freedesktop.portal.Request";
-    portal
-        .emit_signal(None::<&str>, path, iface, "Response", &(0_u32, results))
+    zbus::block_on(portal.emit_signal(None::<&str>, path, iface, "Response", &(0_u32, results)))
         .unwrap();
 }
 

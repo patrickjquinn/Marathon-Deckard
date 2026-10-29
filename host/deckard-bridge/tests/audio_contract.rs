@@ -11,8 +11,8 @@ use deckard_bridge::app_channel::{AppChannel, ChannelEvent};
 use deckard_bridge::audio::{self, AudioState};
 use deckard_core::ids::PackageName;
 use serde_json::{Value, json};
-use zbus::blocking::connection::Builder;
-use zbus::zvariant::{OwnedValue, Str};
+use zbus::connection::Builder;
+use zbus::{OwnedVariant as OwnedValue, Str};
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -112,10 +112,12 @@ fn policy_reaches_android_on_connect_and_on_shell_changes_only() -> TestResult<(
         ("audioProfile".to_owned(), Str::from("silent").into()),
         ("alarmVolume".to_owned(), OwnedValue::from(0.4_f64)),
     ]);
-    let shell = Builder::address(bus.address.as_str())?
-        .name("org.marathonos.Shell")?
-        .serve_at(SETTINGS_PATH, ShellSettings { state })?
-        .build()?;
+    let shell = zbus::block_on(
+        Builder::address(bus.address.as_str())
+            .name("org.marathonos.Shell")
+            .serve_at(SETTINGS_PATH, ShellSettings { state })
+            .build(),
+    )?;
 
     let dir = tempfile::tempdir()?;
     let socket = dir.path().join("bridge.sock");
@@ -128,7 +130,10 @@ fn policy_reaches_android_on_connect_and_on_shell_changes_only() -> TestResult<(
     let package = PackageName::try_from("org.marathonos.deckard.bridge")?;
     let (channel, handle, events) = AppChannel::bind(&socket, &packages, package)?;
     thread::spawn(move || channel.run());
-    let wake = audio::spawn(Builder::address(bus.address.as_str())?.build()?, handle)?;
+    let wake = audio::spawn(
+        zbus::block_on(Builder::address(bus.address.as_str()).build())?,
+        handle,
+    )?;
 
     let mut android = UnixStream::connect(&socket)?;
     android.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -146,20 +151,21 @@ fn policy_reaches_android_on_connect_and_on_shell_changes_only() -> TestResult<(
     android.set_read_timeout(Some(Duration::from_millis(300)))?;
     assert!(read(&mut android).is_err());
 
-    let settings = shell
-        .object_server()
-        .interface::<_, ShellSettings>(SETTINGS_PATH)?;
-    settings
-        .get_mut()
+    let settings = zbus::block_on(
+        shell
+            .object_server()
+            .interface::<_, ShellSettings>(SETTINGS_PATH),
+    )?;
+    zbus::block_on(settings.get_mut())
         .state
         .insert("audioProfile".into(), Str::from("normal").into());
-    shell.emit_signal(
+    zbus::block_on(shell.emit_signal(
         None::<&str>,
         SETTINGS_PATH,
         SETTINGS_INTERFACE,
         "PropertyChanged",
-        &("audioProfile", zbus::zvariant::Value::from("normal")),
-    )?;
+        &("audioProfile", zbus::Variant::from("normal")),
+    ))?;
     android.set_read_timeout(Some(Duration::from_secs(2)))?;
     assert_eq!(
         read(&mut android)?,

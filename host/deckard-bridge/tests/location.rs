@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use deckard_bridge::location::{DESKTOP_ID, LocationSync};
 use serde_json::{Value, json};
-use zbus::blocking::Connection;
+use zbus::Connection;
 use zbus::interface;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath};
+use zbus::{ObjectPath, OwnedObjectPath};
 
 const CLIENT_PATH: &str = "/org/freedesktop/GeoClue2/Client/1";
 const LOCATION_PATH: &str = "/org/freedesktop/GeoClue2/Location/1";
@@ -130,14 +130,14 @@ fn cxx_location_follows_androids_request() -> Result<(), Box<dyn std::error::Err
         return Ok(());
     }
     let seen = Seen::default();
-    let geoclue = Connection::session()?;
+    let geoclue = zbus::block_on(Connection::session())?;
     let server = geoclue.object_server();
-    server.at("/org/freedesktop/GeoClue2/Manager", Manager(seen.clone()))?;
-    server.at(CLIENT_PATH, Client(seen.clone()))?;
-    server.at(LOCATION_PATH, Location)?;
-    geoclue.request_name("org.freedesktop.GeoClue2")?;
+    zbus::block_on(server.at("/org/freedesktop/GeoClue2/Manager", Manager(seen.clone())))?;
+    zbus::block_on(server.at(CLIENT_PATH, Client(seen.clone())))?;
+    zbus::block_on(server.at(LOCATION_PATH, Location))?;
+    zbus::block_on(geoclue.request_name("org.freedesktop.GeoClue2"))?;
     let updated = || -> zbus::Result<()> {
-        let client = server.interface::<_, Client>(CLIENT_PATH).unwrap();
+        let client = zbus::block_on(server.interface::<_, Client>(CLIENT_PATH)).unwrap();
         let (root, location) = (
             ObjectPath::try_from("/")?,
             ObjectPath::try_from(LOCATION_PATH)?,
@@ -151,9 +151,9 @@ fn cxx_location_follows_androids_request() -> Result<(), Box<dyn std::error::Err
 
     let (tx, sent) = mpsc::channel();
     let tx = Mutex::new(tx);
-    let bus = Connection::session()?;
+    let bus = zbus::block_on(Connection::session())?;
     let sync = LocationSync::start(
-        bus.inner().clone(),
+        bus.clone(),
         Arc::new(move |m| tx.lock().unwrap().send(m).is_ok()),
     );
     let request = |on: bool, interval: u64| {
@@ -193,8 +193,8 @@ fn cxx_location_follows_androids_request() -> Result<(), Box<dyn std::error::Err
     until(&seen, |s| s.stops == 2);
 
     // GeoClue exits when idle; the next request gets a new client.
-    geoclue.release_name("org.freedesktop.GeoClue2")?;
-    geoclue.request_name("org.freedesktop.GeoClue2")?;
+    zbus::block_on(geoclue.release_name("org.freedesktop.GeoClue2"))?;
+    zbus::block_on(geoclue.request_name("org.freedesktop.GeoClue2"))?;
     request(true, 0);
     until(&seen, |s| s.clients == 2 && s.starts == 3);
     Ok(())

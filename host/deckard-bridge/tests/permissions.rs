@@ -13,9 +13,9 @@ use deckard_bridge::manage::Manage;
 use deckard_bridge::prompts::{MAX_WAITING, PermissionPrompts};
 use deckard_bridge::runtime::Runtime;
 use serde_json::{Map, Value, json};
-use zbus::blocking::{Connection, Proxy};
 use zbus::interface;
-use zbus::zvariant::{OwnedValue, Str};
+use zbus::{Connection, Proxy};
+use zbus::{OwnedVariant as OwnedValue, Str};
 
 const WAIT: Duration = Duration::from_secs(5);
 const QUIET: Duration = Duration::from_millis(200);
@@ -108,11 +108,11 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
     if std::env::var_os("DECKARD_BRIDGE_PRIVATE_BUS").is_none() {
         return Ok(());
     }
-    let bus = Connection::session()?;
+    let bus = zbus::block_on(Connection::session())?;
     let (tx, sent) = mpsc::channel();
     let tx = Mutex::new(tx);
     let send = Arc::new(move |message| tx.lock().unwrap().send(message).is_ok());
-    let prompter = PermissionPrompts::new(bus.inner().clone(), send);
+    let prompter = PermissionPrompts::new(bus.clone(), send);
     let unsupported =
         |id| json!({"t":"perm_answer", "id":id, "answer":"unsupported", "precise":false});
 
@@ -120,16 +120,16 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
     prompter.handle(&ask("0000000000000010", &["RECORD_AUDIO"], json!({})));
     assert_eq!(reply(&sent), unsupported("0000000000000010"));
 
-    let shell = Connection::session()?;
+    let shell = zbus::block_on(Connection::session())?;
     let (shown_tx, shown) = mpsc::channel();
     let (cancel_tx, cancelled) = mpsc::channel();
     let server = shell.object_server();
-    server.at(
+    zbus::block_on(server.at(
         "/org/marathonos/Shell/Permissions",
         Permissions(shown_tx, cancel_tx),
-    )?;
-    server.at("/org/marathonos/Shell/Navigation", Navigation)?;
-    shell.request_name("org.marathonos.Shell")?;
+    ))?;
+    zbus::block_on(server.at("/org/marathonos/Shell/Navigation", Navigation))?;
+    zbus::block_on(shell.request_name("org.marathonos.Shell"))?;
 
     // A request becomes the Shell's prompt.
     prompter.handle(&ask("0123456789abcdef", &["CAMERA"], json!({"once":true})));
@@ -232,16 +232,16 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
         dir.path().join("a"),
         dir.path().join("m"),
     );
-    let api_bus = Connection::session()?;
+    let api_bus = zbus::block_on(Connection::session())?;
     let icon_dirs = vec![];
     let api = SettingsApi {
-        bus: api_bus.inner().clone(),
+        bus: api_bus.clone(),
         runtime,
         manage: manage.clone(),
         icon_dirs,
     };
-    api_bus.object_server().at(OBJECT_PATH, api)?;
-    api_bus.request_name(BUS_NAME)?;
+    zbus::block_on(api_bus.object_server().at(OBJECT_PATH, api))?;
+    zbus::block_on(api_bus.request_name(BUS_NAME))?;
     let (tx, android) = async_channel::bounded(4);
     let (generation, replier) = (manage.connect(tx), manage.clone());
     let responder = std::thread::spawn(move || {
@@ -254,9 +254,14 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
         }
         ops
     });
-    let settings = Proxy::new(&bus, BUS_NAME, OBJECT_PATH, "org.marathonos.Deckard1")?;
+    let settings = zbus::block_on(Proxy::new(
+        &bus,
+        BUS_NAME,
+        OBJECT_PATH,
+        "org.marathonos.Deckard1",
+    ))?;
     let set = |pkg: &str, name: &str, on: bool| {
-        settings.call::<_, _, ()>("SetPermission", &(pkg, name, on))
+        zbus::block_on(settings.call::<_, _, ()>("SetPermission", &(pkg, name, on)))
     };
     assert!(
         set(
@@ -270,7 +275,9 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
     assert!(set("not a package", "camera", true).is_err());
     set("org.fdroid.fdroid", "bluetooth", false)?;
     set("org.fdroid.fdroid", "notifications", true)?;
-    let apps = |name: &str| settings.call::<_, _, Vec<VariantMap>>("GetPermissionApps", &(name,));
+    let apps = |name: &str| {
+        zbus::block_on(settings.call::<_, _, Vec<VariantMap>>("GetPermissionApps", &(name,)))
+    };
     let camera = apps("camera")?;
     assert_eq!(
         String::try_from(camera[0]["label"].try_clone()?)?,
@@ -288,7 +295,7 @@ fn cxx_permission_prompts_and_settings() -> Result<(), Box<dyn std::error::Error
         {"t":"manage", "op":"notif_apps"},
     ]);
     assert_eq!(Value::Array(responder.join().unwrap()), expected);
-    api_bus.release_name(BUS_NAME)?;
-    shell.release_name("org.marathonos.Shell")?;
+    zbus::block_on(api_bus.release_name(BUS_NAME))?;
+    zbus::block_on(shell.release_name("org.marathonos.Shell"))?;
     Ok(())
 }
