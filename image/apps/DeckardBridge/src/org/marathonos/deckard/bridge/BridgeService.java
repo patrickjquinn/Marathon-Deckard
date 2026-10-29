@@ -38,9 +38,10 @@ public class BridgeService extends NotificationListenerService implements Link.L
     private static final int MAX_ICON = 96;
     private static final int MAX_IMAGE = 128;
     private static final int MAX_MESSAGES = 10;
-    private static final Set<String> SYSTEM_NOISE = new HashSet<>(Arrays.asList(
-            "PHYSICAL_KEYBOARD", "VIRTUAL_KEYBOARD", "DEVELOPER", "DEVELOPER_IMPORTANT", "USB",
-            "FOREGROUND_SERVICE"));
+    // Marathon shows the phone's own state; Android's system packages only
+    // describe the container's.
+    private static final Set<String> SYSTEM_PACKAGES = new HashSet<>(Arrays.asList(
+            "android", "com.android.systemui", "org.lineageos.updater"));
 
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final Map<String, StatusBarNotification> mForwarded = new HashMap<>();
@@ -154,11 +155,8 @@ public class BridgeService extends NotificationListenerService implements Link.L
         // MediaStyle: shown by Marathon's media controls through MPRIS.
         if (n.extras.containsKey(Notification.EXTRA_MEDIA_SESSION))
             return false;
-        if ("android".equals(sbn.getPackageName()) && SYSTEM_NOISE.contains(n.getChannelId()))
-            return false;
-        // Marathon updates the system; the image's own updater stays silent.
         String pkg = sbn.getPackageName();
-        if (pkg.equals("org.lineageos.updater") || pkg.toLowerCase().contains("waydroid"))
+        if (SYSTEM_PACKAGES.contains(pkg) || pkg.toLowerCase().contains("waydroid"))
             return false;
         if ((n.flags & Notification.FLAG_GROUP_SUMMARY) != 0) {
             StatusBarNotification[] active = getActiveNotifications();
