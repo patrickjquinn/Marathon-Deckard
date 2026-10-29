@@ -255,23 +255,25 @@ fn private_bus_actions_replies_and_dismissal_timing() -> TestResult<()> {
         None::<&str>,
         PATH,
         HUB,
-        "ActionInvoked",
-        &(41_u32, "default"),
-    )?;
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(2))?,
-        json!({"t": "invoke", "key": "tap", "action": "default"})
-    );
-    hub.emit_signal(
-        None::<&str>,
-        PATH,
-        HUB,
         "NotificationReplied",
         &(41_u32, "Hello"),
     )?;
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(2))?,
         json!({"t": "reply", "key": "tap", "action": "a1", "text": "Hello"})
+    );
+    // The tap's grace counts from the tap: the close follows it at once so
+    // a loaded machine stays well inside it.
+    hub.emit_signal(
+        None::<&str>,
+        PATH,
+        HUB,
+        "ActionInvoked",
+        &(41_u32, "default"),
+    )?;
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(2))?,
+        json!({"t": "invoke", "key": "tap", "action": "default"})
     );
     hub.emit_signal(
         None::<&str>,
