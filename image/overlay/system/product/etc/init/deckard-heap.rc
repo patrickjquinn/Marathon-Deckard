@@ -1,0 +1,11 @@
+# After deckard-init (vendor, same trigger), which sizes the heaps by the
+# host's RAM as if Android had the phone to itself. SystemUI draws nothing
+# Marathon shows, so it is not compiled ahead of time.
+on post-fs-data
+    setprop dalvik.vm.heapstartsize 8m
+    setprop dalvik.vm.heapgrowthlimit 256m
+    setprop dalvik.vm.heapsize 512m
+    setprop dalvik.vm.heaptargetutilization 0.75
+    setprop dalvik.vm.heapminfree 512k
+    setprop dalvik.vm.heapmaxfree 8m
+    setprop dalvik.vm.systemuicompilerfilter verify
