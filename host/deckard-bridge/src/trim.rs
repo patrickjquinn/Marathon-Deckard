@@ -26,7 +26,8 @@ const MB: u64 = 1024 * 1024;
 
 #[derive(Default)]
 struct State {
-    android: bool,
+    // Unknown until the foreground watcher has read the Shell's state.
+    android: Option<bool>,
     /// Counts the times an Android app came to or left the front.
     changes: u64,
 }
@@ -43,7 +44,7 @@ pub fn start(bus: &Connection, cgroup: PathBuf) {
         let follow = intents::follow_foreground(&follower, |app| {
             let (state, wake) = &*seen;
             let mut state = sync::lock(state);
-            let android = app.starts_with(APP_ID_PREFIX);
+            let android = Some(app.starts_with(APP_ID_PREFIX));
             if state.android != android {
                 state.android = android;
                 state.changes += 1;
@@ -51,7 +52,14 @@ pub fn start(bus: &Connection, cgroup: PathBuf) {
             }
             ControlFlow::Continue(())
         });
-        if let Err(error) = follow.await {
+        let result = follow.await;
+        // Losing the watcher must not turn an unknown foreground into idle.
+        let (state, wake) = &*seen;
+        let mut state = sync::lock(state);
+        state.android = None;
+        state.changes += 1;
+        wake.notify_all();
+        if let Err(error) = result {
             eprintln!("deckard-bridge: idle trim has no foreground changes: {error}");
         }
     };
@@ -63,7 +71,7 @@ fn run(shared: &Shared, cgroup: &Path) {
     let (state, wake) = &**shared;
     let mut guard = sync::lock(state);
     loop {
-        while guard.android {
+        while guard.android != Some(false) {
             guard = wake.wait(guard).unwrap_or_else(PoisonError::into_inner);
         }
         let idle_since = guard.changes;

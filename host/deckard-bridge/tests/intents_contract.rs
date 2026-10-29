@@ -148,17 +148,26 @@ fn send(intents: &Intents, message: Value) {
     intents.handle(7, &map(message));
 }
 
-struct Navigation;
+struct Navigation(Result<String, String>);
 
 #[interface(name = "org.marathonos.Shell.Navigation1")]
-impl Navigation {}
+impl Navigation {
+    fn get_foreground_app(&self) -> fdo::Result<String> {
+        self.0.clone().map_err(fdo::Error::Failed)
+    }
+}
 
 #[test]
 fn focus_follows_marathon() {
     let Some(_bus) = private_bus() else { return };
     let dir = tempfile::tempdir().unwrap();
     let path = "/org/marathonos/Shell/Navigation";
-    let shell = serve("org.marathonos.Shell", path, Navigation);
+    // A failed startup read must not prevent later foreground signals.
+    let shell = serve(
+        "org.marathonos.Shell",
+        path,
+        Navigation(Err("not ready".into())),
+    );
     let (_bus, intents, sent) = start(&dir.path().join("xfer"), dir.path());
     thread::sleep(Duration::from_millis(200));
     let emit = |app: &str| {
@@ -177,6 +186,32 @@ fn focus_follows_marathon() {
     assert_eq!(sent.next(), map(json!({"t":"focus","pkg":""})));
     intents.foreground_changed("deckard.../x");
     assert!(sent.none_after(Duration::from_millis(100)));
+    zbus::block_on(shell.release_name("org.marathonos.Shell")).unwrap();
+}
+
+#[test]
+fn focus_is_read_when_the_bridge_starts_after_the_app() {
+    let Some(_bus) = private_bus() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let shell = serve(
+        "org.marathonos.Shell",
+        "/org/marathonos/Shell/Navigation",
+        Navigation(Ok("deckard.org.example.already".into())),
+    );
+    let bus = zbus::block_on(Connection::session()).unwrap();
+    let sent = Sent::default();
+    let sink = sent.clone();
+    let send = Arc::new(move |message| {
+        sink.0.lock().unwrap().push(message);
+        true
+    });
+    let intents = Intents::start(bus, send, dir.path().join("xfer"), dir.path().into());
+    // No ForegroundAppChanged signal is sent: the app predates the watcher.
+    let expected = map(json!({"t":"focus","pkg":"org.example.already"}));
+    assert_eq!(sent.next(), expected);
+    intents.connected(7);
+    assert_eq!(sent.next(), expected);
+    zbus::block_on(shell.release_name("org.marathonos.Shell")).unwrap();
 }
 
 /// Marathon Camera's Keel Actions: answers camera.capture when the test says.

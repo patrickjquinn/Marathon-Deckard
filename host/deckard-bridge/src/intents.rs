@@ -375,6 +375,20 @@ pub(crate) async fn follow_foreground(
     let (service, path, interface) = NAVIGATION;
     let shell = Proxy::new(bus, service, path, interface).await?;
     let mut changes = shell.receive_signal("ForegroundAppChanged").await?;
+    // Subscribe before reading: an app may already be in front when the
+    // bridge starts, and a change during this call must stay queued.
+    match shell.call::<_, _, String>("GetForegroundApp", &()).await {
+        Ok(current) => {
+            if seen(&current).is_break() {
+                return Ok(());
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "deckard-bridge: cannot read initial foreground; still following changes: {error}"
+            );
+        }
+    }
     while let Some(signal) = changes.next().await {
         if let Ok(app) = signal.body().deserialize::<String>()
             && seen(&app).is_break()

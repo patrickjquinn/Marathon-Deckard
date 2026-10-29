@@ -81,6 +81,10 @@ struct FakeNavigation(Shared);
 
 #[interface(name = "org.marathonos.Shell.Navigation1")]
 impl FakeNavigation {
+    fn get_foreground_app(&self) -> String {
+        self.0.lock().unwrap().front.clone()
+    }
+
     fn expect_app_window(&self, app_id: String) -> bool {
         self.0.lock().unwrap().expected.push(app_id);
         true

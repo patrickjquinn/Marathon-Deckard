@@ -71,6 +71,10 @@ struct Navigation;
 
 #[interface(name = "org.marathonos.Shell.Navigation1")]
 impl Navigation {
+    fn get_foreground_app(&self) -> String {
+        String::new()
+    }
+
     fn expect_app_window(&self, _app: String) -> bool {
         true
     }
