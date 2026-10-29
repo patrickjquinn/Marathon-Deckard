@@ -9,6 +9,7 @@ public final class SystemApp extends Application {
         super.onCreate();
         HostLink.get();
         WindowFit.start();
+        FillDisplay.start(this);
         ToastBar.start();
         GoogleServices.prepare(this);
         Handlers.start(this);
