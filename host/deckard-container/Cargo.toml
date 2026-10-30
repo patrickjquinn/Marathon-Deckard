@@ -13,6 +13,7 @@ async-signal = "=0.2.14"
 deckard-host-tools = { path = "../deckard-host-tools" }
 deckard-launch = { path = "../deckard-launch" }
 futures-lite.workspace = true
+libc.workspace = true
 rsbinder.workspace = true
 rustix.workspace = true
 serde.workspace = true

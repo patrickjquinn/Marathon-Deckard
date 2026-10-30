@@ -343,6 +343,7 @@ dependencies = [
  "deckard-host-tools",
  "deckard-launch",
  "futures-lite",
+ "libc",
  "rsbinder",
  "rustix",
  "serde",

@@ -205,10 +205,12 @@ struct Backend {
 }
 
 impl Backend {
+    fn payload_group(&self) -> PathBuf {
+        Path::new("/sys/fs/cgroup").join(format!("lxc.payload.{}", self.manager.lxc.name))
+    }
+
     fn apply_resource_profile(&self) -> Result<()> {
-        let group =
-            Path::new("/sys/fs/cgroup").join(format!("lxc.payload.{}", self.manager.lxc.name));
-        self.resource_profile.apply(&group)?;
+        self.resource_profile.apply(&self.payload_group())?;
         Ok(())
     }
 
@@ -537,6 +539,30 @@ impl ContainerService {
         .await
     }
 
+    async fn page_out_background_authorized(
+        &self,
+        front: String,
+        caller: Caller,
+    ) -> fdo::Result<u64> {
+        let group = self
+            .locked(move |state| {
+                state.authorize_control(caller)?;
+                Ok(state.backend.payload_group())
+            })
+            .await?;
+        // Off the state lock: a large app takes seconds, and a foreground
+        // change must not wait for it.
+        let outcome = bus::unblock(move || crate::pageout::page_out(&group, &front))
+            .await
+            .map_err(|error| failed(error.into()))?;
+        eprintln!(
+            "deckard-containerd: paged out {} MB from {} idle app processes",
+            outcome.bytes >> 20,
+            outcome.processes
+        );
+        Ok(outcome.bytes)
+    }
+
     async fn get_property_authorized(&self, key: String, caller: Caller) -> fdo::Result<String> {
         authorize_root(caller)?;
         lxc::validate_property_key(&key)
@@ -642,6 +668,19 @@ impl ContainerService {
     ) -> fdo::Result<()> {
         let caller = Caller::of(conn, &header).await?;
         self.set_resource_profile_authorized(profile.to_owned(), caller)
+            .await
+    }
+
+    /// Pages idle Android apps' anonymous memory out, all but `front`'s
+    /// (an Android package, or empty). Returns the bytes advised.
+    async fn page_out_background(
+        &self,
+        front: &str,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] header: Header<'_>,
+    ) -> fdo::Result<u64> {
+        let caller = Caller::of(conn, &header).await?;
+        self.page_out_background_authorized(front.to_owned(), caller)
             .await
     }
 

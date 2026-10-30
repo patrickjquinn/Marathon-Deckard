@@ -12,6 +12,7 @@ pub mod initializer_dbus;
 pub mod lxc;
 pub mod mounts;
 pub mod network;
+mod pageout;
 pub mod properties;
 mod resources;
 pub mod session_config;

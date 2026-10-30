@@ -17,7 +17,6 @@ pub mod runtime;
 pub mod sharing;
 pub mod shell_sync;
 pub mod storage;
-pub mod trim;
 pub mod watchdog;
 
 use zbus::runtime::traits::TaskHandle as _;

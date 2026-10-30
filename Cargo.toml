@@ -28,6 +28,7 @@ base64 = "=0.23.1"
 futures-lite = "=2.6.1"
 hex = "=0.4.3"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
+libc = "=0.2.191"
 nix = { version = "=0.31.3", default-features = false, features = ["user"] }
 palette = { version = "=0.7.7", default-features = false, features = ["std"] }
 regex = "=1.13.1"

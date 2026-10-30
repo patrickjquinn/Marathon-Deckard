@@ -1,10 +1,23 @@
-//! Keep the runtime's host shares aligned with the foreground app. The root
-//! manager accepts these requests only from this authenticated session process.
+//! Keep the runtime's host shares aligned with the foreground app, and page
+//! out the Android apps that are not in front once the foreground has been
+//! still for a minute (again every ten while it stays). The root manager
+//! accepts these requests only from this authenticated session process.
 
+use std::time::Duration;
+
+use async_io::Timer;
 use deckard_launch::session::ContainerManagerProxy;
 use futures_lite::StreamExt;
 use zbus::runtime::traits::TaskHandle as _;
 use zbus::{Connection, Proxy};
+
+const IDLE: Duration = Duration::from_secs(60);
+const AGAIN: Duration = Duration::from_secs(600);
+
+/// The Android package Marathon shows, or "" when it shows none.
+fn front_package(app: &str) -> &str {
+    app.strip_prefix("deckard.").unwrap_or_default()
+}
 
 fn profile(app: &str) -> &'static str {
     if app.starts_with("deckard.") {
@@ -43,18 +56,47 @@ async fn follow(session: &Connection, system: &Connection) -> zbus::Result<()> {
     .await?;
     // Subscribe first: a session can start with Android already in front.
     let mut changes = shell.receive_signal("ForegroundAppChanged").await?;
-    match shell.call::<_, _, String>("GetForegroundApp", &()).await {
-        Ok(app) => root.set_resource_profile(profile(&app)).await?,
-        Err(error) => {
-            eprintln!("deckard-runtime: initial foreground unavailable; following changes: {error}")
+    // Unknown until the Shell answers: nothing is paged out on a guess.
+    let mut front = match shell.call::<_, _, String>("GetForegroundApp", &()).await {
+        Ok(app) => {
+            root.set_resource_profile(profile(&app)).await?;
+            Some(app)
         }
-    }
-    while let Some(change) = changes.next().await {
+        Err(error) => {
+            eprintln!(
+                "deckard-runtime: initial foreground unavailable; following changes: {error}"
+            );
+            None
+        }
+    };
+    let mut delay = IDLE;
+    loop {
+        let idle = async {
+            match &front {
+                Some(_) => Timer::after(delay).await,
+                None => futures_lite::future::pending().await,
+            };
+            None
+        };
+        let Some(change) =
+            futures_lite::future::or(async { Some(changes.next().await) }, idle).await
+        else {
+            let app = front.as_deref().unwrap_or_default();
+            if let Err(error) = root.page_out_background(front_package(app)).await {
+                eprintln!("deckard-runtime: cannot page out idle Android apps: {error}");
+            }
+            delay = AGAIN;
+            continue;
+        };
+        let Some(change) = change else {
+            return Ok(());
+        };
         if let Ok(app) = change.body().deserialize::<String>() {
             root.set_resource_profile(profile(&app)).await?;
+            front = Some(app);
+            delay = IDLE;
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
