@@ -556,11 +556,12 @@ impl ContainerService {
             .await
             .map_err(|error| failed(error.into()))?;
         eprintln!(
-            "deckard-containerd: paged out {} MB from {} idle app processes",
-            outcome.bytes >> 20,
-            outcome.processes
+            "deckard-containerd: paged out {} idle app processes; Android's anonymous memory {} -> {} MB",
+            outcome.processes,
+            outcome.anon_before >> 20,
+            outcome.anon_after >> 20
         );
-        Ok(outcome.bytes)
+        Ok(outcome.anon_before.saturating_sub(outcome.anon_after))
     }
 
     async fn get_property_authorized(&self, key: String, caller: Caller) -> fdo::Result<String> {
@@ -672,7 +673,7 @@ impl ContainerService {
     }
 
     /// Pages idle Android apps' anonymous memory out, all but `front`'s
-    /// (an Android package, or empty). Returns the bytes advised.
+    /// (an Android package, or empty). Returns the bytes it freed.
     async fn page_out_background(
         &self,
         front: &str,

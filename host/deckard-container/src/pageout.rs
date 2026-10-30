@@ -18,12 +18,17 @@ const BATCH: usize = 512;
 #[derive(Debug, Default)]
 pub(crate) struct Outcome {
     pub(crate) processes: usize,
-    pub(crate) bytes: u64,
+    /// The group's anonymous memory before and after, in bytes.
+    pub(crate) anon_before: u64,
+    pub(crate) anon_after: u64,
 }
 
 /// Pages out every idle app process under `group` except `front`'s.
 pub(crate) fn page_out(group: &Path, front: &str) -> io::Result<Outcome> {
-    let mut outcome = Outcome::default();
+    let mut outcome = Outcome {
+        anon_before: anonymous(group),
+        ..Outcome::default()
+    };
     for pid in pids(group)? {
         if !idle_app(pid, front) {
             continue;
@@ -38,10 +43,22 @@ pub(crate) fn page_out(group: &Path, front: &str) -> io::Result<Outcome> {
         let Ok(pidfd) = pidfd_open(raw, PidfdFlags::empty()) else {
             continue;
         };
-        outcome.bytes += advise(&pidfd, &ranges)?;
+        advise(&pidfd, &ranges)?;
         outcome.processes += 1;
     }
+    outcome.anon_after = anonymous(group);
     Ok(outcome)
+}
+
+fn anonymous(group: &Path) -> u64 {
+    fs::read_to_string(group.join("memory.stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.lines()
+                .find_map(|line| line.strip_prefix("anon "))
+                .and_then(|bytes| bytes.trim().parse().ok())
+        })
+        .unwrap_or_default()
 }
 
 fn pids(group: &Path) -> io::Result<Vec<u32>> {
@@ -112,8 +129,7 @@ fn anonymous_range(line: &str) -> Option<(usize, usize)> {
     unsafe_code,
     reason = "process_madvise has no safe wrapper in rustix or nix"
 )]
-fn advise(pidfd: &OwnedFd, ranges: &[(usize, usize)]) -> io::Result<u64> {
-    let mut advised = 0;
+fn advise(pidfd: &OwnedFd, ranges: &[(usize, usize)]) -> io::Result<()> {
     for batch in ranges.chunks(BATCH) {
         let iov: Vec<libc::iovec> = batch
             .iter()
@@ -146,7 +162,6 @@ fn advise(pidfd: &OwnedFd, ranges: &[(usize, usize)]) -> io::Result<u64> {
             }
             return Err(error);
         }
-        advised += u64::try_from(done).unwrap_or_default();
     }
-    Ok(advised)
+    Ok(())
 }
