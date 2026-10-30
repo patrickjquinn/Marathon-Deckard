@@ -270,8 +270,14 @@ impl Backend {
     }
 
     fn start(&mut self, fields: &HashMap<String, String>, uid: u32) -> Result<()> {
-        self.finish_stop()?;
         let stopped = self.manager.lxc.status()? == State::Stopped;
+        // A daemon stopped mid-teardown leaves the mounts and network up;
+        // with Android stopped they are this runtime's to undo.
+        if stopped && !self.teardown_pending && self.manager.mounts.mounted()? {
+            eprintln!("deckard-containerd: undoing the mounts of an interrupted stop");
+            self.teardown_pending = true;
+        }
+        self.finish_stop()?;
         crate::ensure(
             stopped,
             "container must be stopped before updating session files",
@@ -454,6 +460,9 @@ impl ContainerService {
             if state.session.is_some() {
                 state.backend.stop().map_err(failed)?;
             }
+            // A Stop just before exit left its teardown to a thread the exit
+            // would cut short.
+            state.backend.finish_stop().map_err(failed)?;
             if let Some(session) = state.session.take() {
                 session.quit();
             }

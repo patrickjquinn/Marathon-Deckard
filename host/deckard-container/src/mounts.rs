@@ -151,6 +151,15 @@ impl MountLayout {
         Ok(())
     }
 
+    /// Whether anything is mounted beneath the rootfs.
+    ///
+    /// # Errors
+    /// The mount table cannot be read.
+    pub fn mounted(&self) -> Result<bool> {
+        let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+        Ok(!mountpoints_beneath(&self.rootfs(), &mountinfo).is_empty())
+    }
+
     /// # Errors
     /// The work directory is unsafe or an unmount fails.
     pub fn unmount(&self) -> Result<()> {
