@@ -1,0 +1,27 @@
+diff --git a/remove_packages/Android.mk b/remove_packages/Android.mk
+--- a/remove_packages/Android.mk
++++ b/remove_packages/Android.mk
+@@ -4,7 +4,22 @@ include $(CLEAR_VARS)
+ LOCAL_MODULE := RemovePackages
+ LOCAL_MODULE_CLASS := APPS
+ LOCAL_MODULE_TAGS := optional
+-LOCAL_OVERRIDES_PACKAGES := AudioFX Bluetooth BluetoothMidiService
++# Marathon supplies these standalone apps. Keep Settings' contract activities,
++# SystemUI, PermissionController, providers, WebView, the IME and DeckardHome.
++# Settings' launcher alias is disabled by deckard-runtime-apps.xml instead.
++LOCAL_OVERRIDES_PACKAGES := AudioFX Bluetooth BluetoothMidiService \
++    Twelve \
++    Glimpse \
++    Camelot \
++    Launcher3QuickStep \
++    Updater \
++    LocalContactsBackup \
++    AvatarPicker \
++    DeviceDiagnostics \
++    DeviceAsWebcam \
++    ApertureFrameworksBaseOverlay \
++    GlimpseFrameworksBaseOverlay \
++    Launcher3Overlay
+ LOCAL_UNINSTALLABLE_MODULE := true
+ LOCAL_CERTIFICATE := PRESIGNED
+ LOCAL_SRC_FILES := /dev/null

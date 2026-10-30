@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config>
+    <!-- Keep Settings' consent/credential activities as runtime dependencies,
+         not a second standalone settings app. Generic settings and special
+         access intents are handled by DeckardSystem and Marathon Settings. -->
+    <component-override package="com.android.settings">
+        <component class="com.android.settings.Settings" enabled="false" />
+    </component-override>
+</config>

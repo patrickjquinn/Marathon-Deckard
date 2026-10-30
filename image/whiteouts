@@ -1,6 +1,7 @@
 # Files of the Android image that deckard-overlay-sync hides with overlayfs
 # whiteouts, one path per line relative to Waydroid's overlay root. Each was
 # measured and regression-tested on the HackberryPi (docs/slim.md).
+# Android 16 renamed several stock apps; keep both generations here.
 system/product/overlay/DisplayCutoutEmulationCorner
 system/product/overlay/DisplayCutoutEmulationDouble
 system/product/overlay/DisplayCutoutEmulationHole
@@ -128,3 +129,16 @@ system/system_ext/priv-app/SimpleDeviceConfig
 system/product/etc/permissions/org.lineageos.profiles.xml
 system/product/etc/permissions/org.lineageos.livedisplay.xml
 system/product/etc/permissions/org.lineageos.health.xml
+# Android 16 / LineageOS 23.2 replacements and moved packages.
+system/product/app/Twelve
+system/product/app/Glimpse
+system/product/app/Camelot
+system/system_ext/priv-app/Launcher3QuickStep
+system/system_ext/priv-app/Updater
+system/system_ext/app/LocalContactsBackup
+system/system_ext/priv-app/AvatarPicker
+system/priv-app/DeviceDiagnostics
+system/priv-app/DeviceAsWebcam
+system/product/overlay/ApertureFrameworksBaseOverlay.apk
+system/product/overlay/GlimpseFrameworksBaseOverlay.apk
+system/product/overlay/Launcher3Overlay.apk
