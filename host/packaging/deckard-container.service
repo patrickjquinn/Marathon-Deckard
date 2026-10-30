@@ -12,6 +12,8 @@ ExecStartPre=/usr/libexec/deckard-overlay-sync
 ExecStartPre=/usr/libexec/deckard-fonts-sync
 ExecStart=/usr/libexec/deckard-containerd --production-run
 TimeoutStopSec=45
+# SIGTERM to the daemon alone: its teardown runs umount, which must finish.
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target
