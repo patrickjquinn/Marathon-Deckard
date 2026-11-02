@@ -184,8 +184,9 @@ fn link_nodes(binderfs: &Path, dev: &Path, names: &[&str]) -> Result<()> {
 }
 
 /// Opens the host device nodes Android uses to everyone, as upstream does
-/// (mode 0777): GPU, video, DMA heaps and sync nodes. Not the framebuffer,
-/// which would let any host process read or paint the screen.
+/// (mode 0777): GPU, DMA heaps and sync nodes. Not the framebuffer or the
+/// cameras, which would let any host process read or paint the screen or
+/// watch through a camera; Android's preinit makes its own copies of those.
 ///
 /// # Errors
 /// A present node cannot be listed or changed.
@@ -197,7 +198,6 @@ pub fn open_device_access(dev: &Path, debug_sync: &Path) -> Result<()> {
     nodes.push(debug_sync.to_owned());
     for (directory, prefix) in [
         (dev.join("dri"), "renderD"),
-        (dev.to_owned(), "video"),
         (dev.join("dma_heap"), ""),
     ] {
         nodes.extend(matching(&directory, prefix)?);
@@ -343,8 +343,8 @@ mod tests {
         for path in ["dri", "dma_heap", "graphics"] {
             fs::create_dir(dev.path().join(path))?;
         }
-        let opened = ["dri/renderD128", "dma_heap/system", "video19"];
-        let closed = ["dri/card0", "null", "fb0", "graphics/fb0"];
+        let opened = ["dri/renderD128", "dma_heap/system"];
+        let closed = ["dri/card0", "null", "fb0", "graphics/fb0", "video19"];
         let created = [opened.as_slice(), &closed].concat();
         for path in created {
             fs::write(dev.path().join(path), "")?;
