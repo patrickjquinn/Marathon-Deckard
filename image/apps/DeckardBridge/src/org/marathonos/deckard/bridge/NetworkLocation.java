@@ -41,7 +41,7 @@ public final class NetworkLocation extends Service {
         Provider p = sProvider;
         sProvider = null;
         if (p != null)
-            p.request(false, 0);
+            p.request(false, 0, 0);
     }
 
     /** The bridge channel came up: tell deckardd what Android wants. */
@@ -77,6 +77,7 @@ public final class NetworkLocation extends Service {
     private static final class Provider extends LocationProviderBase {
         volatile boolean mOn;
         private long mInterval;
+        private int mQuality;
 
         Provider(NetworkLocation service) {
             super(service, Link.TAG, ProviderPropertiesUnbundled.create(true, false, false, false,
@@ -85,21 +86,22 @@ public final class NetworkLocation extends Service {
 
         @Override
         protected void onSetRequest(ProviderRequestUnbundled request, WorkSource source) {
-            request(request.getReportLocation(), request.getInterval());
+            request(request.getReportLocation(), request.getInterval(), request.getQuality());
         }
 
-        synchronized void request(boolean on, long interval) {
-            if (on == mOn && (!on || interval == mInterval))
+        synchronized void request(boolean on, long interval, int quality) {
+            if (on == mOn && (!on || (interval == mInterval && quality == mQuality)))
                 return;
             mOn = on;
             mInterval = interval;
+            mQuality = quality;
             send();
         }
 
         synchronized void send() {
             try {
                 BridgeService.send(new JSONObject().put("t", "location_request").put("on", mOn)
-                        .put("interval", mOn ? mInterval : 0));
+                        .put("interval", mOn ? mInterval : 0).put("quality", mOn ? mQuality : 0));
             } catch (JSONException e) {
                 Log.w(Link.TAG, e.getMessage());
             }

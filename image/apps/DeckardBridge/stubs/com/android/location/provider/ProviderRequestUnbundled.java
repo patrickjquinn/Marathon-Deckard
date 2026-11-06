@@ -9,4 +9,8 @@ public final class ProviderRequestUnbundled {
     public long getInterval() {
         throw new RuntimeException("stub");
     }
+
+    public int getQuality() {
+        throw new RuntimeException("stub");
+    }
 }

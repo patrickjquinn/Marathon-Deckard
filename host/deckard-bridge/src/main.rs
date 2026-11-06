@@ -355,7 +355,10 @@ fn main() -> Result<(), Error> {
             None
         }
     };
-    let display = Arc::new(shell_sync::DisplaySync::new(&data.join("deckard/display")));
+    let display = Arc::new(shell_sync::DisplaySync::new(
+        &data.join("deckard/display"),
+        location.clone(),
+    ));
     let display = shell_sync::sync_display(&bus, display);
     deckard_bridge::report("display sync failed", display);
     let app = App {

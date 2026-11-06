@@ -20,6 +20,7 @@ use zbus::OwnedVariant as OwnedValue;
 use zbus::runtime::traits::TaskHandle as _;
 
 use crate::intents;
+use crate::location::LocationSync;
 
 const POWER_PATH: &str = "/org/marathonos/Shell/Power";
 const POWER_INTERFACE: &str = "org.marathonos.Shell.Power1";
@@ -111,15 +112,17 @@ struct DisplayState {
 /// deckard-watch: `on <n>` (a larger `n` for every wake), `off` or `idle`.
 pub struct DisplaySync {
     path: PathBuf,
+    location: Option<LocationSync>,
     state: Mutex<DisplayState>,
 }
 
 static DISPLAY: OnceLock<Arc<DisplaySync>> = OnceLock::new();
 
 impl DisplaySync {
-    /// Starts with the screen on and no Android app in front.
+    /// Starts with the screen on and no Android app in front; `location`
+    /// hears whether Android is in view.
     #[must_use]
-    pub fn new(path: &Path) -> Self {
+    pub fn new(path: &Path, location: Option<LocationSync>) -> Self {
         // A restarted bridge must not repeat its predecessor's last `on <n>`.
         let wakes = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -131,6 +134,7 @@ impl DisplaySync {
         };
         Self {
             path: path.to_owned(),
+            location,
             state: Mutex::new(state),
         }
     }
@@ -158,6 +162,9 @@ impl DisplaySync {
     }
 
     fn apply(&self, state: &mut DisplayState, wake: bool) {
+        if let Some(location) = &self.location {
+            location.set_in_view(state.screen_on && state.in_front);
+        }
         let wake = wake && state.screen_on;
         let wanted = if wake {
             Display::On

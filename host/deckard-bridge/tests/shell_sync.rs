@@ -120,7 +120,7 @@ fn mirrors_ambience_and_doze_into_data_deckard() -> TestResult {
 fn android_display_follows_the_screen_and_the_front_app() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("deckard/display");
-    let display = shell_sync::DisplaySync::new(&path);
+    let display = shell_sync::DisplaySync::new(&path, None);
     let read = || fs::read_to_string(&path).unwrap_or_default();
     let mut last = 0;
     let mut woke = || {

@@ -1,6 +1,11 @@
 //! Marathon's location as Android's network location provider (DeckardBridge's
 //! `NetworkLocation`): one GeoClue client while Android has a request, none
 //! otherwise. GeoClue asks the Shell's agent whether Android may locate.
+//!
+//! GeoClue powers the GNSS receiver (NMEA) only for an exact client, so only a
+//! high-accuracy request from an Android app in view gets one; anything else
+//! is Wi-Fi and cell. A long interval, or any request while no Android app is
+//! in view, takes one fix per period and lets GeoClue go idle in between.
 
 use zbus::runtime::traits::TaskHandle as _;
 
@@ -8,7 +13,7 @@ use std::ops::Bound::Excluded;
 use std::ops::RangeBounds;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
 use async_io::Timer;
@@ -27,8 +32,19 @@ const MAX_INTERVAL_MS: u64 = 24 * 3600 * 1000;
 const GEOCLUE: &str = "org.freedesktop.GeoClue2";
 const CLIENT: &str = "org.freedesktop.GeoClue2.Client";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
-/// GeoClue's "exact": Android coarsens it for apps with approximate access.
+/// GeoClue's "exact", the only level that starts GNSS; Android coarsens it
+/// for apps with approximate access.
 const ACCURACY_EXACT: u32 = 8;
+/// GeoClue's "street": Wi-Fi, cell and IP sources.
+const ACCURACY_STREET: u32 = 6;
+/// `LocationRequest.QUALITY_HIGH_ACCURACY`.
+const QUALITY_HIGH_ACCURACY: u64 = 100;
+/// Intervals from this on take one fix per interval instead of a running client.
+const ONE_SHOT_FROM: Duration = Duration::from_secs(60);
+/// The shortest period of a request while no Android app is in view.
+const BACKGROUND_PERIOD: Duration = Duration::from_secs(5 * 60);
+/// How long a one-shot waits for its fix.
+const FIX_TIMEOUT: Duration = Duration::from_secs(60);
 /// Qt's default, which the C++ bridge used for every GeoClue call.
 const CALL_TIMEOUT: Duration = Duration::from_secs(25);
 
@@ -78,6 +94,35 @@ pub fn message(fix: &Fix) -> Option<Map<String, Value>> {
 struct Desired {
     wanted: AtomicBool,
     interval_ms: AtomicU64,
+    high_accuracy: AtomicBool,
+    in_view: AtomicBool,
+}
+
+/// How to serve a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Plan {
+    /// GeoClue's `RequestedAccuracyLevel`.
+    pub level: u32,
+    /// `None`: a running client. Otherwise one fix per period.
+    pub period: Option<Duration>,
+}
+
+/// The plan for Android's request: `interval`, whether it asks for high
+/// accuracy, and whether an Android app is in front of a lit screen.
+#[must_use]
+pub fn plan(interval: Duration, high_accuracy: bool, in_view: bool) -> Plan {
+    let level = if high_accuracy && in_view {
+        ACCURACY_EXACT
+    } else {
+        ACCURACY_STREET
+    };
+    let interval = if in_view {
+        interval
+    } else {
+        interval.max(BACKGROUND_PERIOD)
+    };
+    let period = (interval >= ONE_SHOT_FROM).then_some(interval);
+    Plan { level, period }
 }
 
 /// Follows Android's `location_request`s; cheap to clone.
@@ -98,6 +143,7 @@ impl LocationSync {
             send,
             desired: Arc::clone(&desired),
             client: None,
+            due: None,
         };
         let run = async move {
             if let Err(error) = actor.run(woken).await {
@@ -108,12 +154,22 @@ impl LocationSync {
         Self { desired, wake }
     }
 
-    /// Takes a `location_request`: `on`, and `interval` in ms.
+    /// Takes a `location_request`: `on`, `interval` in ms and `quality`.
     pub fn handle(&self, message: &Map<String, Value>) {
         let interval = message.get("interval").and_then(Value::as_f64);
         let interval = interval.unwrap_or(0.0).clamp(0.0, MAX_INTERVAL_MS as f64) as u64;
         self.desired.interval_ms.store(interval, Ordering::Release);
+        let quality = message.get("quality").and_then(Value::as_u64);
+        let high = quality == Some(QUALITY_HIGH_ACCURACY);
+        self.desired.high_accuracy.store(high, Ordering::Release);
         self.set_wanted(message.get("on").and_then(Value::as_bool) == Some(true));
+    }
+
+    /// Whether an Android app is in front of a lit screen.
+    pub fn set_in_view(&self, in_view: bool) {
+        if self.desired.in_view.swap(in_view, Ordering::AcqRel) != in_view {
+            let _ = self.wake.try_send(());
+        }
     }
 
     /// DeckardBridge went away: its request went with it.
@@ -130,12 +186,14 @@ impl LocationSync {
 
 struct Client {
     path: OwnedObjectPath,
+    level: u32,
     started: bool,
     updates: MessageStream,
 }
 
 enum Event {
     Wake,
+    Due,
     OwnerLost,
     Updated(OwnedObjectPath),
     Ignored,
@@ -148,6 +206,8 @@ struct Actor {
     send: Arc<Outbound>,
     desired: Arc<Desired>,
     client: Option<Client>,
+    /// One-shot mode: the next start, or the end of the wait for a fix.
+    due: Option<Instant>,
 }
 
 async fn call<B>(
@@ -190,9 +250,9 @@ async fn create(bus: &zbus::Connection) -> zbus::Result<Client> {
     let updates =
         MessageStream::for_match_rule(rule?, bus, std::num::NonZeroUsize::new(16)).await?;
     set(bus, &path, "DesktopId", DESKTOP_ID.into()).await;
-    set(bus, &path, "RequestedAccuracyLevel", ACCURACY_EXACT.into()).await;
     Ok(Client {
         path,
+        level: 0,
         started: false,
         updates,
     })
@@ -230,10 +290,18 @@ impl Actor {
                     .deserialize::<(OwnedObjectPath, OwnedObjectPath)>();
                 Some(paths.map_or(Event::Ignored, |(_, new)| Event::Updated(new)))
             };
-            let event = future::or(wake, future::or(owner, updated)).await;
+            let due_at = self.due;
+            let due = async {
+                let Some(at) = due_at else {
+                    return future::pending().await;
+                };
+                Timer::at(at).await;
+                Some(Event::Due)
+            };
+            let event = future::or(wake, future::or(owner, future::or(updated, due))).await;
             match event {
                 None => return Ok(()),
-                Some(Event::Wake) => self.apply().await,
+                Some(Event::Wake | Event::Due) => self.apply().await,
                 // GeoClue exits when idle and forgets its clients.
                 Some(Event::OwnerLost) => {
                     if self.client.take().is_some() {
@@ -246,45 +314,111 @@ impl Actor {
         }
     }
 
-    async fn apply(&mut self) {
-        let wanted = self.desired.wanted.load(Ordering::Acquire);
-        if wanted && self.client.is_none() {
-            match create(&self.bus).await {
-                Ok(client) => self.client = Some(client),
-                Err(error) => eprintln!("deckard-bridge: no GeoClue client for Android: {error}"),
-            }
-        }
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        if wanted {
-            let seconds = self.desired.interval_ms.load(Ordering::Acquire) / 1000;
-            let seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
-            set(&self.bus, &client.path, "TimeThreshold", seconds.into()).await;
-            if !client.started {
-                let started = call(&self.bus, &client.path, CLIENT, "Start", &()).await;
-                if let Err(error) = &started {
-                    eprintln!("deckard-bridge: GeoClue refused Android's location: {error}");
-                }
-                client.started = started.is_ok();
-            }
-        } else if client.started {
+    async fn stop(&mut self) {
+        if let Some(client) = self.client.as_mut().filter(|client| client.started) {
             client.started = false;
             let _ = call(&self.bus, &client.path, CLIENT, "Stop", &()).await;
         }
     }
 
-    async fn updated(&self, path: &str) {
+    async fn apply(&mut self) {
+        let wanted = self.desired.wanted.load(Ordering::Acquire);
+        if !wanted {
+            self.due = None;
+            return self.stop().await;
+        }
+        let interval = Duration::from_millis(self.desired.interval_ms.load(Ordering::Acquire));
+        let plan = plan(
+            interval,
+            self.desired.high_accuracy.load(Ordering::Acquire),
+            self.desired.in_view.load(Ordering::Acquire),
+        );
+        if self.client.is_none() {
+            match create(&self.bus).await {
+                Ok(client) => self.client = Some(client),
+                Err(error) => {
+                    return eprintln!("deckard-bridge: no GeoClue client for Android: {error}");
+                }
+            }
+        }
+        if self
+            .client
+            .as_ref()
+            .is_some_and(|client| client.level != plan.level)
+        {
+            self.due = None;
+            self.stop().await;
+        }
+        let now = Instant::now();
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
+        if client.level != plan.level {
+            set(
+                &self.bus,
+                &client.path,
+                "RequestedAccuracyLevel",
+                plan.level.into(),
+            )
+            .await;
+            client.level = plan.level;
+        }
+        let threshold = match plan.period {
+            None => {
+                self.due = None;
+                interval.as_secs()
+            }
+            Some(period) => {
+                if client.started {
+                    // Still waiting for its fix, or it never came.
+                    let deadline = *self.due.get_or_insert(now + FIX_TIMEOUT);
+                    if now < deadline {
+                        return;
+                    }
+                    self.due = Some(now + period);
+                    return self.stop().await;
+                }
+                if self.due.is_some_and(|at| now < at) {
+                    return;
+                }
+                self.due = Some(now + FIX_TIMEOUT);
+                0
+            }
+        };
+        let threshold = u32::try_from(threshold).unwrap_or(u32::MAX);
+        set(&self.bus, &client.path, "TimeThreshold", threshold.into()).await;
+        if !client.started {
+            let started = call(&self.bus, &client.path, CLIENT, "Start", &()).await;
+            if let Err(error) = &started {
+                eprintln!("deckard-bridge: GeoClue refused Android's location: {error}");
+            }
+            client.started = started.is_ok();
+        }
+    }
+
+    async fn updated(&mut self, path: &str) {
         let wanted = || self.desired.wanted.load(Ordering::Acquire);
-        if !wanted() {
+        if !wanted() || !self.client.as_ref().is_some_and(|client| client.started) {
             return;
         }
         let location = ("org.freedesktop.GeoClue2.Location",);
         let reply = call(&self.bus, path, PROPERTIES, "GetAll", &location).await;
         let fix = reply.and_then(|reply| reply.body().deserialize::<Fix>());
-        if let Some(out) = fix.ok().as_ref().and_then(message).filter(|_| wanted()) {
-            (self.send)(out);
+        let Some(out) = fix.ok().as_ref().and_then(message).filter(|_| wanted()) else {
+            return;
+        };
+        (self.send)(out);
+        // A one-shot has its fix: GeoClue idles until the next period.
+        if let Some(period) = self.one_shot_period() {
+            self.due = Some(Instant::now() + period);
+            self.stop().await;
         }
+    }
+
+    fn one_shot_period(&self) -> Option<Duration> {
+        let interval = Duration::from_millis(self.desired.interval_ms.load(Ordering::Acquire));
+        let high = self.desired.high_accuracy.load(Ordering::Acquire);
+        plan(interval, high, self.desired.in_view.load(Ordering::Acquire)).period
     }
 }
 

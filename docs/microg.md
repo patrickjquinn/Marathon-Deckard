@@ -108,7 +108,7 @@ Instead Android's network provider is Marathon's location:
 ```
 app → LocationManager / microG's FusedLocationProviderClient
     → Android's "network" provider = DeckardBridge NetworkLocation
-    → bridge.sock: location_request {on, interval}
+    → bridge.sock: location_request {on, interval, quality}
     → deckard-bridge LocationSync → GeoClue (system bus) → the shell's GeoClue agent
     ← location {lat, lon, acc, time, …} ← LocationUpdated
 ```
