@@ -13,4 +13,16 @@ doze)
 		exec /system/bin/cmd deviceidle unforce
 	fi
 	;;
+display)
+	# Android's display power, like the power button; cmd input for
+	# Android 13, whose cmd power has no sleep or wakeup.
+	set -- "$1" $(cat /data/deckard/display)
+	case "$2" in
+	on) /system/bin/cmd power wakeup || exec /system/bin/cmd input keyevent KEYCODE_WAKEUP ;;
+	off) /system/bin/cmd power sleep || exec /system/bin/cmd input keyevent KEYCODE_SLEEP ;;
+	# Only a fresh boot: no window to keep drawn yet. Otherwise the
+	# composer HAL puts Android to sleep once its cards lose focus.
+	idle) [ "$1" = boot ] && { /system/bin/cmd power sleep || exec /system/bin/cmd input keyevent KEYCODE_SLEEP; } ;;
+	esac
+	;;
 esac

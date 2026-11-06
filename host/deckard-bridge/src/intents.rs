@@ -404,6 +404,7 @@ pub(crate) async fn follow_foreground(
 /// Asks the Shell to show app `id`'s next window, and let it take the front
 /// for a while, as for a launch; whether the Shell will.
 pub(crate) async fn expect_window(bus: &Connection, id: &str, limit: Duration) -> bool {
+    crate::shell_sync::wake_display();
     let reply = call(bus, NAVIGATION, "ExpectAppWindow", &(id,), limit).await;
     reply.is_ok_and(|reply| reply.body().deserialize() == Ok(true))
 }

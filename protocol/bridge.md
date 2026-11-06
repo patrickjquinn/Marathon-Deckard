@@ -297,6 +297,24 @@ Waydroid's launcher intent against the action's. When Android is not
 running, deckard-bridge calls `app.launch` first, which starts the session, and
 sends the request when the channel connects.
 
+## Android's display
+
+Not a socket message. deckard-bridge writes `/data/deckard/display`
+(`host/deckard-bridge/src/shell_sync.rs`): `off` when `Power1.StateChanged`
+says `dozing` (Marathon's screen is off), `on <n>` while a `deckard.<pkg>` app is
+in front (`Navigation1.ForegroundAppChanged`, which is empty on the home
+screen, the switcher and the lock screen) and whenever Android is about to
+open a window for Marathon (`ExpectAppWindow`: Keel launches, shares), and
+`idle` otherwise. `n` grows with every wake. deckard-watch runs `cmd power
+wakeup` for `on` and `cmd power sleep` for `off` (`input keyevent
+KEYCODE_WAKEUP`/`KEYCODE_SLEEP` where `cmd power` lacks them), and nothing for
+`idle`, which is the composer HAL's: it puts Android to sleep 10 s after its
+last card loses focus and keeps the cards' last frames. At boot it applies
+the file, and `idle` then means sleep too, since nothing has a window yet.
+Asleep, SurfaceFlinger powers the display off and stops vsync, apps stop, and
+Android's Doze can start; microG's push stays up (it is on deviceidle's
+allowlists, docs/microg.md).
+
 ## Ambience palette
 
 Not a socket message. deckard-bridge writes `/data/deckard/palette`

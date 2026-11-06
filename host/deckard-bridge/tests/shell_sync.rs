@@ -115,3 +115,44 @@ fn mirrors_ambience_and_doze_into_data_deckard() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn android_display_follows_the_screen_and_the_front_app() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("deckard/display");
+    let display = shell_sync::DisplaySync::new(&path);
+    let read = || fs::read_to_string(&path).unwrap_or_default();
+    let mut last = 0;
+    let mut woke = || {
+        let n = read()
+            .strip_prefix("on ")
+            .and_then(|n| n.trim_end().parse::<u64>().ok())
+            .unwrap_or(0);
+        let newer = n > last;
+        last = n;
+        newer
+    };
+
+    display.foreground("");
+    assert_eq!(read(), "idle\n");
+    display.foreground("deckard.org.example.app");
+    assert!(woke());
+    display.screen(false);
+    assert_eq!(read(), "off\n");
+    // The screen is off: a launch does not wake Android.
+    display.wake();
+    assert_eq!(read(), "off\n");
+    display.screen(true);
+    assert!(woke());
+    // Leaving Android is the composer HAL's to act on.
+    display.foreground("settings");
+    assert_eq!(read(), "idle\n");
+    // A window on its way wakes Android every time.
+    display.wake();
+    assert!(woke());
+    display.wake();
+    assert!(woke());
+    display.foreground("deckard.not a package");
+    assert_eq!(read(), "idle\n");
+    Ok(())
+}
