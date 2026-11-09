@@ -24,18 +24,29 @@ pub struct Camera {
     pub sizes: Vec<(u32, u32)>,
 }
 
+/// What a probe found: the usable cameras, and whether libcamera listed any
+/// camera at all (one it lists without a usable size stays unusable; a
+/// camera another process streams from is not listed).
+pub struct Probe {
+    pub cameras: Vec<Camera>,
+    pub listed: bool,
+}
+
 /// The cameras, back first, then front, then external; none when libcamera's
 /// GStreamer plugin is missing.
 #[must_use]
-pub fn cameras() -> Vec<Camera> {
+pub fn cameras() -> Probe {
     let Some(provider) =
         gst::DeviceProviderFactory::find("libcameraprovider").and_then(|factory| factory.get())
     else {
         eprintln!("deckard-camera: no libcamera GStreamer provider");
-        return Vec::new();
+        return Probe {
+            cameras: Vec::new(),
+            listed: false,
+        };
     };
-    let mut cameras: Vec<Camera> = provider
-        .devices()
+    let devices = provider.devices();
+    let mut cameras: Vec<Camera> = devices
         .iter()
         .filter_map(|device| {
             let properties = device.properties()?;
@@ -60,7 +71,10 @@ pub fn cameras() -> Vec<Camera> {
         0 => 1,
         _ => 2,
     });
-    cameras
+    Probe {
+        cameras,
+        listed: !devices.is_empty(),
+    }
 }
 
 /// libcamera's `Location`, which libcamerasrc's provider gives by name.
