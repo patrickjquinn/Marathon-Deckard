@@ -81,7 +81,9 @@ fn install_keymap(dst: &Path) -> io::Result<()> {
             fs::create_dir_all(parent)?;
             let mut output = tempfile::NamedTempFile::new_in(parent)?;
             output.write_all(map.as_bytes())?;
-            output.as_file().set_permissions(Permissions::from_mode(0o644))?;
+            output
+                .as_file()
+                .set_permissions(Permissions::from_mode(0o644))?;
             output.as_file().sync_all()?;
             output.persist(&path).map_err(|error| error.error)?;
             Ok(())

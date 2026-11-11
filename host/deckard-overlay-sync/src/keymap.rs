@@ -12,14 +12,53 @@ const GENERIC: &str = include_str!("../data/Generic.kcm");
 
 /// The character keys (evdev code, Android key name) the keymap decides.
 const KEYS: &[(u32, &str)] = &[
-    (2, "1"), (3, "2"), (4, "3"), (5, "4"), (6, "5"), (7, "6"), (8, "7"), (9, "8"),
-    (10, "9"), (11, "0"), (12, "MINUS"), (13, "EQUALS"),
-    (16, "Q"), (17, "W"), (18, "E"), (19, "R"), (20, "T"), (21, "Y"), (22, "U"),
-    (23, "I"), (24, "O"), (25, "P"), (26, "LEFT_BRACKET"), (27, "RIGHT_BRACKET"),
-    (30, "A"), (31, "S"), (32, "D"), (33, "F"), (34, "G"), (35, "H"), (36, "J"),
-    (37, "K"), (38, "L"), (39, "SEMICOLON"), (40, "APOSTROPHE"), (41, "GRAVE"),
-    (43, "BACKSLASH"), (44, "Z"), (45, "X"), (46, "C"), (47, "V"), (48, "B"),
-    (49, "N"), (50, "M"), (51, "COMMA"), (52, "PERIOD"), (53, "SLASH"),
+    (2, "1"),
+    (3, "2"),
+    (4, "3"),
+    (5, "4"),
+    (6, "5"),
+    (7, "6"),
+    (8, "7"),
+    (9, "8"),
+    (10, "9"),
+    (11, "0"),
+    (12, "MINUS"),
+    (13, "EQUALS"),
+    (16, "Q"),
+    (17, "W"),
+    (18, "E"),
+    (19, "R"),
+    (20, "T"),
+    (21, "Y"),
+    (22, "U"),
+    (23, "I"),
+    (24, "O"),
+    (25, "P"),
+    (26, "LEFT_BRACKET"),
+    (27, "RIGHT_BRACKET"),
+    (30, "A"),
+    (31, "S"),
+    (32, "D"),
+    (33, "F"),
+    (34, "G"),
+    (35, "H"),
+    (36, "J"),
+    (37, "K"),
+    (38, "L"),
+    (39, "SEMICOLON"),
+    (40, "APOSTROPHE"),
+    (41, "GRAVE"),
+    (43, "BACKSLASH"),
+    (44, "Z"),
+    (45, "X"),
+    (46, "C"),
+    (47, "V"),
+    (48, "B"),
+    (49, "N"),
+    (50, "M"),
+    (51, "COMMA"),
+    (52, "PERIOD"),
+    (53, "SLASH"),
 ];
 
 const KEY_LEFTSHIFT: u32 = 42;
@@ -114,7 +153,9 @@ pub fn generate(lookup: impl Fn(u32) -> Key) -> String {
 /// is set (Android's own map is right for plain US) or it doesn't compile.
 pub fn from_session() -> Option<String> {
     use xkbcommon::xkb;
-    std::env::var("XKB_DEFAULT_LAYOUT").ok().filter(|l| !l.is_empty())?;
+    std::env::var("XKB_DEFAULT_LAYOUT")
+        .ok()
+        .filter(|l| !l.is_empty())?;
     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
     let keymap =
         xkb::Keymap::new_from_names(&context, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)?;
