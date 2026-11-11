@@ -6,7 +6,7 @@
 # (the caption overlay names private framework ids).
 set -eu
 image=$(cd "$(dirname "$0")/.." && pwd)
-: "${FRAMEWORK_RES:?set FRAMEWORK_RES to the image's framework-res.apk}"
+: "${FRAMEWORK_RES:?set FRAMEWORK_RES to framework-res.apk from the image}"
 export FRAMEWORK_RES
 build=${BUILD:-${XDG_CACHE_HOME:-$HOME/.cache}/deckard-chrome-build}
 ov=$image/overlay/system
