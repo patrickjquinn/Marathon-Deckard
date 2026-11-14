@@ -413,7 +413,6 @@ name = "deckard-host-tools"
 version = "0.4.0"
 dependencies = [
  "async-channel",
- "async-io",
  "nix",
  "rustix",
  "serde",
@@ -445,7 +444,6 @@ dependencies = [
 name = "deckard-mpris"
 version = "0.1.0"
 dependencies = [
- "async-io",
  "base64",
  "deckard-core",
  "deckard-host-tools",
@@ -463,6 +461,7 @@ dependencies = [
  "deckard-host-tools",
  "rustix",
  "tempfile",
+ "xkbcommon",
 ]
 
 [[package]]
@@ -2251,6 +2250,22 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "xkbcommon"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7a974f48060a14e95705c01f24ad9c3345022f4d97441b8a36beb7ed5c4a02d"
+dependencies = [
+ "libc",
+ "xkeysym",
+]
+
+[[package]]
+name = "xkeysym"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "yoke"

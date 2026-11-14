@@ -195,8 +195,8 @@ stopped (60 s settled) minus with it running.
   processes, so `:persistent` and its push connection stay. The main
   process comes back for microG's settings provider and Firebase calls.
 - Push in Doze: microG is on deviceidle's `system-excidle` and `system`
-  allowlists (sysconfig), so Android's Doze (Marathon-Doze's
-  `force-idle`) doesn't cut its network, and no foreground-service
+  allowlists (sysconfig), so Android's Doze doesn't cut its
+  network, and no foreground-service
   notification is posted (it would reach the Hub).
 - Disk: GmsCore is 108 MB plus 42 MB of unpacked libraries, in
   `/usr/share/deckard` and again in Waydroid's overlay (about 300 MB).

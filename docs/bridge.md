@@ -390,12 +390,17 @@ their toasts themselves, and ToastWatcher still reports those.
   namespace (kernel work). Freezing app cgroups from the host without binder
   freeze would hang their binder peers. The DeviceConfig value is left true;
   it has no effect.
-- **Doze → deviceidle.** deckard-bridge writes `/data/deckard/doze` (1 or 0) when
-  the shell's `Power1.StateChanged` carries `dozing`. The shell doesn't
-  publish Doze yet (queued with the shell agent). `deckard-watch` then runs
-  `cmd deviceidle force-idle deep` or `unforce` as system. Checked by
-  writing the file by hand: `mForceIdle=true`, `mState=IDLE` (light state
-  OVERRIDE), then back to `ACTIVE`.
+- **Doze is Android's own.** Android's display follows Marathon's screen
+  (protocol/bridge.md, display power), and Android dozes by its own rules
+  from there: nothing forces it, so maintenance windows, high-priority FCM
+  and while-idle alarms work as on a phone, and on a charger it doesn't
+  doze. DeckardSlimRes turns off `config_autoPowerModeUseMotionSensor`:
+  with no significant-motion sensor DeviceIdleController never steps past
+  INACTIVE. Checked on the Zinwa Q25, unplugged with
+  `dumpsys battery unplug`: ACTIVE, INACTIVE, IDLE_PENDING, IDLE within
+  about two and a half minutes of the screen going off, the next
+  maintenance window scheduled. Until 2026-11 Marathon's Doze ran
+  `cmd deviceidle force-idle deep`, which skips Android's state machine.
 - **Idle cost** (60 s windows, container cgroup `cpu.stat` and per-task
   context switches, no Android app in front, Android awake, with the shell no
   longer freezing the container): **0.07 % of one core, 64 context

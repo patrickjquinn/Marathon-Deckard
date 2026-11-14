@@ -65,11 +65,7 @@ fn listen_at(path: &Path) -> Result<OwnedFd, Error> {
 }
 
 /// Serves the socket until its path stops naming it (an Android data reset).
-fn serve(
-    listener: &OwnedFd,
-    path: &Path,
-    cameras: &mut Arc<Vec<probe::Camera>>,
-) -> Result<(), Error> {
+fn serve(listener: &OwnedFd, path: &Path, found: &mut Found) -> Result<(), Error> {
     let ours = identity(path);
     let timeout = Timespec::try_from(CHECK)?;
     loop {
@@ -86,12 +82,13 @@ fn serve(
             eprintln!("deckard-camera: refused UID {uid}");
             continue;
         }
-        // libcamera finds no cameras while another process streams from the
-        // shared media device, so an empty list is probed again.
-        if cameras.is_empty() {
-            *cameras = Arc::new(probe::cameras());
+        // libcamera lists no cameras while another process streams from the
+        // shared media device, so that is probed again; cameras it lists
+        // without a usable size stay so, and Android asks every 2 s.
+        if found.cameras.is_empty() && !found.listed {
+            *found = Found::probe();
         }
-        let cameras = Arc::clone(cameras);
+        let cameras = Arc::clone(&found.cameras);
         thread::spawn(move || {
             if let Err(failure) = session::serve(socket, &cameras)
                 && failure.kind() != io::ErrorKind::BrokenPipe
@@ -102,19 +99,35 @@ fn serve(
     }
 }
 
+/// The last probe, shared with the connections.
+struct Found {
+    cameras: Arc<Vec<probe::Camera>>,
+    listed: bool,
+}
+
+impl Found {
+    fn probe() -> Self {
+        let probe = probe::cameras();
+        Self {
+            cameras: Arc::new(probe.cameras),
+            listed: probe.listed,
+        }
+    }
+}
+
 fn main() -> Result<(), Error> {
     let path = data_dir()?.join("deckard/camera.sock");
     gst::init()?;
-    let mut cameras = Arc::new(probe::cameras());
+    let mut found = Found::probe();
     loop {
         if path.parent().is_some_and(Path::is_dir) {
             let listener = listen_at(&path)?;
             eprintln!(
                 "deckard-camera: {} camera(s) on {}",
-                cameras.len(),
+                found.cameras.len(),
                 path.display()
             );
-            serve(&listener, &path, &mut cameras)?;
+            serve(&listener, &path, &mut found)?;
         } else {
             thread::sleep(CHECK);
         }

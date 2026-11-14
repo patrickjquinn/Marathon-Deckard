@@ -1,7 +1,7 @@
 //! Marathon state mirrored into Android's `/data/deckard`, where its
 //! deckard-watch service applies it: the ambience palette (empty when
-//! Settings switches Android's theming off), Doze and Android's display
-//! power.
+//! Settings switches Android's theming off) and Android's display power,
+//! which Android's own Doze follows.
 
 use std::collections::HashMap;
 use std::fs;
@@ -57,29 +57,6 @@ fn write(path: &Path, content: &str, done: &str) {
         Ok(false) => {}
         Err(error) => eprintln!("deckard-bridge: cannot write {}: {error}", path.display()),
     }
-}
-
-/// Writes `1` or `0` to `path` as Power1 reports Marathon entering or
-/// leaving Doze; deckard-watch forces or releases Android's deep idle.
-///
-/// # Errors
-/// Returns the D-Bus error that prevented the subscription.
-pub fn sync_doze(bus: &Connection, path: &Path) -> zbus::Result<()> {
-    let rule = crate::signals(SHELL_BUS_NAME, POWER_PATH, POWER_INTERFACE)?;
-    let rule = rule.member("StateChanged").build();
-    let path = path.to_owned();
-    crate::relay(bus, rule?, 8, move |signal| {
-        let state = signal.body().deserialize::<State>();
-        match state
-            .ok()
-            .and_then(|state| state.get("dozing").map(bool::try_from))
-        {
-            Some(Ok(true)) => write(&path, "1\n", "Android idles with Marathon"),
-            Some(Ok(false)) => write(&path, "0\n", "Android wakes with Marathon"),
-            _ => {}
-        }
-        true
-    })
 }
 
 /// What Android's display should be.
