@@ -52,7 +52,7 @@ fn wait_for(what: &str, mut ready: impl FnMut() -> bool) -> TestResult {
 }
 
 #[test]
-fn mirrors_ambience_and_doze_into_data_deckard() -> TestResult {
+fn mirrors_ambience_into_data_deckard() -> TestResult {
     if env::var_os("DECKARD_BRIDGE_PRIVATE_BUS").is_none() {
         return Ok(());
     }
@@ -96,23 +96,6 @@ fn mirrors_ambience_and_doze_into_data_deckard() -> TestResult {
     })?;
     assert_eq!(colors(&palette)["system_neutral1_900"], "#ff040404");
 
-    let doze = dir.path().join("doze");
-    let bus = zbus::block_on(Connection::session())?;
-    let doze_path = doze.clone();
-    thread::spawn(move || shell_sync::sync_doze(&bus, &doze_path));
-    for (dozing, expected) in [(true, "1\n"), (false, "0\n")] {
-        wait_for("the doze state", || {
-            let state = HashMap::from([("dozing", Value::from(dozing))]);
-            let _ = zbus::block_on(shell.emit_signal(
-                None::<&str>,
-                "/org/marathonos/Shell/Power",
-                "org.marathonos.Shell.Power1",
-                "StateChanged",
-                &(state,),
-            ));
-            fs::read_to_string(&doze).is_ok_and(|content| content == expected)
-        })?;
-    }
     Ok(())
 }
 

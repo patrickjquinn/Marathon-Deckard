@@ -28,7 +28,7 @@ must match the installed binary.
 | `bootwatchdog.{h,cpp}`: `/data/deckard/booted`, `deckard-boot-evidence`, one restart | `src/watchdog.rs`, `deckard-core::runtime_state::BootWatchdog` |
 | `sessionfollower.{h,cpp}`: `TryRestartUnit` when `org.marathonos.Shell` returns | dropped: `deckard-runtime` ends the session when the compositor's socket changes, and the unit restarts it |
 | `reclaimer.{h,cpp}`: `memory.events` and PSI triggers, `reclaim`/`reclaimed` | `src/reclaim.rs`, `deckard-core::pressure` |
-| `doze.{h,cpp}`: `/data/deckard/doze` from `Power1.StateChanged` | `src/shell_sync.rs` `sync_doze` |
+| `doze.{h,cpp}`: `/data/deckard/doze` from `Power1.StateChanged` | dropped: Android dozes by its own rules once its display is off (`src/shell_sync.rs` `sync_display`) |
 | `palette.{h,cpp}`: `/data/deckard/palette` from the ambience highlight | `src/shell_sync.rs` `sync_palette`, `deckard-core::palette` |
 | `packages.{h,cpp}`: `org.marathonos.Deckard1.Packages`, install staging, mutation policy | `deckard-packages`, `src/packages.rs` |
 | `notifications.{h,cpp}`: Hub posts, actions, icons, toasts, `notifications.json` | `src/notifications.rs` |

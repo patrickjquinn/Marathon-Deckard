@@ -10,6 +10,8 @@ use deckard_host_tools::files;
 use rustix::fs::{AtFlags, FileType, Mode, Timespec, Timestamps};
 use rustix::process::{Gid, Uid};
 
+pub mod keymap;
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub share: PathBuf,
@@ -65,7 +67,29 @@ pub fn sync(paths: &Paths) -> io::Result<()> {
     copy_tree(&src, &dst, Path::new(""), &mut copied, &mut HashMap::new())?;
     write_lines(&list, &copied)?;
     reconcile_whiteouts(paths, &dst)?;
+    install_keymap(&dst)?;
     reconcile_properties(paths)
+}
+
+/// The session keyboard's character map for Android (`keymap`), or none
+/// when the session sets no XKB layout.
+fn install_keymap(dst: &Path) -> io::Result<()> {
+    let path = safe_target(dst, Path::new("system/usr/keychars/wayland_keyboard.kcm"))?;
+    match keymap::from_session() {
+        Some(map) => {
+            let (parent, _) = split(&path)?;
+            fs::create_dir_all(parent)?;
+            let mut output = tempfile::NamedTempFile::new_in(parent)?;
+            output.write_all(map.as_bytes())?;
+            output
+                .as_file()
+                .set_permissions(Permissions::from_mode(0o644))?;
+            output.as_file().sync_all()?;
+            output.persist(&path).map_err(|error| error.error)?;
+            Ok(())
+        }
+        None => remove_file(&path),
+    }
 }
 
 fn split(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {

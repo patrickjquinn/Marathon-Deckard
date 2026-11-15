@@ -112,7 +112,20 @@ Android window over `wl_keyboard`. Waydroid writes them to its virtual
 modifiers, repeat and shortcuts behave as on a laptop. Because that virtual
 keyboard always exists, Android's `Configuration.keyboard` is `qwerty` even on
 a phone without one, so Android's "hide the soft keyboard when a hardware
-keyboard is present" rule can't be trusted. DeckardIme therefore always reports
+keyboard is present" rule can't be trusted.
+
+Android reads those codes with a key character map, and by default that is
+`Generic.kcm` (US). A phone keyboard whose numbers and symbols are Alt
+layers (the Zinwa Q25's Alt+W is `1`, Alt+M `.`) then types nothing for
+them. `deckard-overlay-sync` therefore writes
+`system/usr/keychars/wayland_keyboard.kcm` into the overlay at every
+container start: `Generic.kcm` with each character key as the session's XKB
+keymap types it plain, with Shift, with left Alt, Shift+Alt and right Alt
+(libxkbcommon, from `XKB_DEFAULT_*` and `XKB_CONFIG_EXTRA_PATH` in
+`deckard-container.service`'s environment). Android loads it for the
+`wayland_keyboard` device by name; keys the layout leaves out (Space,
+Enter, Escape's fallbacks) keep Android's own entries. With no XKB layout
+set the file is removed and Android's generic map applies. DeckardIme therefore always reports
 `show`, and the shell applies Marathon's rule (`Platform.hasHardwareKeyboard`,
 from `/proc/bus/input/devices`). On the HackberryPi the keyboard is not forced
 up. The nav bar's keyboard button still opens it, and then the inset follows.

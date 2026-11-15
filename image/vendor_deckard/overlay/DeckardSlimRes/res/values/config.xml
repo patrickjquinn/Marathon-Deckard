@@ -3,4 +3,9 @@
     <!-- No SystemUI, so no ImageWallpaper: boot must not wait 30 s for a
          wallpaper window (docs/slim.md). -->
     <bool name="config_checkWallpaperAtBoot">false</bool>
+
+    <!-- No significant-motion sensor reaches Android, and without one
+         DeviceIdleController never steps past INACTIVE: Doze runs its own
+         light and deep idle, maintenance windows included, without it. -->
+    <bool name="config_autoPowerModeUseMotionSensor">false</bool>
 </resources>

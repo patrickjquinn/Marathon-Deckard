@@ -8,7 +8,6 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 async-channel.workspace = true
-async-io.workspace = true
 nix.workspace = true
 rustix.workspace = true
 serde.workspace = true

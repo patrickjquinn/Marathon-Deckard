@@ -1,6 +1,6 @@
 # Host state deckardd writes into /data/deckard: the palette for Marathon's
-# ambience (applied as a fabricated overlay), Marathon's Doze (Android's
-# deep idle) and Android's display power. /data/deckard/booted tells
+# ambience (applied as a fabricated overlay) and Android's display power,
+# which Android's own Doze follows. /data/deckard/booted tells
 # deckardd's boot watchdog that this boot completed.
 service deckard-watch /system/bin/inotifyd /system/bin/deckard-watch /data/deckard:wy
     class main
@@ -15,6 +15,5 @@ on post-fs-data
 on property:sys.boot_completed=1
     write /data/deckard/booted 1
     exec_background - system system -- /system/bin/deckard-watch m /data/deckard palette
-    exec_background - system system -- /system/bin/deckard-watch m /data/deckard doze
     exec_background - system system -- /system/bin/deckard-watch boot /data/deckard display
     start deckard-watch
