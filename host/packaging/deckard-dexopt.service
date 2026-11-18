@@ -1,0 +1,17 @@
+[Unit]
+Description=Deckard: Android's background app compilation
+# Android compiles apps ahead of time only when it sees the device idle and
+# charging, and inside Deckard it never does: apps installed from Aurora
+# stayed at 'verify' and ran interpreted. This runs Android's own job, which
+# picks the apps and compiler filters from their use, on mains power.
+ConditionACPower=true
+After=deckard-container.service
+
+[Service]
+Type=oneshot
+ExecCondition=/bin/sh -c 'lxc-info -P /var/lib/deckard/lxc -n deckard -s 2>/dev/null | grep -q RUNNING'
+ExecStart=/usr/bin/lxc-attach -P /var/lib/deckard/lxc -n deckard --clear-env -- /system/bin/cmd package bg-dexopt-job
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+TimeoutStartSec=2h
