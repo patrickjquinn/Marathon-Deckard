@@ -29,3 +29,13 @@ ro.deckard.starting_windows=false
 # Android's PinnerService locked 20 MB of WebView in RAM for an app that is
 # rarely open in Deckard.
 pinner.pin_webview_size=0
+# Who built the image, where: neutral, as GrapheneOS's are. The image's own
+# are the builder's login and host, which every app could read (and banking
+# apps match on). The description keeps what it says about the build.
+ro.build.user=build-user
+ro.build.host=build-host
+ro.build.description=lineage_deckard_arm64_only-userdebug 16 BP4A.251205.006 eng.build test-keys
+# The hardware by Deckard's name, as ro.board.platform has it: "unknown" and
+# an empty board are what emulators report.
+ro.hardware=deckard
+ro.product.board=deckard

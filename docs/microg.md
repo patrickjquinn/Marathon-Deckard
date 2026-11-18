@@ -11,8 +11,8 @@ Only the parts that make apps work are in, and Marathon owns location.
 
 | Where | What |
 |---|---|
-| `/system/priv-app/GmsCore` | microG Services `com.google.android.gms` 0.3.17.252432 (versionCode 252432034), the release APK unchanged, with its arm64 native code unpacked into `lib/arm64/` (Android never extracts a system app's libraries) |
-| `/system/priv-app/FakeStore` | microG Companion `com.android.vending` 84022634: licence checks, in-app billing and asset delivery answers, and the "Play Store is installed" check many apps make |
+| `/system/priv-app/GmsCore` | microG Services `com.google.android.gms` 0.3.18.252432 (versionCode 252432036), the release APK unchanged, with its arm64 native code unpacked into `lib/arm64/` (Android never extracts a system app's libraries) |
+| `/system/priv-app/FakeStore` | microG Companion `com.android.vending` 84022636: licence checks, in-app billing and asset delivery answers, and the "Play Store is installed" check many apps make |
 | `/system/etc/permissions/privapp-permissions-microg.xml` | The privileged permissions, each granted or denied (below) |
 | `/system/etc/sysconfig/microg.xml` | microG on Doze's allowlist and the data saver's, so push keeps its connection and microG needs no foreground-service notification |
 | `/system/etc/microg.xml` | microG's defaults (its `SettingsProvider` reads this file): device registration, push and SafetyNet on |
@@ -27,12 +27,12 @@ change here. The `deckard` aport downloads them from microG's GitHub
 release (sha512 in the APKBUILD) and `image/microg/install.sh` lays them out
 in the overlay after checking `image/microg/SHA256SUMS`.
 
-### Checks on the downloads (2026-10-19)
+### Checks on the downloads (0.3.18, 2026-11-18)
 
 | File | SHA-256 (matches GitHub's asset digest) |
 |---|---|
-| `com.google.android.gms-252432034.apk` (108,113,833 B) | `e5e6cba078bdec812b5450599350e5c1a12c8b7438da5bf77123af170f8c1a35` |
-| `com.android.vending-84022634.apk` (4,210,169 B) | `9b8616011cc8f026bcbbe094df850794abb9d6d9f23214d7a8f8c4d1033ea012` |
+| `com.google.android.gms-252432036.apk` (108,520,063 B) | `1094fa60ace2367ac52bd08d1bd4f33fa8144ba930e355121b28234b8ebbf382` |
+| `com.android.vending-84022636.apk` (4,212,484 B) | `3f1bde2f72bca746fbb53b61a32c2a85fcb026f886ee96d6fe9a05de9a6c6d5b` |
 
 - OpenPGP: both `.asc` signatures are good, from "microG Project Team
   <pgp@microg.org>", key `22F7 96D6 E62E 6625 A0BC EFEA 7F97 9A66 F3E0 8422`
@@ -82,11 +82,12 @@ asks for 12 (from its merged manifest, against the image's
 | `INSTALL_LOCATION_PROVIDER` | microG's location service for apps |
 | `CHANGE_DEVICE_IDLE_TEMP_WHITELIST` | push: lets the app a high-priority message is for run in Doze |
 | `UPDATE_APP_OPS_STATS`, `WATCH_APPOPS`, `UPDATE_DEVICE_STATS` | location on behalf of apps: attribution, their app ops, wake-lock accounting |
+| `DUMP` | DroidGuard (Play Integrity) dumps SurfaceFlinger and thermalservice since 0.3.16 (microG 90d4d8e); without it the verdict is empty |
 
 Denied: `LOCATION_HARDWARE`, `NETWORK_SCAN`, `MODIFY_PHONE_STATE` (microG's
 Wi-Fi and cell scanning; location comes from Marathon), `MANAGE_USB` and
 `START_ACTIVITIES_FROM_BACKGROUND` (FIDO over USB; no USB in the
-container), `DUMP` (DroidGuard), `INTERACT_ACROSS_USERS` (one user); and
+container), `INTERACT_ACROSS_USERS` (one user); and
 for Companion `INSTALL_PACKAGES` and `DELETE_PACKAGES` (Marathon's Store
 installs) and `INTERACT_ACROSS_USERS`.
 

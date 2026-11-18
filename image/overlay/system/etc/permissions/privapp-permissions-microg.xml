@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- microG Services and Companion (docs/microg.md). Granted: what location
-     and push need. Denied: Wi-Fi and cell scanning (location comes from
-     Marathon), telephony, USB and FIDO, credential provider service,
-     other users, dumps, installing. -->
+     and push need, and DUMP, which DroidGuard needs for Play Integrity
+     since microG 0.3.16. Denied: Wi-Fi and cell scanning (location comes
+     from Marathon), telephony, USB and FIDO, credential provider service,
+     other users, installing. -->
 <permissions>
     <privapp-permissions package="com.google.android.gms">
         <permission name="android.permission.INSTALL_LOCATION_PROVIDER"/>
@@ -10,12 +11,12 @@
         <permission name="android.permission.UPDATE_APP_OPS_STATS"/>
         <permission name="android.permission.UPDATE_DEVICE_STATS"/>
         <permission name="android.permission.WATCH_APPOPS"/>
+        <permission name="android.permission.DUMP"/>
         <deny-permission name="android.permission.LOCATION_HARDWARE"/>
         <deny-permission name="android.permission.NETWORK_SCAN"/>
         <deny-permission name="android.permission.MODIFY_PHONE_STATE"/>
         <deny-permission name="android.permission.MANAGE_USB"/>
         <deny-permission name="android.permission.START_ACTIVITIES_FROM_BACKGROUND"/>
-        <deny-permission name="android.permission.DUMP"/>
         <deny-permission name="android.permission.INTERACT_ACROSS_USERS"/>
         <deny-permission name="android.permission.PROVIDE_DEFAULT_ENABLED_CREDENTIAL_SERVICE"/>
         <deny-permission name="android.permission.PROVIDE_REMOTE_CREDENTIALS"/>
