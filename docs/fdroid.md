@@ -39,6 +39,30 @@ Aurora over the system copies (Android keeps an updated system app in
 `/data/app`). Their launchers are exported to Marathon's grid like any
 installed app's.
 
+## Aurora's Play device profile
+
+Play offers some apps only to device profiles it accepts. TikTok is one:
+with the phone's own profile (Android 16, a square or tablet-shaped screen)
+Aurora shows it as not supported. An Android 15 phone profile, exported
+from a Jolla phone's AppSupport (an honest, uncertified AOSP container with
+the same microG), is accepted; the brand, model and fingerprint do not
+matter, so `image/aurora/marathon.properties` keeps that profile under
+Marathon's name.
+
+`deckard-aurora-profile` (from `deckard-aurora.rc`, at boot completion)
+adds it to Aurora's preferences once: `DEVICE_SPOOF_ENABLED` and
+`DEVICE_SPOOF_PROPERTIES`, the properties as a JSON string, which is how
+Aurora stores a spoof. It does nothing when Aurora already has a spoof of
+the person's own, and `/data/system/deckard-aurora-profile` marks it done,
+so a profile changed in Aurora's settings stays changed.
+`image/aurora/make-prefs.py` regenerates
+`overlay/system/etc/deckard-aurora-device.xml` from the properties.
+
+Checked on the Zinwa Q25 (2026-11-18): from cleared Aurora data, the seed,
+Aurora's onboarding and an anonymous sign-in, TikTok 47.7.3 is offered and
+installs. An Aurora already signed in before the seed may need to sign in
+again for Play to see the new profile.
+
 ## Checks on the downloads (2026-11-02)
 
 | File | SHA-256 | APK signer certificate SHA-256 |

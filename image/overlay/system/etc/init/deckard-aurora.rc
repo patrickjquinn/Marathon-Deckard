@@ -1,0 +1,3 @@
+# Aurora Store's Play device profile, once (docs/fdroid.md).
+on property:sys.boot_completed=1
+    exec_background - root root -- /system/bin/deckard-aurora-profile

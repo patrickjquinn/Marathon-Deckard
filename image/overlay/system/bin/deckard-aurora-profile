@@ -1,0 +1,33 @@
+#!/system/bin/sh
+# Aurora Store's Play device profile (docs/fdroid.md). Play offers some apps,
+# TikTok among them, only to a device profile it accepts; Android 16 on a
+# square screen is not one. Once, before any spoof of the person's own,
+# Aurora gets Marathon's: an Android 15 phone under Marathon's name.
+pkg=com.aurora.store
+dir=/data/data/$pkg
+prefs=$dir/shared_prefs/${pkg}_preferences.xml
+entries=/system/etc/deckard-aurora-device.xml
+seeded=/data/system/deckard-aurora-profile
+[ -d "$dir" ] && [ -f "$entries" ] && [ ! -e "$seeded" ] || exit 0
+if [ -f "$prefs" ] && grep -q DEVICE_SPOOF "$prefs"; then
+	touch "$seeded"
+	exit 0
+fi
+am force-stop $pkg
+owner=$(stat -c %u:%g "$dir")
+mkdir -p "$dir/shared_prefs"
+chown "$owner" "$dir/shared_prefs"
+chmod 771 "$dir/shared_prefs"
+tmp=$prefs.deckard
+if [ -f "$prefs" ]; then
+	sed '/<\/map>/d' "$prefs" >"$tmp"
+else
+	printf "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n" >"$tmp"
+fi
+cat "$entries" >>"$tmp"
+echo '</map>' >>"$tmp"
+chown "$owner" "$tmp"
+chmod 660 "$tmp"
+mv "$tmp" "$prefs"
+restorecon -R "$dir/shared_prefs" 2>/dev/null
+touch "$seeded"
