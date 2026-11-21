@@ -1,0 +1,448 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patrickjquinn <patrick.jm.quinn@gmail.com>
+Date: Sat, 21 Nov 2026 08:22:09 +0000
+Subject: [PATCH] sensors: Take sensors from the host's sensors service
+
+The HAL listed no sensors, so Android apps found no accelerometer,
+compass or light sensor. It now reads the host's sensors from
+deckard-sensors over /data/deckard/sensors.sock (Marathon-Deckard
+docs/sensors.md): the list once at start, waiting up to 15 s for the
+host because SensorService reads it only once, then the events of the
+sensors Android activates, at the period Android batches. Flushes
+complete at once, as nothing waits in a FIFO. When the host restarts,
+the HAL reconnects and activates the same sensors again.
+
+The service keeps registering only when deckard.stub_sensors_hal is
+set, which also keeps Android's display fixed to the compositor's
+rotation, and runs two binder threads, since poll() holds one.
+---
+ sensors/Sensors.cpp | 298 ++++++++++++++++++++++++++++++++++++++++++--
+ sensors/Sensors.h   |  33 +++++
+ sensors/service.cpp |   3 +-
+ 3 files changed, 323 insertions(+), 11 deletions(-)
+
+diff --git a/sensors/Sensors.cpp b/sensors/Sensors.cpp
+index 1e80cf3..53d201d 100644
+--- a/sensors/Sensors.cpp
++++ b/sensors/Sensors.cpp
+@@ -4,6 +4,7 @@
+  * Copyright (C) 2008 The Android Open Source Project
+  * Copyright (C) 2018 The LineageOS Project
+  * Copyright (C) 2021 Waydroid Project
++ * Copyright (C) 2026 Marathon OS
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -20,44 +21,321 @@
+ 
+ #include "Sensors.h"
+ 
++#include <string.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <chrono>
++#include <thread>
++
+ namespace android {
+ namespace hardware {
+ namespace sensors {
+ namespace V1_0 {
+ namespace implementation {
+ 
++namespace {
++
++constexpr char kSocketPath[] = "/data/deckard/sensors.sock";
++// SensorService reads the list once, when it starts, so the HAL waits this
++// long for the host before it registers with no sensors.
++constexpr auto kHostWait = std::chrono::seconds(15);
++constexpr auto kRetry = std::chrono::milliseconds(250);
++constexpr auto kReconnect = std::chrono::seconds(1);
++// Events kept while SensorService does not poll.
++constexpr size_t kMaxEvents = 1024;
++
++// The messages of host/deckard-sensors/src/wire.rs.
++constexpr uint32_t kVersion = 1;
++constexpr uint32_t kHello = 1;
++constexpr uint32_t kActivate = 2;
++constexpr uint32_t kBatch = 3;
++constexpr uint32_t kSensor = 101;
++constexpr uint32_t kSensorsEnd = 102;
++constexpr uint32_t kEvent = 103;
++constexpr size_t kNameBytes = 48;
++constexpr size_t kSensorBytes = 36 + kNameBytes;
++constexpr size_t kEventBytes = 28;
++constexpr size_t kMaxMessage = 128;
++
++uint32_t u32At(const uint8_t* bytes, size_t at) {
++    uint32_t value;
++    memcpy(&value, bytes + at, sizeof(value));
++    return value;
++}
++
++int32_t i32At(const uint8_t* bytes, size_t at) {
++    int32_t value;
++    memcpy(&value, bytes + at, sizeof(value));
++    return value;
++}
++
++int64_t i64At(const uint8_t* bytes, size_t at) {
++    int64_t value;
++    memcpy(&value, bytes + at, sizeof(value));
++    return value;
++}
++
++float f32At(const uint8_t* bytes, size_t at) {
++    float value;
++    memcpy(&value, bytes + at, sizeof(value));
++    return value;
++}
++
++class Message {
++  public:
++    explicit Message(uint32_t kind) { put(&kind, sizeof(kind)); }
++    Message& u32(uint32_t value) { return put(&value, sizeof(value)); }
++    Message& i64(int64_t value) { return put(&value, sizeof(value)); }
++    const std::vector<uint8_t>& bytes() const { return mBytes; }
++
++  private:
++    Message& put(const void* value, size_t size) {
++        auto* p = static_cast<const uint8_t*>(value);
++        mBytes.insert(mBytes.end(), p, p + size);
++        return *this;
++    }
++    std::vector<uint8_t> mBytes;
++};
++
++bool sendTo(int socket, const std::vector<uint8_t>& message) {
++    return TEMP_FAILURE_RETRY(::send(socket, message.data(), message.size(), MSG_NOSIGNAL)) ==
++           static_cast<ssize_t>(message.size());
++}
++
++SensorInfo sensorInfo(const uint8_t* bytes) {
++    SensorInfo info{};
++    info.sensorHandle = static_cast<int32_t>(u32At(bytes, 4));
++    info.type = static_cast<SensorType>(u32At(bytes, 8));
++    info.flags = u32At(bytes, 12);
++    info.maxRange = f32At(bytes, 16);
++    info.resolution = f32At(bytes, 20);
++    info.power = f32At(bytes, 24);
++    info.minDelay = i32At(bytes, 28);
++    info.maxDelay = i32At(bytes, 32);
++    const char* name = reinterpret_cast<const char*>(bytes + 36);
++    info.name = std::string(name, strnlen(name, kNameBytes));
++    info.vendor = "Deckard";
++    info.version = 1;
++    info.fifoReservedEventCount = 0;
++    info.fifoMaxEventCount = 0;
++    return info;
++}
++
++}  // namespace
++
++base::unique_fd Sensors::connectHost(std::vector<SensorInfo>* list) {
++    base::unique_fd socket(::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0));
++    if (socket.get() < 0) {
++        return {};
++    }
++    sockaddr_un addr{.sun_family = AF_UNIX};
++    strlcpy(addr.sun_path, kSocketPath, sizeof(addr.sun_path));
++    if (TEMP_FAILURE_RETRY(::connect(socket.get(), reinterpret_cast<sockaddr*>(&addr),
++                                     sizeof(addr))) != 0) {
++        return {};
++    }
++    timeval timeout{.tv_sec = 5};
++    setsockopt(socket.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++    if (!sendTo(socket.get(), Message(kHello).u32(kVersion).bytes())) {
++        return {};
++    }
++    list->clear();
++    uint8_t bytes[kMaxMessage];
++    while (true) {
++        ssize_t len = TEMP_FAILURE_RETRY(recv(socket.get(), bytes, sizeof(bytes), 0));
++        if (len < 4) {
++            ALOGE("No sensor list from the host: %s", len < 0 ? strerror(errno) : "closed");
++            return {};
++        }
++        uint32_t kind = u32At(bytes, 0);
++        if (kind == kSensorsEnd) {
++            break;
++        }
++        if (kind != kSensor || static_cast<size_t>(len) != kSensorBytes) {
++            ALOGE("Unexpected message %u from the host", kind);
++            return {};
++        }
++        list->push_back(sensorInfo(bytes));
++    }
++    timeout = {};
++    setsockopt(socket.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++    return socket;
++}
++
+ Sensors::Sensors() {
++    auto deadline = std::chrono::steady_clock::now() + kHostWait;
++    base::unique_fd socket;
++    while (!(socket = connectHost(&mSensors)).ok() &&
++           std::chrono::steady_clock::now() < deadline) {
++        std::this_thread::sleep_for(kRetry);
++    }
++    if (!socket.ok()) {
++        ALOGE("No host sensors service at %s", kSocketPath);
++        return;
++    }
++    ALOGI("%zu sensor(s) from the host", mSensors.size());
++    mState.resize(mSensors.size());
++    mSocket = socket.get();
++    std::thread([this, s = std::move(socket)]() mutable { readLoop(std::move(s)); }).detach();
+ }
+ 
+-Return<void> Sensors::getSensorsList(getSensorsList_cb _hidl_cb) {
+-    hidl_vec<SensorInfo> out;
++void Sensors::readLoop(base::unique_fd socket) {
++    uint8_t bytes[kMaxMessage];
++    while (true) {
++        ssize_t len = TEMP_FAILURE_RETRY(recv(socket.get(), bytes, sizeof(bytes), 0));
++        if (len == static_cast<ssize_t>(kEventBytes) && u32At(bytes, 0) == kEvent) {
++            int32_t handle = static_cast<int32_t>(u32At(bytes, 4));
++            const SensorInfo* info = find(handle);
++            if (info == nullptr) {
++                continue;
++            }
++            Event event{};
++            event.timestamp = i64At(bytes, 8);
++            event.sensorHandle = handle;
++            event.sensorType = info->type;
++            float x = f32At(bytes, 16), y = f32At(bytes, 20), z = f32At(bytes, 24);
++            switch (info->type) {
++                case SensorType::ACCELEROMETER:
++                case SensorType::GYROSCOPE:
++                    event.u.vec3 = {.x = x, .y = y, .z = z, .status = SensorStatus::ACCURACY_HIGH};
++                    break;
++                case SensorType::MAGNETIC_FIELD:
++                    // The host does not calibrate for the phone's own
++                    // magnetic parts.
++                    event.u.vec3 = {
++                            .x = x, .y = y, .z = z, .status = SensorStatus::ACCURACY_MEDIUM};
++                    break;
++                default:
++                    event.u.scalar = x;
++                    break;
++            }
++            std::lock_guard<std::mutex> lock(mLock);
++            pushLocked(std::move(event));
++            continue;
++        }
++        if (len > 0) {
++            continue;
++        }
++        ALOGW("Host sensors service went away: %s", len < 0 ? strerror(errno) : "closed");
++        {
++            std::lock_guard<std::mutex> lock(mLock);
++            mSocket = -1;
++        }
++        socket.reset();
++        std::vector<SensorInfo> list;
++        while (!(socket = connectHost(&list)).ok()) {
++            std::this_thread::sleep_for(kReconnect);
++        }
++        if (list.size() != mSensors.size()) {
++            ALOGW("The host now has %zu sensor(s), Android keeps %zu", list.size(),
++                  mSensors.size());
++        }
++        std::lock_guard<std::mutex> lock(mLock);
++        mSocket = socket.get();
++        for (size_t i = 0; i < mSensors.size(); i++) {
++            if (mState[i].enabled) {
++                uint32_t handle = static_cast<uint32_t>(mSensors[i].sensorHandle);
++                sendLocked(Message(kBatch).u32(handle).i64(mState[i].periodNs).bytes());
++                sendLocked(Message(kActivate).u32(handle).u32(1).bytes());
++            }
++        }
++    }
++}
++
++void Sensors::sendLocked(const std::vector<uint8_t>& message) {
++    if (mSocket >= 0) {
++        sendTo(mSocket, message);
++    }
++}
++
++void Sensors::pushLocked(Event&& event) {
++    if (mEvents.size() >= kMaxEvents) {
++        mEvents.pop_front();
++    }
++    mEvents.push_back(std::move(event));
++    mCond.notify_one();
++}
++
++const SensorInfo* Sensors::find(int32_t handle) const {
++    for (const auto& info : mSensors) {
++        if (info.sensorHandle == handle) {
++            return &info;
++        }
++    }
++    return nullptr;
++}
+ 
++Return<void> Sensors::getSensorsList(getSensorsList_cb _hidl_cb) {
++    hidl_vec<SensorInfo> out(mSensors);
+     _hidl_cb(out);
+     return Void();
+ }
+ 
+-Return<Result> Sensors::setOperationMode(OperationMode) {
+-    return Result::INVALID_OPERATION;
++Return<Result> Sensors::setOperationMode(OperationMode mode) {
++    return mode == OperationMode::NORMAL ? Result::OK : Result::BAD_VALUE;
+ }
+ 
+-Return<Result> Sensors::activate(
+-        int32_t, bool) {
++Return<Result> Sensors::activate(int32_t handle, bool enabled) {
++    const SensorInfo* info = find(handle);
++    if (info == nullptr) {
++        return Result::BAD_VALUE;
++    }
++    std::lock_guard<std::mutex> lock(mLock);
++    mState[info - mSensors.data()].enabled = enabled;
++    sendLocked(Message(kActivate).u32(static_cast<uint32_t>(handle)).u32(enabled).bytes());
+     return Result::OK;
+ }
+ 
+-Return<void> Sensors::poll(int32_t, poll_cb _hidl_cb) {
++Return<void> Sensors::poll(int32_t maxCount, poll_cb _hidl_cb) {
+     hidl_vec<Event> out;
+     hidl_vec<SensorInfo> dynamicSensorsAdded;
+-
++    if (maxCount <= 0) {
++        _hidl_cb(Result::BAD_VALUE, out, dynamicSensorsAdded);
++        return Void();
++    }
++    {
++        std::unique_lock<std::mutex> lock(mLock);
++        mCond.wait(lock, [this] { return !mEvents.empty(); });
++        size_t count = std::min(mEvents.size(), static_cast<size_t>(maxCount));
++        out.resize(count);
++        for (size_t i = 0; i < count; i++) {
++            out[i] = std::move(mEvents.front());
++            mEvents.pop_front();
++        }
++    }
+     _hidl_cb(Result::OK, out, dynamicSensorsAdded);
+     return Void();
+ }
+ 
+-Return<Result> Sensors::batch(int32_t, int64_t, int64_t) {
++Return<Result> Sensors::batch(int32_t handle, int64_t sampling_period_ns, int64_t) {
++    const SensorInfo* info = find(handle);
++    if (info == nullptr || sampling_period_ns < 0) {
++        return Result::BAD_VALUE;
++    }
++    std::lock_guard<std::mutex> lock(mLock);
++    mState[info - mSensors.data()].periodNs = sampling_period_ns;
++    sendLocked(Message(kBatch).u32(static_cast<uint32_t>(handle)).i64(sampling_period_ns).bytes());
+     return Result::OK;
+ }
+ 
+-Return<Result> Sensors::flush(int32_t) {
++Return<Result> Sensors::flush(int32_t handle) {
++    const SensorInfo* info = find(handle);
++    if (info == nullptr) {
++        return Result::BAD_VALUE;
++    }
++    std::lock_guard<std::mutex> lock(mLock);
++    if (!mState[info - mSensors.data()].enabled) {
++        return Result::BAD_VALUE;
++    }
++    // Nothing is batched in a FIFO, so the flush is complete at once.
++    Event event{};
++    event.sensorHandle = handle;
++    event.sensorType = SensorType::META_DATA;
++    event.u.meta.what = MetaDataEventType::META_DATA_FLUSH_COMPLETE;
++    pushLocked(std::move(event));
+     return Result::OK;
+ }
+ 
+diff --git a/sensors/Sensors.h b/sensors/Sensors.h
+index 2bcc068..1646424 100644
+--- a/sensors/Sensors.h
++++ b/sensors/Sensors.h
+@@ -1,6 +1,7 @@
+ /*
+  * Copyright (C) 2021 The LineageOS Project
+  * Copyright (C) 2021 Waydroid Project
++ * Copyright (C) 2026 Marathon OS
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -20,15 +21,24 @@
+ #define LOG_TAG "android.hardware.sensors@1.0-service.deckard"
+ //#define LOG_NDEBUG 0
+ 
++#include <android-base/unique_fd.h>
+ #include <android/hardware/sensors/1.0/ISensors.h>
+ #include <log/log.h>
+ 
++#include <condition_variable>
++#include <deque>
++#include <mutex>
++#include <vector>
++
+ namespace android {
+ namespace hardware {
+ namespace sensors {
+ namespace V1_0 {
+ namespace implementation {
+ 
++// The host's sensors, from deckard-sensors over /data/deckard/sensors.sock
++// (docs/sensors.md in Marathon-Deckard; the host's side is
++// host/deckard-sensors there, and wire.rs holds the messages).
+ struct Sensors : public ::android::hardware::sensors::V1_0::ISensors {
+     Sensors();
+ 
+@@ -58,6 +68,29 @@ struct Sensors : public ::android::hardware::sensors::V1_0::ISensors {
+     Return<void> configDirectReport(
+             int32_t sensorHandle, int32_t channelHandle, RateLevel rate,
+             configDirectReport_cb _hidl_cb) override;
++
++  private:
++    struct State {
++        bool enabled = false;
++        int64_t periodNs = 200000000;
++    };
++
++    // Connects and reads the host's sensors into `list`.
++    static base::unique_fd connectHost(std::vector<SensorInfo>* list);
++    // Events from the host; reconnects and restores the sensors' state when
++    // the host restarts.
++    void readLoop(base::unique_fd socket);
++    // Sends to the host if it is connected; called with mLock held.
++    void sendLocked(const std::vector<uint8_t>& message);
++    void pushLocked(Event&& event);
++    const SensorInfo* find(int32_t handle) const;
++
++    std::vector<SensorInfo> mSensors;
++    std::mutex mLock;
++    std::condition_variable mCond;
++    std::deque<Event> mEvents;
++    std::vector<State> mState;
++    int mSocket = -1;
+ };
+ 
+ }  // namespace implementation
+diff --git a/sensors/service.cpp b/sensors/service.cpp
+index 49701eb..5d71c5d 100644
+--- a/sensors/service.cpp
++++ b/sensors/service.cpp
+@@ -35,7 +35,8 @@ int main() {
+ 
+     android::sp<ISensors> service = new Sensors();
+ 
+-    configureRpcThreadpool(1, true);
++    // One thread blocks in poll(); the other serves the rest.
++    configureRpcThreadpool(2, true);
+ 
+     status_t status = service->registerAsService();
+     if (status != OK) {
