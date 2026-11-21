@@ -498,6 +498,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "deckard-sensors"
+version = "0.4.0"
+dependencies = [
+ "deckard-host-tools",
+ "dirs",
+ "rustix",
+ "tempfile",
+]
+
+[[package]]
 name = "digest"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,15 @@
+[Unit]
+Description=Host sensors for Android apps (Deckard)
+ConditionUser=!root
+PartOf=graphical-session.target
+After=graphical-session.target
+# Android reads its sensor list once, when its sensors HAL starts.
+Before=deckard-session.service
+
+[Service]
+ExecStart=/usr/libexec/deckard-sensors
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

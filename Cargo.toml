@@ -12,6 +12,7 @@ members = [
     "host/deckard-overlay-sync",
     "host/deckard-packages",
     "host/deckard-runtime",
+    "host/deckard-sensors",
     "image/deckard-image-tools",
 ]
 
