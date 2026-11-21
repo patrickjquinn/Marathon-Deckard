@@ -2,6 +2,7 @@ package org.marathonos.deckard.system;
 
 import android.app.Activity;
 import android.content.ClipData;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
@@ -95,8 +96,7 @@ public final class Chooser extends Activity {
             for (Uri uri : streams(target)) {
                 if (files.length() >= MAX_FILES)
                     break;
-                if (checkUriPermission(uri, -1, uid, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        != PackageManager.PERMISSION_GRANTED) {
+                if (!canRead(uri, uid)) {
                     Log.w(TAG, pkg + " shared a stream it cannot read: " + uri.getAuthority());
                     continue;
                 }
@@ -127,6 +127,23 @@ public final class Chooser extends Activity {
         } catch (Exception e) {
             Log.w(TAG, "share from " + pkg + ": " + e);
         }
+    }
+
+    // Whether the app that shared may read the stream itself. MediaStore and
+    // other providers decide reads in their own code, which checkUriPermission
+    // never asks: it failed every photo shared from the media library.
+    // checkContentUriPermissionFull (Android 15) asks the provider too.
+    private boolean canRead(Uri uri, int uid) {
+        try {
+            Object result = Context.class
+                    .getMethod("checkContentUriPermissionFull", Uri.class, int.class, int.class, int.class)
+                    .invoke(this, uri, -1, uid, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            return (Integer) result == PackageManager.PERMISSION_GRANTED;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            Log.w(TAG, "checkContentUriPermissionFull: " + e);
+        }
+        return checkUriPermission(uri, -1, uid, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     private static Set<Uri> streams(Intent target) {
