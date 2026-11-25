@@ -24,10 +24,11 @@ use crate::command::{self, Command};
 use crate::initializer::{self, Host};
 use crate::mounts;
 
-/// null, zero, full, random, urandom, kmsg, tty, ptmx, the pty slaves and
-/// loop-control.
-const PSEUDO: [&str; 10] = [
-    "c 1:3", "c 1:5", "c 1:7", "c 1:8", "c 1:9", "c 1:11", "c 5:0", "c 5:2", "c 136:*", "c 10:237",
+/// null, zero, full, random, urandom, tty, ptmx, the pty slaves and
+/// loop-control. Not kmsg: Android's healthd and init log to it, and every
+/// line lands in the host's journal.
+const PSEUDO: [&str; 9] = [
+    "c 1:3", "c 1:5", "c 1:7", "c 1:8", "c 1:9", "c 5:0", "c 5:2", "c 136:*", "c 10:237",
 ];
 const LOOP_MAJOR: u32 = 7;
 const LOOP_MINORS: u32 = 256;
@@ -38,8 +39,9 @@ const OWN_NODES: [(&str, u32, u32, u32); 8] = [
     ("full", 1, 7, 0o666),
     ("random", 1, 8, 0o666),
     ("urandom", 1, 9, 0o666),
-    ("kmsg", 1, 11, 0o600),
-    ("kmsg_debug", 1, 11, 0o622),
+    // Android's kernel log is a null device; see PSEUDO.
+    ("kmsg", 1, 3, 0o600),
+    ("kmsg_debug", 1, 3, 0o622),
     ("tty", 5, 0, 0o666),
 ];
 
